@@ -2,6 +2,8 @@
 import React, { useMemo, useState } from "react";
 import { motion } from "framer-motion";
 import { Search, Filter } from "lucide-react";
+import { useQuery } from "@tanstack/react-query";
+import { supabase } from "../lib/supabaseClient"; // adjust path if needed
 
 const BRAND = {
   brown: "#2b1a12",
@@ -13,22 +15,58 @@ const BRAND = {
   cardShadow: "0 14px 34px rgba(43,26,18,0.10)",
 };
 
+function formatPrettyDate(iso) {
+  if (!iso) return "-";
+  const d = new Date(iso);
+  return d.toLocaleDateString(undefined, { month: "short", day: "numeric", year: "numeric" });
+}
+
+function categoryFromPriority(priority) {
+  // Your student UI uses: Important / Event / General
+  // Your DB has: High / Medium / Low
+  if (priority === "High") return "Important";
+  if (priority === "Medium") return "General";
+  return "General";
+}
+
 export default function StudentAnnouncements() {
   const [q, setQ] = useState("");
   const [cat, setCat] = useState("All");
 
-  const data = useMemo(
-    () => [
-      { title: "ID Picture Schedule", category: "Important", by: "Admin", date: "Dec 20, 2025", body: "Schedule posted..." },
-      { title: "Intramurals", category: "Event", by: "Admin", date: "Dec 19, 2025", body: "Join sports fest..." },
-      { title: "Library Reminder", category: "General", by: "Admin", date: "Dec 18, 2025", body: "Return books..." },
-    ],
-    []
-  );
+  const announcementsQ = useQuery({
+    queryKey: ["student-announcements"],
+    queryFn: async () => {
+      const { data, error } = await supabase
+        .from("announcements")
+        .select("id, title, content, priority, posted_at, posted_by, target_audience, status, is_archived")
+        .eq("target_audience", "All Students")
+        .eq("status", "Published")
+        .eq("is_archived", false)
+        .order("posted_at", { ascending: false });
+
+      if (error) throw error;
+      return data ?? [];
+    },
+  });
+
+  const data = useMemo(() => {
+    const rows = announcementsQ.data ?? [];
+    return rows.map((r) => ({
+      id: r.id,
+      title: r.title,
+      body: r.content,
+      category: categoryFromPriority(r.priority),
+      by: "Admin", // optional: replace with profile lookup later
+      date: formatPrettyDate(r.posted_at),
+      _priority: r.priority,
+    }));
+  }, [announcementsQ.data]);
 
   const filtered = useMemo(() => {
     return data.filter((a) => {
-      const okQ = !q.trim() || (a.title + a.body).toLowerCase().includes(q.trim().toLowerCase());
+      const okQ =
+        !q.trim() ||
+        (a.title + " " + a.body).toLowerCase().includes(q.trim().toLowerCase());
       const okCat = cat === "All" || a.category === cat;
       return okQ && okCat;
     });
@@ -68,8 +106,10 @@ export default function StudentAnnouncements() {
               />
             </div>
 
-            <div className="inline-flex items-center gap-2 rounded-2xl border bg-white/70 px-3 py-2"
-                 style={{ borderColor: BRAND.stroke }}>
+            <div
+              className="inline-flex items-center gap-2 rounded-2xl border bg-white/70 px-3 py-2"
+              style={{ borderColor: BRAND.stroke }}
+            >
               <Filter className="h-4 w-4" style={{ color: BRAND.muted }} />
               <select
                 value={cat}
@@ -87,36 +127,54 @@ export default function StudentAnnouncements() {
         </div>
       </motion.div>
 
-      <div className="space-y-3">
-        {filtered.map((a, idx) => (
-          <motion.div
-            key={idx}
-            initial={{ opacity: 0, y: 8 }}
-            animate={{ opacity: 1, y: 0 }}
-            transition={{ duration: 0.18 }}
-            className="rounded-3xl border bg-white p-5"
-            style={{ borderColor: BRAND.stroke, boxShadow: BRAND.cardShadow }}
-          >
-            <div className="flex items-center justify-between gap-2">
-              <div className="text-base font-extrabold" style={{ color: BRAND.brown }}>
-                {a.title}
+      {/* States */}
+      {announcementsQ.isLoading ? (
+        <div className="rounded-3xl border bg-white p-5 text-sm font-semibold"
+             style={{ borderColor: BRAND.stroke, boxShadow: BRAND.cardShadow, color: BRAND.muted }}>
+          Loading announcements…
+        </div>
+      ) : announcementsQ.isError ? (
+        <div className="rounded-3xl border bg-white p-5 text-sm font-semibold"
+             style={{ borderColor: BRAND.stroke, boxShadow: BRAND.cardShadow, color: "#b91c1c" }}>
+          Error: {String(announcementsQ.error?.message || announcementsQ.error)}
+        </div>
+      ) : filtered.length === 0 ? (
+        <div className="rounded-3xl border bg-white p-5 text-sm font-semibold"
+             style={{ borderColor: BRAND.stroke, boxShadow: BRAND.cardShadow, color: BRAND.muted }}>
+          No announcements found.
+        </div>
+      ) : (
+        <div className="space-y-3">
+          {filtered.map((a) => (
+            <motion.div
+              key={a.id}
+              initial={{ opacity: 0, y: 8 }}
+              animate={{ opacity: 1, y: 0 }}
+              transition={{ duration: 0.18 }}
+              className="rounded-3xl border bg-white p-5"
+              style={{ borderColor: BRAND.stroke, boxShadow: BRAND.cardShadow }}
+            >
+              <div className="flex items-center justify-between gap-2">
+                <div className="text-base font-extrabold" style={{ color: BRAND.brown }}>
+                  {a.title}
+                </div>
+                <span
+                  className="rounded-full px-3 py-1 text-[11px] font-extrabold"
+                  style={{ background: BRAND.softGoldBg, color: BRAND.brown }}
+                >
+                  {a.category}
+                </span>
               </div>
-              <span
-                className="rounded-full px-3 py-1 text-[11px] font-extrabold"
-                style={{ background: BRAND.softGoldBg, color: BRAND.brown }}
-              >
-                {a.category}
-              </span>
-            </div>
-            <div className="mt-1 text-xs font-semibold" style={{ color: BRAND.muted }}>
-              Posted by {a.by} • {a.date}
-            </div>
-            <div className="mt-3 text-sm" style={{ color: BRAND.muted }}>
-              {a.body}
-            </div>
-          </motion.div>
-        ))}
-      </div>
+              <div className="mt-1 text-xs font-semibold" style={{ color: BRAND.muted }}>
+                Posted by {a.by} • {a.date}
+              </div>
+              <div className="mt-3 text-sm" style={{ color: BRAND.muted }}>
+                {a.body}
+              </div>
+            </motion.div>
+          ))}
+        </div>
+      )}
     </div>
   );
 }

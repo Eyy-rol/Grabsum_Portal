@@ -1,21 +1,14 @@
 // src/admin/Announcements/AnnouncementList.jsx
-// Grabsum School Admin — Announcements (UI-first)
-//
-// ✅ Includes:
-// - Header + Create Announcement button
-// - Search + filters (status, audience, priority) + sort
-// - Card grid list with priority left-bar + badges + actions
-// - Create/Edit modal (Zod + react-hook-form)
-// - View modal
-// - Delete confirmation dialog
-//
-// ⚠️ UI-only for now: announcements stored in component state with mock seed.
-// Next step later: connect to Supabase table + TanStack Query.
+// Connected to Supabase: public.announcements
+// Requires: @tanstack/react-query + supabase client configured
 
 import { useMemo, useState } from "react";
 import { z } from "zod";
 import { useForm } from "react-hook-form";
 import { zodResolver } from "@hookform/resolvers/zod";
+import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
+import { supabase } from "../../lib/supabaseClient"; // ✅ adjust path if needed
+
 import {
   Plus,
   Search,
@@ -24,6 +17,10 @@ import {
   Pencil,
   Trash2,
   ArrowUpDown,
+  Filter,
+  Megaphone,
+  FileText,
+  AlertTriangle,
 } from "lucide-react";
 
 /* =====================
@@ -53,43 +50,12 @@ const announcementSchema = z.object({
 });
 
 /* =====================
-   MOCK SEED
-===================== */
-
-const seed = [
-  {
-    id: "ann_1",
-    title: "Important: Midterm Exam Schedule",
-    content:
-      "The midterm examinations for Senior High School will be held from December 20–23, 2025. All students are required to attend. Please bring your exam permit and arrive 15 minutes early.",
-    priority: "High",
-    target_audience: "All Students",
-    status: "Published",
-    posted_by: "Admin",
-    posted_at: "2025-12-12T08:30:00Z",
-    updated_at: "2025-12-12T08:30:00Z",
-  },
-  {
-    id: "ann_2",
-    title: "Faculty Meeting Reminder",
-    content:
-      "Reminder to all teachers: Faculty meeting will be held on December 20, 2025 at 2:00 PM in the conference room. Please prepare your department updates and submit reports before the meeting.",
-    priority: "Medium",
-    target_audience: "All Teachers",
-    status: "Draft",
-    posted_by: "Admin",
-    posted_at: "2025-12-10T10:05:00Z",
-    updated_at: "2025-12-10T10:05:00Z",
-  },
-];
-
-/* =====================
    HELPERS
 ===================== */
 
 function formatDate(iso) {
   const d = new Date(iso);
-  return d.toLocaleDateString(undefined, { month: "long", day: "numeric", year: "numeric" });
+  return d.toLocaleDateString(undefined, { month: "short", day: "numeric", year: "numeric" });
 }
 
 function formatDateTime(iso) {
@@ -103,12 +69,21 @@ function formatDateTime(iso) {
   });
 }
 
+function clampText(str, n = 120) {
+  if (!str) return "";
+  return str.length > n ? `${str.slice(0, n)}…` : str;
+}
+
+function prRank(v) {
+  return v === "High" ? 0 : v === "Medium" ? 1 : 2;
+}
+
 /* =====================
    MAIN
 ===================== */
 
 export default function AnnouncementList() {
-  const [items, setItems] = useState(seed);
+  const qc = useQueryClient();
 
   // search & filters
   const [q, setQ] = useState("");
@@ -125,13 +100,32 @@ export default function AnnouncementList() {
   const [openDelete, setOpenDelete] = useState(false);
   const [deleting, setDeleting] = useState(null);
 
+  // ✅ FETCH from Supabase
+  const announcementsQ = useQuery({
+    queryKey: ["announcements"],
+    queryFn: async () => {
+      const { data, error } = await supabase
+        .from("announcements")
+        .select("*")
+        .order("posted_at", { ascending: false });
+
+      if (error) throw error;
+      return data ?? [];
+    },
+  });
+
+  const items = announcementsQ.data ?? [];
+
   const filtered = useMemo(() => {
     let list = [...items];
+
+    // default: hide archived
+    list = list.filter((x) => !x.is_archived);
 
     // search
     if (q.trim()) {
       const s = q.trim().toLowerCase();
-      list = list.filter((a) => a.title.toLowerCase().includes(s));
+      list = list.filter((a) => String(a.title || "").toLowerCase().includes(s));
     }
 
     // filters
@@ -140,17 +134,24 @@ export default function AnnouncementList() {
     if (priority !== "All") list = list.filter((a) => a.priority === priority);
 
     // sort
-    const prRank = { High: 0, Medium: 1, Low: 2 };
     if (sortBy === "Newest First") {
       list.sort((a, b) => String(b.posted_at).localeCompare(String(a.posted_at)));
     } else if (sortBy === "Oldest First") {
       list.sort((a, b) => String(a.posted_at).localeCompare(String(b.posted_at)));
     } else if (sortBy === "Priority") {
-      list.sort((a, b) => prRank[a.priority] - prRank[b.priority]);
+      list.sort((a, b) => prRank(a.priority) - prRank(b.priority));
     }
 
     return list;
   }, [items, q, status, audience, priority, sortBy]);
+
+  const stats = useMemo(() => {
+    const total = items.filter((x) => !x.is_archived).length;
+    const published = items.filter((x) => !x.is_archived && x.status === "Published").length;
+    const drafts = items.filter((x) => !x.is_archived && x.status === "Draft").length;
+    const high = items.filter((x) => !x.is_archived && x.priority === "High").length;
+    return { total, published, drafts, high };
+  }, [items]);
 
   const clearFilters = () => {
     setQ("");
@@ -180,137 +181,243 @@ export default function AnnouncementList() {
     setOpenDelete(true);
   };
 
+  // ✅ CREATE
+  const createM = useMutation({
+    mutationFn: async (values) => {
+      const {
+        data: { user },
+        error: uerr,
+      } = await supabase.auth.getUser();
+      if (uerr) throw uerr;
+      if (!user) throw new Error("Not authenticated.");
+
+      const payload = {
+        posted_by: user.id,
+        title: values.title,
+        content: values.content,
+        priority: values.priority,
+        target_audience: values.target_audience,
+        status: values.status,
+        is_archived: false,
+        posted_at: new Date().toISOString(),
+      };
+
+      const { error } = await supabase.from("announcements").insert(payload);
+      if (error) throw error;
+    },
+    onSuccess: () => qc.invalidateQueries({ queryKey: ["announcements"] }),
+  });
+
+  // ✅ UPDATE
+  const updateM = useMutation({
+    mutationFn: async ({ id, values }) => {
+      const payload = {
+        title: values.title,
+        content: values.content,
+        priority: values.priority,
+        target_audience: values.target_audience,
+        status: values.status,
+        // updated_at handled by trigger
+      };
+
+      const { error } = await supabase.from("announcements").update(payload).eq("id", id);
+      if (error) throw error;
+    },
+    onSuccess: () => qc.invalidateQueries({ queryKey: ["announcements"] }),
+  });
+
+  // ✅ ARCHIVE (soft delete)
+  const archiveM = useMutation({
+    mutationFn: async ({ id, is_archived }) => {
+      const { error } = await supabase.from("announcements").update({ is_archived }).eq("id", id);
+      if (error) throw error;
+    },
+    onSuccess: () => qc.invalidateQueries({ queryKey: ["announcements"] }),
+  });
+
+  // ✅ HARD DELETE (optional)
+  const deleteM = useMutation({
+    mutationFn: async (id) => {
+      const { error } = await supabase.from("announcements").delete().eq("id", id);
+      if (error) throw error;
+    },
+    onSuccess: () => qc.invalidateQueries({ queryKey: ["announcements"] }),
+  });
+
   const saveAnnouncement = (payload) => {
     if (editing) {
-      setItems((prev) =>
-        prev.map((x) =>
-          x.id === editing.id
-            ? { ...x, ...payload, updated_at: new Date().toISOString() }
-            : x
-        )
-      );
+      updateM.mutate({ id: editing.id, values: payload });
     } else {
-      setItems((prev) => [
-        {
-          id: `ann_${crypto.randomUUID()}`,
-          ...payload,
-          posted_by: "Admin",
-          posted_at: new Date().toISOString(),
-          updated_at: new Date().toISOString(),
-        },
-        ...prev,
-      ]);
+      createM.mutate(payload);
     }
   };
 
   const deleteAnnouncement = () => {
-    setItems((prev) => prev.filter((x) => x.id !== deleting.id));
+    if (!deleting) return;
+    // choose one: archive instead of delete
+    archiveM.mutate({ id: deleting.id, is_archived: true });
+    // or hard delete:
+    // deleteM.mutate(deleting.id);
     setOpenDelete(false);
   };
 
+  const busy = createM.isPending || updateM.isPending || archiveM.isPending || deleteM.isPending;
+
   return (
-    <div>
+    <div style={ui.page}>
       {/* Header */}
-      <div style={styles.headerRow}>
-        <div>
-          <h1 style={styles.title}>Announcements</h1>
-          <div style={styles.sub}>Manage school announcements for teachers and students</div>
+      <div style={ui.header}>
+        <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
+          <div style={ui.iconChip}>
+            <Megaphone size={18} />
+          </div>
+          <div>
+            <h1 style={ui.title}>Announcements</h1>
+            <div style={ui.sub}>Manage announcements for teachers and students</div>
+          </div>
         </div>
 
-        <button style={styles.primaryBtn} onClick={openCreate}>
+        <button style={ui.primaryBtn} onClick={openCreate} disabled={busy}>
           <Plus size={18} /> Create Announcement
         </button>
       </div>
 
-      {/* Search & Filters */}
-      <div style={styles.filterCard}>
-        <div style={styles.searchRow}>
-          <div style={styles.searchBox}>
-            <Search size={16} />
-            <input
-              value={q}
-              onChange={(e) => setQ(e.target.value)}
-              placeholder="Search announcements by title..."
-              style={styles.searchInput}
-            />
-            {q ? (
-              <button style={styles.iconBtn} onClick={() => setQ("")} title="Clear search">
-                <X size={14} />
-              </button>
-            ) : null}
+      {/* Overview */}
+      <div style={ui.kpis}>
+        <KpiCard label="Total" value={stats.total} icon={<FileText size={18} />} />
+        <KpiCard label="Published" value={stats.published} tone="ok" icon={<FileText size={18} />} />
+        <KpiCard label="Drafts" value={stats.drafts} tone="muted" icon={<FileText size={18} />} />
+        <KpiCard label="High Priority" value={stats.high} tone="warn" icon={<AlertTriangle size={18} />} />
+      </div>
+
+      {/* Toolbar */}
+      <div style={ui.toolbar}>
+        <div style={ui.searchWrap}>
+          <Search size={16} />
+          <input
+            value={q}
+            onChange={(e) => setQ(e.target.value)}
+            placeholder="Search by title…"
+            style={ui.searchInput}
+          />
+          {q ? (
+            <button style={ui.iconBtn} onClick={() => setQ("")} title="Clear search">
+              <X size={16} />
+            </button>
+          ) : null}
+        </div>
+
+        <div style={ui.toolbarRight}>
+          <div style={ui.chipRow}>
+            <ChipSelect label="Status" value={status} onChange={setStatus} options={["All", ...STATUSES]} />
+            <ChipSelect label="Audience" value={audience} onChange={setAudience} options={["All", ...AUDIENCES]} />
+            <ChipSelect label="Priority" value={priority} onChange={setPriority} options={["All", ...PRIORITIES]} />
           </div>
 
-          <div style={styles.sortBox}>
+          <div style={ui.sortWrap}>
             <ArrowUpDown size={16} />
-            <select value={sortBy} onChange={(e) => setSortBy(e.target.value)} style={styles.select}>
+            <select value={sortBy} onChange={(e) => setSortBy(e.target.value)} style={ui.select}>
               <option>Newest First</option>
               <option>Oldest First</option>
               <option>Priority</option>
             </select>
           </div>
-        </div>
 
-        <div style={styles.filtersRow}>
-          <SelectField label="Status" value={status} onChange={setStatus} options={["All", ...STATUSES]} />
-          <SelectField label="Target Audience" value={audience} onChange={setAudience} options={["All", ...AUDIENCES]} />
-          <SelectField label="Priority" value={priority} onChange={setPriority} options={["All", ...PRIORITIES]} />
-
-          <div style={{ display: "flex", alignItems: "end" }}>
-            <button style={styles.ghostBtn} onClick={clearFilters}>Clear Filters</button>
-          </div>
+          <button style={ui.ghostBtn} onClick={clearFilters} title="Reset filters">
+            <Filter size={16} /> Reset
+          </button>
         </div>
       </div>
 
-      {/* Cards */}
-      {filtered.length === 0 ? (
-        <div style={styles.empty}>
-          No announcements found. Click <b>Create Announcement</b> to add one.
+      {/* Table */}
+      <div style={ui.tableCard}>
+        <div style={ui.tableHeader}>
+          <div style={{ fontWeight: 950, color: "#111827" }}>Announcements</div>
+          <div style={{ color: "#6B7280", fontSize: 12 }}>
+            {announcementsQ.isLoading ? "Loading…" : announcementsQ.isError ? "Error" : `Showing ${filtered.length}`}
+          </div>
         </div>
-      ) : (
-        <div style={styles.grid}>
-          {filtered.map((a) => {
-            const pColor = PRIORITY_COLOR[a.priority] || "#6B7280";
-            return (
-              <div key={a.id} style={styles.card}>
-                {/* priority indicator */}
-                <div style={{ ...styles.priorityBar, background: pColor }} />
 
-                <div style={{ flex: 1, minWidth: 0 }}>
-                  <div style={styles.cardTopRow}>
-                    <div style={{ minWidth: 0 }}>
-                      <div style={styles.cardTitle} title={a.title}>{a.title}</div>
-                      <div style={styles.preview}>
-                        {a.content.slice(0, 150)}{a.content.length > 150 ? "…" : ""}
-                      </div>
-                    </div>
-                    <div style={styles.actions}>
-                      <button style={styles.iconBtn} onClick={() => openDetails(a)} title="View">
-                        <Eye size={16} />
-                      </button>
-                      <button style={styles.iconBtn} onClick={() => openEdit(a)} title="Edit">
-                        <Pencil size={16} />
-                      </button>
-                      <button style={{ ...styles.iconBtn, color: "#EF4444" }} onClick={() => confirmDelete(a)} title="Delete">
-                        <Trash2 size={16} />
-                      </button>
-                    </div>
-                  </div>
+        {announcementsQ.isLoading ? (
+          <div style={ui.empty}>Loading announcements…</div>
+        ) : announcementsQ.isError ? (
+          <div style={ui.empty}>
+            Failed to load: {String(announcementsQ.error?.message || announcementsQ.error)}
+          </div>
+        ) : filtered.length === 0 ? (
+          <div style={ui.empty}>
+            No announcements found. Click <b>Create Announcement</b> to add one.
+          </div>
+        ) : (
+          <div style={{ overflowX: "auto" }}>
+            <table style={ui.table}>
+              <thead>
+                <tr>
+                  <Th>Title</Th>
+                  <Th>Audience</Th>
+                  <Th>Priority</Th>
+                  <Th>Status</Th>
+                  <Th>Posted</Th>
+                  <Th right>Actions</Th>
+                </tr>
+              </thead>
+              <tbody>
+                {filtered.map((a) => {
+                  const pColor = PRIORITY_COLOR[a.priority] || "#6B7280";
+                  return (
+                    <tr key={a.id} style={ui.tr}>
+                      <td style={ui.td}>
+                        <div style={{ display: "flex", gap: 12, alignItems: "flex-start" }}>
+                          <div style={{ ...ui.prBar, background: pColor }} />
+                          <div style={{ minWidth: 0 }}>
+                            <div style={ui.rowTitle} title={a.title}>
+                              {a.title}
+                            </div>
+                            <div style={ui.rowPreview}>{clampText(a.content, 140)}</div>
+                          </div>
+                        </div>
+                      </td>
 
-                  <div style={styles.badgesRow}>
-                    <Badge color={pColor}>{a.priority} Priority</Badge>
-                    <Badge color="#A0826D">{a.target_audience}</Badge>
-                    <StatusBadge status={a.status} />
-                  </div>
+                      <td style={ui.td}>
+                        <Badge soft color="#A0826D">{a.target_audience}</Badge>
+                      </td>
 
-                  <div style={styles.meta}>
-                    Posted by <b>{a.posted_by}</b> • {formatDate(a.posted_at)}
-                  </div>
-                </div>
-              </div>
-            );
-          })}
-        </div>
-      )}
+                      <td style={ui.td}>
+                        <Badge soft color={pColor}>{a.priority}</Badge>
+                      </td>
+
+                      <td style={ui.td}>
+                        <StatusBadge status={a.status} />
+                      </td>
+
+                      <td style={ui.td}>
+                        <div style={{ color: "#111827", fontWeight: 900 }}>{formatDate(a.posted_at)}</div>
+                        <div style={{ color: "#6B7280", fontSize: 12 }}>
+                          by <b style={{ color: "#374151" }}>{a.posted_by?.slice?.(0, 8) ?? "User"}</b>
+                        </div>
+                      </td>
+
+                      <td style={{ ...ui.td, textAlign: "right" }}>
+                        <div style={ui.actionRow}>
+                          <button style={ui.iconBtn} onClick={() => openDetails(a)} title="View">
+                            <Eye size={16} />
+                          </button>
+                          <button style={ui.iconBtn} onClick={() => openEdit(a)} title="Edit">
+                            <Pencil size={16} />
+                          </button>
+                          <button style={{ ...ui.iconBtn, color: "#EF4444" }} onClick={() => confirmDelete(a)} title="Archive/Delete">
+                            <Trash2 size={16} />
+                          </button>
+                        </div>
+                      </td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          </div>
+        )}
+      </div>
 
       {/* Create/Edit */}
       <Modal
@@ -321,6 +428,7 @@ export default function AnnouncementList() {
       >
         <AnnouncementForm
           initial={editing}
+          busy={busy}
           onCancel={() => setOpenForm(false)}
           onSave={(payload) => {
             saveAnnouncement(payload);
@@ -330,12 +438,7 @@ export default function AnnouncementList() {
       </Modal>
 
       {/* View */}
-      <Modal
-        open={openView}
-        title="Announcement Details"
-        onClose={() => setOpenView(false)}
-        wide
-      >
+      <Modal open={openView} title="Announcement Details" onClose={() => setOpenView(false)} wide>
         {viewing && (
           <AnnouncementDetails
             item={viewing}
@@ -344,41 +447,25 @@ export default function AnnouncementList() {
               setOpenView(false);
               openEdit(viewing);
             }}
-            onDelete={() => {
+            onArchive={() => {
+              archiveM.mutate({ id: viewing.id, is_archived: true });
               setOpenView(false);
-              confirmDelete(viewing);
             }}
           />
         )}
       </Modal>
 
-      {/* Delete */}
-      <Modal
-        open={openDelete}
-        title="Delete Announcement?"
-        onClose={() => setOpenDelete(false)}
-      >
+      {/* Archive confirm */}
+      <Modal open={openDelete} title="Archive Announcement?" onClose={() => setOpenDelete(false)}>
         {deleting && (
-          <DeleteDialog
+          <ArchiveDialog
             item={deleting}
+            busy={busy}
             onCancel={() => setOpenDelete(false)}
-            onDelete={deleteAnnouncement}
+            onArchive={deleteAnnouncement}
           />
         )}
       </Modal>
-
-      {/* Tiny schema smoke test */}
-      <span style={{ display: "none" }}>
-        {String(
-          announcementSchema.safeParse({
-            title: "abcd",
-            content: "too short",
-            priority: "Medium",
-            target_audience: "All Teachers",
-            status: "Draft",
-          }).success
-        )}
-      </span>
     </div>
   );
 }
@@ -387,7 +474,7 @@ export default function AnnouncementList() {
    FORM
 ===================== */
 
-function AnnouncementForm({ initial, onCancel, onSave }) {
+function AnnouncementForm({ initial, onCancel, onSave, busy }) {
   const defaults = {
     title: initial?.title ?? "",
     content: initial?.content ?? "",
@@ -406,125 +493,131 @@ function AnnouncementForm({ initial, onCancel, onSave }) {
   const content = form.watch("content");
 
   return (
-    <form
-      onSubmit={form.handleSubmit((values) => onSave(values))}
-      style={{ display: "grid", gap: 14 }}
-    >
-      <div style={styles.formGrid}>
-        <RHFText form={form} name="title" label="Title *" placeholder="e.g., Important: Midterm Exam Schedule" helper={`${title.length}/200`} />
+    <form onSubmit={form.handleSubmit((values) => onSave(values))} style={ui.form}>
+      <div style={ui.formGrid}>
+        <RHFText
+          form={form}
+          name="title"
+          label="Title *"
+          placeholder="e.g., Important: Midterm Exam Schedule"
+          helper={`${title.length}/200`}
+        />
 
-        <div style={{ display: "grid", gap: 6 }}>
-          <div style={styles.label}>Priority *</div>
+        <div style={{ display: "grid", gap: 8 }}>
+          <div style={ui.label}>Priority *</div>
           <RadioGroup
             value={form.watch("priority")}
             onChange={(v) => form.setValue("priority", v, { shouldValidate: true })}
             options={PRIORITIES}
             colors={PRIORITY_COLOR}
           />
-          {form.formState.errors.priority?.message ? <div style={styles.err}>{String(form.formState.errors.priority.message)}</div> : null}
+          {form.formState.errors.priority?.message ? <div style={ui.err}>{String(form.formState.errors.priority.message)}</div> : null}
         </div>
 
-        <div style={{ display: "grid", gap: 6 }}>
-          <div style={styles.label}>Target Audience *</div>
+        <div style={{ display: "grid", gap: 8 }}>
+          <div style={ui.label}>Target Audience *</div>
           <RadioGroup
             value={form.watch("target_audience")}
             onChange={(v) => form.setValue("target_audience", v, { shouldValidate: true })}
             options={AUDIENCES}
           />
-          {form.formState.errors.target_audience?.message ? <div style={styles.err}>{String(form.formState.errors.target_audience.message)}</div> : null}
+          {form.formState.errors.target_audience?.message ? <div style={ui.err}>{String(form.formState.errors.target_audience.message)}</div> : null}
         </div>
 
-        <div style={{ display: "grid", gap: 6 }}>
-          <div style={styles.label}>Status *</div>
+        <div style={{ display: "grid", gap: 8 }}>
+          <div style={ui.label}>Status *</div>
           <RadioGroup
             value={form.watch("status")}
             onChange={(v) => form.setValue("status", v, { shouldValidate: true })}
             options={STATUSES}
           />
-          {form.formState.errors.status?.message ? <div style={styles.err}>{String(form.formState.errors.status.message)}</div> : null}
+          {form.formState.errors.status?.message ? <div style={ui.err}>{String(form.formState.errors.status.message)}</div> : null}
         </div>
       </div>
 
-      <div style={{ display: "grid", gap: 6 }}>
-        <div style={styles.label}>Content * <span style={{ color: "#6B7280", fontWeight: 900 }}>({content.length}/2000)</span></div>
+      <div style={{ display: "grid", gap: 8 }}>
+        <div style={ui.label}>
+          Content * <span style={{ color: "#6B7280", fontWeight: 900 }}>({content.length}/2000)</span>
+        </div>
         <textarea
           {...form.register("content")}
-          rows={8}
+          rows={9}
           maxLength={2000}
           placeholder="Write your announcement..."
-          style={styles.textarea}
+          style={ui.textarea}
         />
-        {form.formState.errors.content?.message ? <div style={styles.err}>{String(form.formState.errors.content.message)}</div> : null}
+        {form.formState.errors.content?.message ? <div style={ui.err}>{String(form.formState.errors.content.message)}</div> : null}
       </div>
 
-      <div style={styles.modalActions}>
-        <button type="button" style={styles.ghostBtn} onClick={onCancel}>Cancel</button>
-        <button type="submit" style={styles.primaryBtn}>{initial ? "Update" : "Save"}</button>
+      <div style={ui.modalActions}>
+        <button type="button" style={ui.ghostBtn} onClick={onCancel} disabled={busy}>
+          Cancel
+        </button>
+        <button type="submit" style={ui.primaryBtn} disabled={busy}>
+          {initial ? "Update" : "Save"}
+        </button>
       </div>
     </form>
   );
 }
 
 /* =====================
-   DETAILS + DELETE
+   DETAILS + ARCHIVE
 ===================== */
 
-function AnnouncementDetails({ item, onClose, onEdit, onDelete }) {
+function AnnouncementDetails({ item, onClose, onEdit, onArchive }) {
   const pColor = PRIORITY_COLOR[item.priority] || "#6B7280";
 
   return (
-    <div style={{ display: "grid", gap: 12 }}>
-      <div style={styles.detailsHeader}>
+    <div style={{ display: "grid", gap: 14 }}>
+      <div style={ui.detailsTop}>
         <div style={{ display: "flex", gap: 8, flexWrap: "wrap", alignItems: "center" }}>
-          <Badge color={pColor} big>{item.priority} Priority</Badge>
+          <Badge color={pColor} soft big>{item.priority} Priority</Badge>
           <StatusBadge status={item.status} big />
-          <Badge color="#A0826D" big>{item.target_audience}</Badge>
+          <Badge color="#A0826D" soft big>{item.target_audience}</Badge>
         </div>
       </div>
 
       <div>
-        <div style={styles.detailsTitle}>{item.title}</div>
-        <div style={styles.detailsMeta}>
-          Posted by <b>{item.posted_by}</b> • {formatDateTime(item.posted_at)}
+        <div style={ui.detailsTitle}>{item.title}</div>
+        <div style={ui.detailsMeta}>
+          Posted • {formatDateTime(item.posted_at)}
         </div>
         {item.updated_at && item.updated_at !== item.posted_at ? (
-          <div style={styles.detailsMeta}>Last updated: {formatDateTime(item.updated_at)}</div>
+          <div style={ui.detailsMeta}>Last updated: {formatDateTime(item.updated_at)}</div>
         ) : null}
       </div>
 
-      <div style={styles.detailsContent}>
-        {item.content}
-      </div>
+      <div style={ui.detailsContent}>{item.content}</div>
 
-      <div style={styles.modalActions}>
-        <button style={styles.ghostBtn} onClick={onClose}><X size={16} /> Close</button>
-        <button style={styles.primaryBtn} onClick={onEdit}><Pencil size={16} /> Edit</button>
-        <button style={styles.dangerBtn} onClick={onDelete}><Trash2 size={16} /> Delete</button>
+      <div style={ui.modalActions}>
+        <button style={ui.ghostBtn} onClick={onClose}><X size={16} /> Close</button>
+        <button style={ui.primaryBtn} onClick={onEdit}><Pencil size={16} /> Edit</button>
+        <button style={ui.dangerBtn} onClick={onArchive}><Trash2 size={16} /> Archive</button>
       </div>
     </div>
   );
 }
 
-function DeleteDialog({ item, onCancel, onDelete }) {
+function ArchiveDialog({ item, onCancel, onArchive, busy }) {
   return (
     <div style={{ display: "grid", gap: 12 }}>
-      <div style={styles.deleteBox}>
-        <div style={{ fontWeight: 950 }}>Delete Announcement?</div>
+      <div style={ui.deleteBox}>
+        <div style={{ fontWeight: 950, display: "flex", gap: 10, alignItems: "center" }}>
+          <AlertTriangle size={18} /> Archive Announcement?
+        </div>
         <div style={{ color: "#6B7280", fontSize: 13, marginTop: 8 }}>
-          Are you sure you want to delete this announcement?
+          This will hide it from the list but keep the record in the database.
           <div style={{ marginTop: 10 }}>
             <div><b>Title:</b> {item.title}</div>
             <div style={{ marginTop: 6 }}><b>Target:</b> {item.target_audience}</div>
           </div>
-          <div style={{ marginTop: 10, color: "#EF4444", fontWeight: 900 }}>
-            This action cannot be undone.
-          </div>
         </div>
       </div>
 
-      <div style={styles.modalActions}>
-        <button style={styles.ghostBtn} onClick={onCancel}>Cancel</button>
-        <button style={styles.dangerBtn} onClick={onDelete}>Delete</button>
+      <div style={ui.modalActions}>
+        <button style={ui.ghostBtn} onClick={onCancel} disabled={busy}>Cancel</button>
+        <button style={ui.dangerBtn} onClick={onArchive} disabled={busy}>Archive</button>
       </div>
     </div>
   );
@@ -534,22 +627,53 @@ function DeleteDialog({ item, onCancel, onDelete }) {
    UI PRIMITIVES
 ===================== */
 
-function SelectField({ label, value, onChange, options }) {
+function KpiCard({ label, value, icon, tone }) {
+  const t =
+    tone === "ok"
+      ? { bg: "#ECFDF5", bd: "#A7F3D0", fg: "#065F46" }
+      : tone === "warn"
+      ? { bg: "#FFFBEB", bd: "#FDE68A", fg: "#92400E" }
+      : tone === "muted"
+      ? { bg: "#F3F4F6", bd: "#E5E7EB", fg: "#374151" }
+      : { bg: "#FFFFFF", bd: "#E5E7EB", fg: "#111827" };
+
   return (
-    <div style={{ display: "grid", gap: 6 }}>
-      <div style={styles.label}>{label}</div>
-      <select value={value} onChange={(e) => onChange(e.target.value)} style={styles.select}>
+    <div style={{ ...ui.kpiCard, background: t.bg, borderColor: t.bd }}>
+      <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 10 }}>
+        <div>
+          <div style={{ color: "#6B7280", fontSize: 12, fontWeight: 900 }}>{label}</div>
+          <div style={{ fontSize: 22, fontWeight: 950, color: "#111827", marginTop: 6 }}>{value}</div>
+        </div>
+        <div style={{ ...ui.kpiIcon, color: t.fg }}>{icon}</div>
+      </div>
+    </div>
+  );
+}
+
+function ChipSelect({ label, value, onChange, options }) {
+  return (
+    <label style={ui.chip}>
+      <span style={{ color: "#6B7280", fontSize: 12, fontWeight: 900 }}>{label}</span>
+      <select value={value} onChange={(e) => onChange(e.target.value)} style={ui.chipSelect}>
         {options.map((o) => (
           <option key={o} value={o}>{o}</option>
         ))}
       </select>
-    </div>
+    </label>
+  );
+}
+
+function Th({ children, right }) {
+  return (
+    <th style={{ ...ui.th, textAlign: right ? "right" : "left" }}>
+      {children}
+    </th>
   );
 }
 
 function RadioGroup({ value, onChange, options, colors }) {
   return (
-    <div style={styles.radioWrap}>
+    <div style={ui.radioWrap}>
       {options.map((opt) => {
         const active = value === opt;
         const c = colors?.[opt] || "#A0826D";
@@ -559,20 +683,13 @@ function RadioGroup({ value, onChange, options, colors }) {
             type="button"
             onClick={() => onChange(opt)}
             style={{
-              ...styles.radioBtn,
+              ...ui.radioBtn,
               borderColor: active ? c : "#E5E7EB",
               background: active ? "#FFFBEB" : "#fff",
             }}
             aria-pressed={active}
           >
-            <span
-              style={{
-                width: 10,
-                height: 10,
-                borderRadius: 999,
-                background: active ? c : "#E5E7EB",
-              }}
-            />
+            <span style={{ width: 10, height: 10, borderRadius: 999, background: active ? c : "#E5E7EB" }} />
             {opt}
           </button>
         );
@@ -593,7 +710,7 @@ function StatusBadge({ status, big }) {
         borderRadius: 999,
         background: isPublished ? "#D1FAE5" : "#F3F4F6",
         border: `1px solid ${isPublished ? "#10B981" : "#E5E7EB"}`,
-        color: "#2C2C2C",
+        color: "#111827",
         fontWeight: 950,
         fontSize: big ? 13 : 12,
         whiteSpace: "nowrap",
@@ -604,7 +721,7 @@ function StatusBadge({ status, big }) {
   );
 }
 
-function Badge({ color, children, big }) {
+function Badge({ color, children, big, soft }) {
   return (
     <span
       style={{
@@ -614,8 +731,8 @@ function Badge({ color, children, big }) {
         padding: big ? "8px 12px" : "6px 10px",
         borderRadius: 999,
         border: `1px solid ${color}`,
-        background: "#fff",
-        color: "#2C2C2C",
+        background: soft ? "#FFFFFF" : "#fff",
+        color: "#111827",
         fontWeight: 950,
         fontSize: big ? 13 : 12,
         whiteSpace: "nowrap",
@@ -629,13 +746,13 @@ function Badge({ color, children, big }) {
 function RHFText({ form, name, label, placeholder, helper }) {
   const err = form.formState.errors?.[name]?.message;
   return (
-    <div style={{ display: "grid", gap: 6 }}>
+    <div style={{ display: "grid", gap: 8 }}>
       <div style={{ display: "flex", justifyContent: "space-between", gap: 10 }}>
-        <div style={styles.label}>{label}</div>
+        <div style={ui.label}>{label}</div>
         {helper ? <div style={{ color: "#6B7280", fontSize: 12, fontWeight: 900 }}>{helper}</div> : null}
       </div>
-      <input {...form.register(name)} placeholder={placeholder} style={styles.input} />
-      {err ? <div style={styles.err}>{String(err)}</div> : null}
+      <input {...form.register(name)} placeholder={placeholder} style={ui.input} />
+      {err ? <div style={ui.err}>{String(err)}</div> : null}
     </div>
   );
 }
@@ -643,21 +760,21 @@ function RHFText({ form, name, label, placeholder, helper }) {
 function Modal({ open, title, onClose, wide, children }) {
   if (!open) return null;
   return (
-    <div style={styles.modalOverlay} onClick={onClose} role="dialog" aria-modal="true">
+    <div style={ui.modalOverlay} onClick={onClose} role="dialog" aria-modal="true">
       <div
         style={{
-          ...styles.modal,
+          ...ui.modal,
           width: wide ? "min(980px, 100%)" : "min(760px, 100%)",
         }}
         onClick={(e) => e.stopPropagation()}
       >
-        <div style={styles.modalHeader}>
+        <div style={ui.modalHeader}>
           <div style={{ fontWeight: 950 }}>{title}</div>
-          <button style={styles.iconBtn} onClick={onClose} title="Close">
+          <button style={ui.iconBtn} onClick={onClose} title="Close">
             <X size={16} />
           </button>
         </div>
-        <div style={styles.modalBody}>{children}</div>
+        <div style={ui.modalBody}>{children}</div>
       </div>
     </div>
   );
@@ -667,290 +784,114 @@ function Modal({ open, title, onClose, wide, children }) {
    STYLES
 ===================== */
 
-const styles = {
-  title: { margin: 0, fontWeight: 950, color: "#2C2C2C" },
+const ui = {
+  page: { display: "grid", gap: 14 },
+  header: {
+    display: "flex",
+    justifyContent: "space-between",
+    gap: 12,
+    flexWrap: "wrap",
+    alignItems: "flex-start",
+  },
+  iconChip: {
+    width: 42,
+    height: 42,
+    borderRadius: 14,
+    border: "1px solid #E5E7EB",
+    background: "#FFFBEB",
+    display: "grid",
+    placeItems: "center",
+    color: "#92400E",
+    boxShadow: "0 10px 25px rgba(0,0,0,0.06)",
+  },
+  title: { margin: 0, fontWeight: 950, color: "#111827" },
   sub: { marginTop: 6, color: "#6B7280" },
 
-  headerRow: {
-    display: "flex",
-    justifyContent: "space-between",
-    gap: 12,
-    flexWrap: "wrap",
-    alignItems: "flex-start",
-    marginBottom: 14,
+  kpis: { display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(220px, 1fr))", gap: 12 },
+  kpiCard: { border: "1px solid #E5E7EB", borderRadius: 16, padding: 14, boxShadow: "0 10px 25px rgba(0,0,0,0.06)" },
+  kpiIcon: {
+    width: 42,
+    height: 42,
+    borderRadius: 14,
+    border: "1px solid rgba(0,0,0,0.06)",
+    background: "rgba(255,255,255,0.75)",
+    display: "grid",
+    placeItems: "center",
   },
 
-  primaryBtn: {
-    background: "#A0826D",
-    color: "#fff",
-    border: "none",
-    borderRadius: 999,
-    padding: "10px 14px",
-    cursor: "pointer",
-    fontWeight: 950,
-    display: "inline-flex",
-    alignItems: "center",
-    gap: 8,
-    boxShadow: "0 10px 20px rgba(160,130,109,0.35)",
-  },
-
-  ghostBtn: {
-    background: "transparent",
-    color: "#2C2C2C",
-    border: "1px solid #E5E7EB",
-    borderRadius: 999,
-    padding: "10px 14px",
-    cursor: "pointer",
-    fontWeight: 950,
-    display: "inline-flex",
-    alignItems: "center",
-    gap: 8,
-  },
-
-  dangerBtn: {
-    background: "#EF4444",
-    color: "#fff",
-    border: "none",
-    borderRadius: 999,
-    padding: "10px 14px",
-    cursor: "pointer",
-    fontWeight: 950,
-    display: "inline-flex",
-    alignItems: "center",
-    gap: 8,
-  },
-
-  iconBtn: {
-    background: "#FAF9F6",
-    border: "1px solid #E5E7EB",
-    borderRadius: 999,
-    padding: "8px 10px",
-    cursor: "pointer",
-    display: "inline-flex",
-    alignItems: "center",
-    justifyContent: "center",
-    color: "#2C2C2C",
-  },
-
-  filterCard: {
-    background: "#fff",
+  toolbar: {
     border: "1px solid #E5E7EB",
     borderRadius: 16,
     padding: 12,
     boxShadow: "0 10px 25px rgba(0,0,0,0.06)",
-    marginBottom: 14,
-  },
-
-  searchRow: {
     display: "flex",
     gap: 12,
     alignItems: "center",
     justifyContent: "space-between",
     flexWrap: "wrap",
-    marginBottom: 12,
+    background: "#fff",
   },
 
-  searchBox: {
-    flex: "1 1 520px",
+  searchWrap: {
+    flex: "1 1 340px",
     display: "flex",
     alignItems: "center",
     gap: 10,
     border: "1px solid #E5E7EB",
-    background: "#FAF9F6",
+    background: "#FAFAFA",
     borderRadius: 999,
     padding: "10px 12px",
     color: "#6B7280",
   },
+  searchInput: { border: "none", outline: "none", background: "transparent", width: "100%", color: "#111827", fontWeight: 900 },
 
-  searchInput: {
-    border: "none",
-    outline: "none",
-    background: "transparent",
-    width: "100%",
-    color: "#2C2C2C",
-    fontWeight: 900,
-  },
+  toolbarRight: { display: "flex", gap: 10, alignItems: "center", flexWrap: "wrap", justifyContent: "flex-end" },
+  chipRow: { display: "flex", gap: 10, flexWrap: "wrap", alignItems: "center" },
+  chip: { display: "grid", gap: 4, padding: "8px 10px", borderRadius: 14, border: "1px solid #E5E7EB", background: "#FFFFFF" },
+  chipSelect: { border: "none", outline: "none", background: "transparent", fontWeight: 950, color: "#111827" },
 
-  sortBox: {
-    display: "flex",
-    alignItems: "center",
-    gap: 10,
-    border: "1px solid #E5E7EB",
-    background: "#FDFBF7",
-    borderRadius: 999,
-    padding: "10px 12px",
-    color: "#6B7280",
-    fontWeight: 900,
-  },
+  sortWrap: { display: "flex", alignItems: "center", gap: 10, border: "1px solid #E5E7EB", background: "#FFFFFF", borderRadius: 14, padding: "10px 12px", color: "#6B7280", fontWeight: 900 },
+  select: { border: "none", outline: "none", background: "transparent", fontWeight: 950, color: "#111827" },
 
-  filtersRow: {
-    display: "grid",
-    gridTemplateColumns: "repeat(auto-fit, minmax(220px, 1fr))",
-    gap: 12,
-    alignItems: "end",
-  },
+  tableCard: { background: "#fff", border: "1px solid #E5E7EB", borderRadius: 16, boxShadow: "0 10px 25px rgba(0,0,0,0.06)", overflow: "hidden" },
+  tableHeader: { padding: 14, borderBottom: "1px solid #E5E7EB", display: "flex", justifyContent: "space-between", alignItems: "center", gap: 10 },
+  table: { width: "100%", borderCollapse: "separate", borderSpacing: 0 },
+  th: { padding: "12px 14px", fontSize: 12, color: "#6B7280", fontWeight: 950, background: "#FAFAFA", borderBottom: "1px solid #E5E7EB", whiteSpace: "nowrap" },
+  tr: {},
+  td: { padding: "12px 14px", borderBottom: "1px solid #F3F4F6", verticalAlign: "top" },
 
+  prBar: { width: 6, height: 34, borderRadius: 999, flex: "0 0 auto", marginTop: 2 },
+  rowTitle: { fontWeight: 950, color: "#111827", fontSize: 14, lineHeight: 1.2, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", maxWidth: 520 },
+  rowPreview: { marginTop: 6, color: "#6B7280", fontSize: 13, lineHeight: 1.5, maxWidth: 720 },
+  actionRow: { display: "inline-flex", gap: 8, justifyContent: "flex-end" },
+
+  empty: { padding: 18, background: "#FFFBEB", color: "#6B7280" },
+
+  form: { display: "grid", gap: 14 },
+  formGrid: { display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(240px, 1fr))", gap: 12 },
   label: { fontSize: 12, color: "#6B7280", fontWeight: 900 },
-
-  input: {
-    width: "100%",
-    padding: "10px 12px",
-    borderRadius: 12,
-    border: "1px solid #E5E7EB",
-    background: "#FAF9F6",
-    outline: "none",
-    fontWeight: 900,
-  },
-
-  select: {
-    width: "100%",
-    padding: "10px 12px",
-    borderRadius: 999,
-    border: "1px solid #E5E7EB",
-    background: "#FAF9F6",
-    outline: "none",
-    fontWeight: 900,
-    color: "#2C2C2C",
-  },
-
-  grid: {
-    display: "grid",
-    gridTemplateColumns: "repeat(auto-fit, minmax(320px, 1fr))",
-    gap: 12,
-  },
-
-  card: {
-    background: "#fff",
-    border: "1px solid #E5E7EB",
-    borderRadius: 16,
-    padding: 14,
-    boxShadow: "0 10px 25px rgba(0,0,0,0.06)",
-    display: "flex",
-    gap: 12,
-    minHeight: 160,
-  },
-
-  priorityBar: { width: 6, borderRadius: 999 },
-
-  cardTopRow: {
-    display: "flex",
-    justifyContent: "space-between",
-    gap: 10,
-    alignItems: "flex-start",
-  },
-
-  cardTitle: {
-    fontWeight: 950,
-    color: "#2C2C2C",
-    fontSize: 16,
-    lineHeight: 1.2,
-    overflow: "hidden",
-    textOverflow: "ellipsis",
-    whiteSpace: "nowrap",
-  },
-
-  preview: {
-    marginTop: 8,
-    color: "#6B7280",
-    fontSize: 13,
-    lineHeight: 1.5,
-    overflow: "hidden",
-    display: "-webkit-box",
-    WebkitLineClamp: 3,
-    WebkitBoxOrient: "vertical",
-  },
-
-  actions: { display: "inline-flex", gap: 8 },
-
-  badgesRow: { display: "flex", gap: 8, flexWrap: "wrap", marginTop: 10 },
-
-  meta: { marginTop: 10, color: "#6B7280", fontSize: 12 },
-
-  empty: {
-    border: "1px dashed #E5E7EB",
-    borderRadius: 16,
-    padding: 18,
-    background: "#FDFBF7",
-    color: "#6B7280",
-  },
-
-  // Forms
-  formGrid: {
-    display: "grid",
-    gridTemplateColumns: "repeat(auto-fit, minmax(240px, 1fr))",
-    gap: 12,
-  },
-
+  input: { width: "100%", padding: "10px 12px", borderRadius: 12, border: "1px solid #E5E7EB", background: "#FAFAFA", outline: "none", fontWeight: 900, color: "#111827" },
   radioWrap: { display: "flex", gap: 10, flexWrap: "wrap" },
-  radioBtn: {
-    border: "1px solid #E5E7EB",
-    background: "#fff",
-    borderRadius: 999,
-    padding: "10px 12px",
-    cursor: "pointer",
-    fontWeight: 950,
-    color: "#2C2C2C",
-    display: "inline-flex",
-    alignItems: "center",
-    gap: 10,
-  },
-
-  textarea: {
-    width: "100%",
-    padding: "10px 12px",
-    borderRadius: 12,
-    border: "1px solid #E5E7EB",
-    background: "#FAF9F6",
-    outline: "none",
-    resize: "vertical",
-    fontWeight: 900,
-    color: "#2C2C2C",
-    lineHeight: 1.5,
-  },
-
+  radioBtn: { border: "1px solid #E5E7EB", background: "#fff", borderRadius: 999, padding: "10px 12px", cursor: "pointer", fontWeight: 950, color: "#111827", display: "inline-flex", alignItems: "center", gap: 10 },
+  textarea: { width: "100%", padding: "10px 12px", borderRadius: 12, border: "1px solid #E5E7EB", background: "#FAFAFA", outline: "none", resize: "vertical", fontWeight: 900, color: "#111827", lineHeight: 1.5 },
   err: { color: "#EF4444", fontSize: 12, fontWeight: 900 },
 
-  // Modals
-  modalOverlay: {
-    position: "fixed",
-    inset: 0,
-    background: "rgba(0,0,0,0.35)",
-    display: "flex",
-    justifyContent: "center",
-    alignItems: "center",
-    padding: 14,
-    zIndex: 50,
-  },
-  modal: {
-    background: "#fff",
-    borderRadius: 16,
-    border: "1px solid #E5E7EB",
-    boxShadow: "0 16px 40px rgba(0,0,0,0.18)",
-    overflow: "hidden",
-  },
-  modalHeader: {
-    padding: 14,
-    borderBottom: "1px solid #E5E7EB",
-    display: "flex",
-    justifyContent: "space-between",
-    alignItems: "center",
-    gap: 10,
-  },
-  modalBody: { padding: 14 },
-  modalActions: { display: "flex", justifyContent: "flex-end", gap: 10, flexWrap: "wrap" },
+  modalActions: { display: "flex", justifyContent: "flex-end", gap: 10, flexWrap: "wrap", marginTop: 4 },
 
-  detailsHeader: { borderRadius: 16, border: "1px solid #E5E7EB", background: "#FDFBF7", padding: 12 },
-  detailsTitle: { fontSize: 20, fontWeight: 950, color: "#2C2C2C", marginTop: 6 },
+  primaryBtn: { background: "#A0826D", color: "#fff", border: "none", borderRadius: 999, padding: "10px 14px", cursor: "pointer", fontWeight: 950, display: "inline-flex", alignItems: "center", gap: 8, boxShadow: "0 10px 20px rgba(160,130,109,0.35)" },
+  ghostBtn: { background: "transparent", color: "#111827", border: "1px solid #E5E7EB", borderRadius: 999, padding: "10px 14px", cursor: "pointer", fontWeight: 950, display: "inline-flex", alignItems: "center", gap: 8 },
+  dangerBtn: { background: "#EF4444", color: "#fff", border: "none", borderRadius: 999, padding: "10px 14px", cursor: "pointer", fontWeight: 950, display: "inline-flex", alignItems: "center", gap: 8 },
+  iconBtn: { background: "#FFFFFF", border: "1px solid #E5E7EB", borderRadius: 999, padding: "8px 10px", cursor: "pointer", display: "inline-flex", alignItems: "center", justifyContent: "center", color: "#111827" },
+
+  modalOverlay: { position: "fixed", inset: 0, background: "rgba(0,0,0,0.35)", display: "flex", justifyContent: "center", alignItems: "center", padding: 14, zIndex: 50 },
+  modal: { background: "#fff", borderRadius: 16, border: "1px solid #E5E7EB", boxShadow: "0 16px 40px rgba(0,0,0,0.18)", overflow: "hidden" },
+  modalHeader: { padding: 14, borderBottom: "1px solid #E5E7EB", display: "flex", justifyContent: "space-between", alignItems: "center", gap: 10 },
+  modalBody: { padding: 14 },
+
+  detailsTop: { borderRadius: 16, border: "1px solid #E5E7EB", background: "#FFFBEB", padding: 12 },
+  detailsTitle: { fontSize: 20, fontWeight: 950, color: "#111827", marginTop: 6 },
   detailsMeta: { color: "#6B7280", fontSize: 13, marginTop: 6 },
-  detailsContent: {
-    borderRadius: 16,
-    border: "1px solid #E5E7EB",
-    background: "#fff",
-    padding: 12,
-    whiteSpace: "pre-wrap",
-    lineHeight: 1.6,
-    color: "#2C2C2C",
-  },
+  detailsContent: { borderRadius: 16, border: "1px solid #E5E7EB", background: "#fff", padding: 12, whiteSpace: "pre-wrap", lineHeight: 1.6, color: "#111827" },
 
   deleteBox: { borderRadius: 16, border: "1px solid #EF4444", background: "#FEF2F2", padding: 12 },
 };
