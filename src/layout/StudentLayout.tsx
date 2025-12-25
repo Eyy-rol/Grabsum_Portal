@@ -17,6 +17,9 @@ import {
   ChevronDown,
 } from "lucide-react";
 
+import { supabase } from "../lib/supabaseClient"; // adjust path
+
+
 type IconType = React.ComponentType<{ className?: string }>;
 
 const BRAND = {
