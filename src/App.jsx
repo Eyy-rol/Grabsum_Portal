@@ -1,6 +1,9 @@
 import React from "react";
 import { BrowserRouter, Navigate, Route, Routes } from "react-router-dom";
 
+import RequireRole from "./components/RequireRole.jsx"; // ✅ add this
+import RequirePasswordChange from "./Auth/RequirePasswordChange.jsx";
+
 import AdminLayout from "./layout/adminLayout";
 import AdminHome from "./Admin/Admins/AdminHome.jsx";
 import Enrollment from "./Admin/AdminStudents/Enrollment.jsx";
@@ -12,6 +15,7 @@ import AnnouncementList from "./Admin/Announcements/AnnouncementList.jsx";
 
 import Login from "./Auth/Login.jsx";
 import PreEnrollment from "./Auth/PreEnroll.jsx";
+import ChangePassword from "./Auth/ChangePassword.jsx";
 
 import TeacherLayout from "./layout/TeacherLayout";
 import TeacherDashboard from "./Teacher/TeacherDashboard";
@@ -29,7 +33,6 @@ import StudentSchedule from "./student/StudentSchedule";
 import StudentAnnouncements from "./student/StudentAnnouncements";
 import StudentProfile from "./student/StudentProfile";
 import StudentSettings from "./student/StudentSettings";
-import ChangePassword from "./Student/ChangePassword";
 
 import DevLayout from "./layout/DevLayout.js";
 import DevDashboard from "./dev/pages/Dashboard.jsx";
@@ -47,53 +50,91 @@ export default function App() {
       <Routes>
         <Route path="/" element={<Navigate to="/login" replace />} />
 
+        {/* Public */}
         <Route path="/login" element={<Login />} />
         <Route path="/pre-enroll" element={<PreEnrollment />} />
 
-        <Route path="/admin" element={<AdminLayout />}>
-          <Route index element={<AdminHome />} />
-          <Route path="students/enrollment" element={<Enrollment />} />
-          <Route path="students/classes" element={<Classes />} />
-          <Route path="teacher/manage" element={<TeacherManage />} />
-          <Route path="teacher/schedule" element={<TeacherSchedule />} />
-          <Route path="calendar" element={<CalendarView />} />
-          <Route path="announcement" element={<AnnouncementList />} />
+        {/* ===========================
+            ADMIN (protected)
+           =========================== */}
+        <Route element={<RequireRole allow={["admin"]} />}>
+          <Route path="/admin" element={<AdminLayout />}>
+            <Route index element={<AdminHome />} />
+            <Route path="students/enrollment" element={<Enrollment />} />
+            <Route path="students/classes" element={<Classes />} />
+            <Route path="teacher/manage" element={<TeacherManage />} />
+            <Route path="teacher/schedule" element={<TeacherSchedule />} />
+            <Route path="calendar" element={<CalendarView />} />
+            <Route path="announcement" element={<AnnouncementList />} />
+
+            {/* ✅ admin change password route */}
+            <Route path="change-password" element={<ChangePassword />} />
+          </Route>
         </Route>
 
-        <Route path="/teacher" element={<TeacherLayout />}>
-          <Route index element={<Navigate to="dashboard" replace />} />
-          <Route path="dashboard" element={<TeacherDashboard />} />
-          <Route path="lessons" element={<TeacherLessons />} />
-          <Route path="classes" element={<TeacherClasses />} />
-          <Route path="schedule" element={<TeacherSchedules />} />
-          <Route path="announcements" element={<TeacherAnnouncements />} />
-          <Route path="students" element={<TeacherStudents />} />
-          <Route path="settings" element={<TeacherSettings />} />
+        {/* ===========================
+            TEACHER (protected)
+           =========================== */}
+        <Route element={<RequireRole allow={["teacher"]} />}>
+          <Route path="/teacher" element={<TeacherLayout />}>
+            <Route index element={<Navigate to="dashboard" replace />} />
+            <Route path="dashboard" element={<TeacherDashboard />} />
+            <Route path="lessons" element={<TeacherLessons />} />
+            <Route path="classes" element={<TeacherClasses />} />
+            <Route path="schedule" element={<TeacherSchedules />} />
+            <Route path="announcements" element={<TeacherAnnouncements />} />
+            <Route path="students" element={<TeacherStudents />} />
+            <Route path="settings" element={<TeacherSettings />} />
+
+            {/* ✅ teacher change password route */}
+            <Route path="change-password" element={<ChangePassword />} />
+          </Route>
         </Route>
 
-        <Route path="/student" element={<StudentLayout />}>
-          <Route index element={<Navigate to="dashboard" replace />} />
-          <Route path="dashboard" element={<StudentDashboard />} />
-          <Route path="courses" element={<StudentCourses />} />
-          <Route path="schedule" element={<StudentSchedule />} />
-          <Route path="announcements" element={<StudentAnnouncements />} />
-          <Route path="profile" element={<StudentProfile />} />
-          <Route path="settings" element={<StudentSettings />} />
-          <Route path="change-password" element={<ChangePassword />} />
+        {/* ===========================
+            STUDENT (protected)
+           =========================== */}
+        <Route element={<RequireRole allow={["student"]} />}>
+          <Route path="/student" element={<StudentLayout />}>
+            <Route index element={<Navigate to="dashboard" replace />} />
+            <Route path="dashboard" element={<StudentDashboard />} />
+            <Route path="courses" element={<StudentCourses />} />
+            <Route path="schedule" element={<StudentSchedule />} />
+            <Route path="announcements" element={<StudentAnnouncements />} />
+            <Route path="profile" element={<StudentProfile />} />
+            <Route path="settings" element={<StudentSettings />} />
+
+            {/* ✅ student change password route */}
+            <Route path="change-password" element={<ChangePassword />} />
+          </Route>
         </Route>
 
-        <Route path="/dev" element={<DevLayout />}>
-          <Route index element={<DevDashboard />} />
-          <Route path="admins" element={<AdminManagement />} />
-          <Route path="roles" element={<RoleManagement />} />
-          <Route path="activity" element={<ActivityLogs />} />
-          <Route path="security" element={<SecuritySettings />} />
-          <Route path="config" element={<SystemConfiguration />} />
-          <Route path="database" element={<DatabaseManagement />} />
-          <Route path="audit" element={<AuditReports />} />
+
+        <Route element={<RequirePasswordChange />}>
+  <Route path="/student" element={<StudentDashboard />} />
+  {/* other protected student routes */}
+</Route>
+
+<Route path="/student/change-password" element={<ChangePassword />} />
+
+
+        {/* ===========================
+            DEV (protected if needed)
+           =========================== */}
+        <Route element={<RequireRole allow={["dev"]} />}>
+          <Route path="/dev" element={<DevLayout />}>
+            <Route index element={<DevDashboard />} />
+            <Route path="admins" element={<AdminManagement />} />
+            <Route path="roles" element={<RoleManagement />} />
+            <Route path="activity" element={<ActivityLogs />} />
+            <Route path="security" element={<SecuritySettings />} />
+            <Route path="config" element={<SystemConfiguration />} />
+            <Route path="database" element={<DatabaseManagement />} />
+            <Route path="audit" element={<AuditReports />} />
+          </Route>
         </Route>
 
-        {/* ✅ safer catch-all */}
+        {/* Catch-all */}
         <Route path="*" element={<Navigate to="/login" replace />} />
       </Routes>
     </BrowserRouter>

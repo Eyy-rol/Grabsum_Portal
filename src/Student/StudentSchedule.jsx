@@ -1,6 +1,6 @@
 // src/pages/student/StudentSchedule.jsx
-import React, { useMemo, useState } from "react";
-import { motion, AnimatePresence } from "framer-motion";
+import React, { useEffect, useMemo, useState } from "react";
+import { motion } from "framer-motion";
 import {
   CalendarDays,
   Clock,
@@ -9,6 +9,7 @@ import {
   ChevronLeft,
   ChevronRight,
 } from "lucide-react";
+import { supabase } from "../lib/supabaseClient";
 
 const BRAND = {
   brown: "#2b1a12",
@@ -19,6 +20,9 @@ const BRAND = {
   softGoldBg: "rgba(212,166,47,0.14)",
   cardShadow: "0 14px 34px rgba(43,26,18,0.10)",
 };
+
+const TERM_CODES = ["1st Sem", "2nd Sem"];
+const DEFAULT_TERM_CODE = "1st Sem";
 
 function pad2(n) {
   return String(n).padStart(2, "0");
@@ -31,82 +35,311 @@ function formatTime(date) {
   return `${hh}:${pad2(m)} ${ampm}`;
 }
 function formatDateLong(date) {
-  return date.toLocaleDateString(undefined, { weekday: "long", year: "numeric", month: "long", day: "numeric" });
+  return date.toLocaleDateString(undefined, {
+    weekday: "long",
+    year: "numeric",
+    month: "long",
+    day: "numeric",
+  });
 }
 function sameDay(a, b) {
-  return a.getFullYear() === b.getFullYear() && a.getMonth() === b.getMonth() && a.getDate() === b.getDate();
+  return (
+    a.getFullYear() === b.getFullYear() &&
+    a.getMonth() === b.getMonth() &&
+    a.getDate() === b.getDate()
+  );
 }
 function addDays(d, n) {
   const x = new Date(d);
   x.setDate(x.getDate() + n);
   return x;
 }
+function startOfDay(d) {
+  return new Date(d.getFullYear(), d.getMonth(), d.getDate());
+}
+function endOfDay(d) {
+  return new Date(d.getFullYear(), d.getMonth(), d.getDate(), 23, 59, 59, 999);
+}
+function startOfWeekMon(d) {
+  const x = startOfDay(d);
+  const day = x.getDay(); // Sun=0
+  const diffToMon = (day + 6) % 7;
+  return addDays(x, -diffToMon);
+}
+function endOfWeekSun(d) {
+  return endOfDay(addDays(startOfWeekMon(d), 6));
+}
+function startOfMonth(d) {
+  return new Date(d.getFullYear(), d.getMonth(), 1);
+}
+function endOfMonth(d) {
+  return endOfDay(new Date(d.getFullYear(), d.getMonth() + 1, 0));
+}
+function dayIndexToCode(idx) {
+  // JS: Sun=0 ... Sat=6
+  return ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"][idx];
+}
+function hhmmToParts(t) {
+  // t could be "13:00:00" or "13:00"
+  const s = String(t);
+  const hh = parseInt(s.slice(0, 2), 10);
+  const mm = parseInt(s.slice(3, 5), 10);
+  return { hh, mm };
+}
+
+function Select({ value, onChange, options, label }) {
+  return (
+    <select
+      value={value}
+      onChange={(e) => onChange(e.target.value)}
+      className="rounded-2xl border bg-white/70 px-4 py-2 text-sm font-semibold outline-none transition focus:bg-white"
+      style={{ borderColor: BRAND.stroke, color: BRAND.brown }}
+    >
+      {options.map((o) => (
+        <option key={o} value={o}>
+          {label}: {o}
+        </option>
+      ))}
+    </select>
+  );
+}
+
+/**
+ * Convert recurring schedule rows (day_of_week + start_time/end_time)
+ * into concrete events for a given date range.
+ */
+function materializeSchedule(scheduleRows, rangeStart, rangeEnd) {
+  const days = [];
+  let cur = startOfDay(rangeStart);
+  const end = startOfDay(rangeEnd);
+
+  while (cur <= end) {
+    days.push(new Date(cur));
+    cur = addDays(cur, 1);
+  }
+
+  const events = [];
+  for (const d of days) {
+    const dow = dayIndexToCode(d.getDay()); // "Mon", "Tue", etc.
+    const rowsForDay = scheduleRows.filter((r) => r.day_of_week === dow);
+
+    for (const r of rowsForDay) {
+      const { hh: sh, mm: sm } = hhmmToParts(r.start_time);
+      const { hh: eh, mm: em } = hhmmToParts(r.end_time);
+
+      const start = new Date(d.getFullYear(), d.getMonth(), d.getDate(), sh, sm);
+      const endDt = new Date(d.getFullYear(), d.getMonth(), d.getDate(), eh, em);
+
+      events.push({
+        id: r.schedule_id,
+        date: startOfDay(d),
+        start,
+        end: endDt,
+        subject: r.subjects?.subject_title ?? "—",
+        code: r.subjects?.subject_code ?? "—",
+        teacher: r.teachers ? `${r.teachers.first_name ?? ""} ${r.teachers.last_name ?? ""}`.trim() : "—",
+        room: r.room ?? "—",
+        period_no: r.period_no,
+        day_of_week: r.day_of_week,
+        _raw: r,
+      });
+    }
+  }
+
+  // sort by start time
+  events.sort((a, b) => a.start - b.start);
+  return events;
+}
 
 export default function StudentSchedule() {
   const [tab, setTab] = useState("Today"); // Today | Week | Month
   const [selectedDate, setSelectedDate] = useState(new Date());
+  const [termCode, setTermCode] = useState(DEFAULT_TERM_CODE);
+
+  const [loading, setLoading] = useState(true);
+  const [err, setErr] = useState(null);
+
+  const [activeSY, setActiveSY] = useState(null); // { sy_id, sy_code }
+  const [student, setStudent] = useState(null); // { section_id, ... }
+  const [scheduleRows, setScheduleRows] = useState([]); // raw recurring rows
+
   const now = new Date();
 
-  // Demo schedule data (replace with Supabase)
-  const items = useMemo(() => {
-    const base = new Date();
-    const today = new Date(base.getFullYear(), base.getMonth(), base.getDate());
+  // Load active SY + student record once, and reload schedule when term changes
+  useEffect(() => {
+    let alive = true;
 
-    // A few recurring-ish demo events across this week:
-    const mk = (dayOffset, startHour, startMin, endHour, endMin, subject, code, teacher, room) => {
-      const d = addDays(today, dayOffset);
-      const start = new Date(d.getFullYear(), d.getMonth(), d.getDate(), startHour, startMin);
-      const end = new Date(d.getFullYear(), d.getMonth(), d.getDate(), endHour, endMin);
-      return {
-        id: `${code}-${dayOffset}-${startHour}${startMin}`,
-        date: d,
-        start,
-        end,
-        subject,
-        code,
-        teacher,
-        room,
-      };
+    async function loadBase() {
+      setLoading(true);
+      setErr(null);
+
+      const { data: authData, error: authErr } = await supabase.auth.getUser();
+      if (authErr) {
+        if (alive) setErr(authErr.message);
+        if (alive) setLoading(false);
+        return;
+      }
+      const user = authData?.user;
+      if (!user) {
+        if (alive) setErr("Not authenticated.");
+        if (alive) setLoading(false);
+        return;
+      }
+
+      // Active school year
+      const { data: syRow, error: syErr } = await supabase
+        .from("school_years")
+        .select("sy_id, sy_code, status, start_date")
+        .eq("status", "Active")
+        .order("start_date", { ascending: false })
+        .limit(1)
+        .maybeSingle();
+
+      if (syErr) {
+        if (alive) setErr(syErr.message);
+        if (alive) setLoading(false);
+        return;
+      }
+      if (!syRow?.sy_id) {
+        if (alive) setErr("No Active school year found.");
+        if (alive) setLoading(false);
+        return;
+      }
+      if (alive) setActiveSY({ sy_id: syRow.sy_id, sy_code: syRow.sy_code });
+
+      // Student record (must exist)
+      const { data: studentRow, error: studErr } = await supabase
+        .from("students")
+        .select("id, user_id, student_number, section_id, status, grade_id, strand_id")
+        .eq("user_id", user.id)
+        .limit(1)
+        .maybeSingle();
+
+      if (studErr) {
+        if (alive) setErr(studErr.message);
+        if (alive) setLoading(false);
+        return;
+      }
+      if (!studentRow?.section_id) {
+        if (alive) setErr("Student record not found or missing section_id.");
+        if (alive) setLoading(false);
+        return;
+      }
+      if (alive) setStudent(studentRow);
+
+      if (alive) setLoading(false);
+    }
+
+    loadBase();
+    return () => {
+      alive = false;
     };
-
-    return [
-      mk(0, 8, 0, 9, 30, "Oral Communication", "ORALCOMM", "Ms. Reyes", "Room 201"),
-      mk(0, 10, 0, 11, 30, "General Mathematics", "MATH101", "Mr. Santos", "Room 305"),
-      mk(0, 13, 0, 14, 30, "UCSP", "UCSP", "Ms. Dizon", "Room 109"),
-
-      mk(1, 9, 30, 11, 0, "Reading & Writing Skills", "ENG101", "Mr. Garcia", "Room 114"),
-      mk(1, 13, 0, 14, 30, "UCSP", "UCSP", "Ms. Dizon", "Room 109"),
-
-      mk(2, 8, 0, 9, 30, "Oral Communication", "ORALCOMM", "Ms. Reyes", "Room 201"),
-      mk(2, 10, 0, 11, 30, "General Mathematics", "MATH101", "Mr. Santos", "Room 305"),
-
-      mk(3, 9, 30, 11, 0, "Reading & Writing Skills", "ENG101", "Mr. Garcia", "Room 114"),
-      mk(4, 8, 0, 9, 30, "Oral Communication", "ORALCOMM", "Ms. Reyes", "Room 201"),
-      mk(4, 10, 0, 11, 30, "General Mathematics", "MATH101", "Mr. Santos", "Room 305"),
-    ];
   }, []);
 
-  const todayItems = useMemo(() => {
-    return items
-      .filter((x) => sameDay(x.date, selectedDate))
-      .sort((a, b) => a.start - b.start);
-  }, [items, selectedDate]);
+  // Load recurring schedule rows for the student's section (active SY + selected term)
+  useEffect(() => {
+    let alive = true;
 
+    async function loadSchedules() {
+      if (!activeSY?.sy_id || !student?.section_id || !termCode) return;
+
+      setLoading(true);
+      setErr(null);
+
+      const { data: termRow, error: termErr } = await supabase
+        .from("terms")
+        .select("term_id, term_code")
+        .eq("term_code", termCode)
+        .limit(1)
+        .maybeSingle();
+
+      if (termErr) {
+        if (alive) setErr(termErr.message);
+        if (alive) setLoading(false);
+        return;
+      }
+      if (!termRow?.term_id) {
+        if (alive) setErr(`Term not found: ${termCode}`);
+        if (alive) setLoading(false);
+        return;
+      }
+
+      // section_schedules for student's section
+      const { data, error } = await supabase
+        .from("section_schedules")
+        .select(
+          `
+          schedule_id,
+          sy_id,
+          term_id,
+          section_id,
+          day_of_week,
+          period_no,
+          start_time,
+          end_time,
+          room,
+          subject_id,
+          teacher_id,
+          subjects:subject_id (
+            subject_id,
+            subject_code,
+            subject_title
+          ),
+          teachers:teacher_id (
+            user_id,
+            first_name,
+            last_name,
+            employee_number
+          )
+        `
+        )
+        .eq("sy_id", activeSY.sy_id)
+        .eq("term_id", termRow.term_id)
+        .eq("section_id", student.section_id);
+
+      if (error) {
+        if (alive) setErr(error.message);
+        if (alive) setLoading(false);
+        return;
+      }
+
+      if (alive) setScheduleRows(data ?? []);
+      if (alive) setLoading(false);
+    }
+
+    loadSchedules();
+
+    return () => {
+      alive = false;
+    };
+  }, [activeSY?.sy_id, student?.section_id, termCode]);
+
+  // Range calculations
   const weekRange = useMemo(() => {
-    const d = new Date(selectedDate);
-    const day = d.getDay(); // 0 Sun
-    const diffToMon = (day + 6) % 7;
-    const start = addDays(d, -diffToMon);
-    const end = addDays(start, 6);
+    const start = startOfWeekMon(selectedDate);
+    const end = endOfWeekSun(selectedDate);
     return { start, end };
   }, [selectedDate]);
 
-  const weekItems = useMemo(() => {
-    const { start, end } = weekRange;
-    const s = new Date(start.getFullYear(), start.getMonth(), start.getDate());
-    const e = new Date(end.getFullYear(), end.getMonth(), end.getDate(), 23, 59, 59);
-    return items.filter((x) => x.start >= s && x.start <= e).sort((a, b) => a.start - b.start);
-  }, [items, weekRange]);
+  const monthRange = useMemo(() => {
+    const start = startOfMonth(selectedDate);
+    const end = endOfMonth(selectedDate);
+    return { start, end };
+  }, [selectedDate]);
+
+  // Materialize events for week + month so UI works naturally
+  const weekEvents = useMemo(() => {
+    return materializeSchedule(scheduleRows, weekRange.start, weekRange.end);
+  }, [scheduleRows, weekRange]);
+
+  const monthEvents = useMemo(() => {
+    return materializeSchedule(scheduleRows, monthRange.start, monthRange.end);
+  }, [scheduleRows, monthRange]);
+
+  const todayItems = useMemo(() => {
+    const list = materializeSchedule(scheduleRows, selectedDate, selectedDate);
+    return list.sort((a, b) => a.start - b.start);
+  }, [scheduleRows, selectedDate]);
 
   return (
     <div className="space-y-5">
@@ -125,10 +358,19 @@ export default function StudentSchedule() {
             </div>
             <div className="text-xs font-semibold" style={{ color: BRAND.muted }}>
               View your classes by day, week, or month
+              {activeSY?.sy_code ? ` • SY ${activeSY.sy_code}` : ""}
+              {termCode ? ` • ${termCode}` : ""}
             </div>
+            {err ? (
+              <div className="mt-2 text-xs font-semibold text-red-600">
+                Error: {err}
+              </div>
+            ) : null}
           </div>
 
           <div className="flex flex-wrap items-center gap-2">
+            {/* Term combo */}
+            <Select value={termCode} onChange={setTermCode} options={TERM_CODES} label="Term" />
             {["Today", "Week", "Month"].map((t) => (
               <button
                 key={t}
@@ -166,32 +408,51 @@ export default function StudentSchedule() {
               <ChevronRight className="h-5 w-5" style={{ color: BRAND.muted }} />
             </button>
 
-            <div className="rounded-2xl border bg-white/70 px-4 py-2 text-sm font-semibold"
-                 style={{ borderColor: BRAND.stroke, color: BRAND.brown }}>
+            <div
+              className="rounded-2xl border bg-white/70 px-4 py-2 text-sm font-semibold"
+              style={{ borderColor: BRAND.stroke, color: BRAND.brown }}
+            >
               {formatDateLong(selectedDate)}
             </div>
           </div>
 
           <div className="text-xs font-semibold" style={{ color: BRAND.muted }}>
-            Current time: <span style={{ color: BRAND.brown }}>{formatTime(now)}</span>
+            {loading ? (
+              <>Loading…</>
+            ) : (
+              <>
+                Current time:{" "}
+                <span style={{ color: BRAND.brown }}>{formatTime(now)}</span>
+              </>
+            )}
           </div>
         </div>
       </motion.div>
 
       {/* Content */}
       {tab === "Today" ? (
-        <TodayView items={todayItems} selectedDate={selectedDate} now={now} />
+        <TodayView items={todayItems} selectedDate={selectedDate} now={now} loading={loading} />
       ) : tab === "Week" ? (
-        <WeekView items={weekItems} range={weekRange} selectedDate={selectedDate} onJump={setSelectedDate} />
+        <WeekView
+          items={weekEvents}
+          range={weekRange}
+          selectedDate={selectedDate}
+          onJump={setSelectedDate}
+          loading={loading}
+        />
       ) : (
-        <MonthView items={items} selectedDate={selectedDate} onPick={setSelectedDate} />
+        <MonthView
+          items={monthEvents}
+          selectedDate={selectedDate}
+          onPick={setSelectedDate}
+          loading={loading}
+        />
       )}
     </div>
   );
 }
 
-function TodayView({ items, selectedDate, now }) {
-  // Determine status
+function TodayView({ items, selectedDate, now, loading }) {
   const enriched = items.map((x) => {
     let status = "Upcoming";
     if (now >= x.start && now <= x.end) status = "In Progress";
@@ -214,7 +475,9 @@ function TodayView({ items, selectedDate, now }) {
           Today View
         </div>
         <div className="text-xs font-semibold" style={{ color: BRAND.muted }}>
-          {nextClass ? (
+          {loading ? (
+            <>Loading…</>
+          ) : nextClass ? (
             <>
               Next class:{" "}
               <span style={{ color: BRAND.brown }}>
@@ -228,9 +491,8 @@ function TodayView({ items, selectedDate, now }) {
       </div>
 
       <div className="mt-4 space-y-3">
-        {enriched.length === 0 ? (
-          <div className="rounded-2xl border bg-white p-5 text-center"
-               style={{ borderColor: BRAND.stroke }}>
+        {!loading && enriched.length === 0 ? (
+          <div className="rounded-2xl border bg-white p-5 text-center" style={{ borderColor: BRAND.stroke }}>
             <div className="text-sm font-extrabold" style={{ color: BRAND.brown }}>
               No classes scheduled
             </div>
@@ -241,7 +503,7 @@ function TodayView({ items, selectedDate, now }) {
         ) : (
           enriched.map((c) => (
             <div
-              key={c.id}
+              key={`${c.id}-${c.start.toISOString()}`}
               className="rounded-2xl border bg-white p-4 transition"
               style={{ borderColor: BRAND.stroke }}
             >
@@ -312,10 +574,11 @@ function TodayView({ items, selectedDate, now }) {
   );
 }
 
-function WeekView({ items, range, selectedDate, onJump }) {
+function WeekView({ items, range, selectedDate, onJump, loading }) {
   const days = useMemo(() => {
     const arr = [];
-    for (let i = 0; i < 7; i++) arr.push(addDays(range.start, i));
+    const start = startOfDay(range.start);
+    for (let i = 0; i < 7; i++) arr.push(addDays(start, i));
     return arr;
   }, [range]);
 
@@ -349,6 +612,7 @@ function WeekView({ items, range, selectedDate, onJump }) {
                 background: active ? BRAND.softGoldBg : "white",
               }}
               onClick={() => onJump(d)}
+              disabled={loading}
             >
               <div className="text-xs font-extrabold" style={{ color: BRAND.brown }}>
                 {d.toLocaleDateString(undefined, { weekday: "short" })}
@@ -358,14 +622,14 @@ function WeekView({ items, range, selectedDate, onJump }) {
               </div>
 
               <div className="mt-2 space-y-2">
-                {dayItems.length === 0 ? (
+                {!loading && dayItems.length === 0 ? (
                   <div className="text-[11px] font-semibold" style={{ color: BRAND.muted }}>
                     No classes
                   </div>
                 ) : (
                   dayItems.slice(0, 3).map((c) => (
                     <div
-                      key={c.id}
+                      key={`${c.id}-${c.start.toISOString()}`}
                       className="rounded-xl border px-2 py-2"
                       style={{ borderColor: BRAND.stroke, background: "rgba(255,255,255,0.75)" }}
                     >
@@ -378,7 +642,7 @@ function WeekView({ items, range, selectedDate, onJump }) {
                     </div>
                   ))
                 )}
-                {dayItems.length > 3 ? (
+                {!loading && dayItems.length > 3 ? (
                   <div className="text-[11px] font-semibold" style={{ color: BRAND.muted }}>
                     +{dayItems.length - 3} more
                   </div>
@@ -396,7 +660,7 @@ function WeekView({ items, range, selectedDate, onJump }) {
         </div>
 
         <div className="mt-3 space-y-2">
-          {items.filter((x) => sameDay(x.date, selectedDate)).length === 0 ? (
+          {!loading && items.filter((x) => sameDay(x.date, selectedDate)).length === 0 ? (
             <div className="text-sm" style={{ color: BRAND.muted }}>
               No classes on this day.
             </div>
@@ -404,7 +668,11 @@ function WeekView({ items, range, selectedDate, onJump }) {
             items
               .filter((x) => sameDay(x.date, selectedDate))
               .map((c) => (
-                <div key={c.id} className="rounded-2xl border p-4" style={{ borderColor: BRAND.stroke }}>
+                <div
+                  key={`${c.id}-${c.start.toISOString()}`}
+                  className="rounded-2xl border p-4"
+                  style={{ borderColor: BRAND.stroke }}
+                >
                   <div className="flex items-start justify-between gap-2">
                     <div>
                       <div className="text-xs font-semibold" style={{ color: BRAND.muted }}>
@@ -436,21 +704,16 @@ function WeekView({ items, range, selectedDate, onJump }) {
   );
 }
 
-function MonthView({ items, selectedDate, onPick }) {
+function MonthView({ items, selectedDate, onPick, loading }) {
   const [cursor, setCursor] = useState(new Date(selectedDate.getFullYear(), selectedDate.getMonth(), 1));
 
   const grid = useMemo(() => {
     const start = new Date(cursor.getFullYear(), cursor.getMonth(), 1);
-    const end = new Date(cursor.getFullYear(), cursor.getMonth() + 1, 0);
     const startDay = start.getDay(); // Sun=0
-    const daysInMonth = end.getDate();
-
-    // Build 6 weeks grid
     const cells = [];
     let dayNum = 1 - startDay;
     for (let i = 0; i < 42; i++) {
-      const d = new Date(cursor.getFullYear(), cursor.getMonth(), dayNum);
-      cells.push(d);
+      cells.push(new Date(cursor.getFullYear(), cursor.getMonth(), dayNum));
       dayNum++;
     }
     return cells;
@@ -480,8 +743,10 @@ function MonthView({ items, selectedDate, onPick }) {
           >
             <ChevronLeft className="h-5 w-5" style={{ color: BRAND.muted }} />
           </button>
-          <div className="rounded-2xl border bg-white/70 px-4 py-2 text-sm font-semibold"
-               style={{ borderColor: BRAND.stroke, color: BRAND.brown }}>
+          <div
+            className="rounded-2xl border bg-white/70 px-4 py-2 text-sm font-semibold"
+            style={{ borderColor: BRAND.stroke, color: BRAND.brown }}
+          >
             {monthLabel}
           </div>
           <button
@@ -497,7 +762,9 @@ function MonthView({ items, selectedDate, onPick }) {
 
       <div className="mt-4 grid grid-cols-7 gap-2 text-xs font-semibold" style={{ color: BRAND.muted }}>
         {["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"].map((d) => (
-          <div key={d} className="text-center">{d}</div>
+          <div key={d} className="text-center">
+            {d}
+          </div>
         ))}
       </div>
 
@@ -518,12 +785,10 @@ function MonthView({ items, selectedDate, onPick }) {
                 background: isSel ? BRAND.softGoldBg : "white",
                 opacity: inMonth ? 1 : 0.45,
               }}
+              disabled={loading}
             >
               <div className="flex items-center justify-between">
-                <div
-                  className="text-sm font-extrabold"
-                  style={{ color: BRAND.brown }}
-                >
+                <div className="text-sm font-extrabold" style={{ color: BRAND.brown }}>
                   {d.getDate()}
                 </div>
                 {isToday ? (
@@ -562,7 +827,7 @@ function MonthView({ items, selectedDate, onPick }) {
         </div>
 
         <div className="mt-3 space-y-2">
-          {items.filter((x) => sameDay(x.date, selectedDate)).length === 0 ? (
+          {!loading && items.filter((x) => sameDay(x.date, selectedDate)).length === 0 ? (
             <div className="text-sm" style={{ color: BRAND.muted }}>
               No classes scheduled.
             </div>
@@ -571,7 +836,11 @@ function MonthView({ items, selectedDate, onPick }) {
               .filter((x) => sameDay(x.date, selectedDate))
               .sort((a, b) => a.start - b.start)
               .map((c) => (
-                <div key={c.id} className="rounded-2xl border p-4" style={{ borderColor: BRAND.stroke }}>
+                <div
+                  key={`${c.id}-${c.start.toISOString()}`}
+                  className="rounded-2xl border p-4"
+                  style={{ borderColor: BRAND.stroke }}
+                >
                   <div className="text-xs font-semibold" style={{ color: BRAND.muted }}>
                     {formatTime(c.start)} — {formatTime(c.end)}
                   </div>

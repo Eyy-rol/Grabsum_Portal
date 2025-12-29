@@ -103,3 +103,4 @@ export default function ClassModal({ open, onClose, data, title = "Student Login
     </>
   );
 }
+``

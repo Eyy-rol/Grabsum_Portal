@@ -1,7 +1,8 @@
 // src/pages/teacher/TeacherSchedule.jsx
-import React, { useMemo, useState } from "react";
-import { motion, AnimatePresence } from "framer-motion";
+import React, { useEffect, useMemo, useState } from "react";
+import { motion } from "framer-motion";
 import { CalendarDays, Clock, MapPin, Users, ChevronLeft, ChevronRight } from "lucide-react";
+import { supabase } from "../lib/supabaseClient";
 
 const BRAND = {
   brown: "#2b1a12",
@@ -12,6 +13,9 @@ const BRAND = {
   softGoldBg: "rgba(212,166,47,0.14)",
   cardShadow: "0 14px 34px rgba(43,26,18,0.10)",
 };
+
+const TERM_CODES = ["1st Sem", "2nd Sem"];
+const DEFAULT_TERM = "1st Sem";
 
 function pad2(n) { return String(n).padStart(2, "0"); }
 function formatTime(date) {
@@ -29,50 +33,287 @@ function formatDateLong(d) {
   return d.toLocaleDateString(undefined, { weekday: "long", year: "numeric", month: "long", day: "numeric" });
 }
 
+function startOfDay(d) { return new Date(d.getFullYear(), d.getMonth(), d.getDate()); }
+function endOfDay(d) { return new Date(d.getFullYear(), d.getMonth(), d.getDate(), 23, 59, 59, 999); }
+function startOfWeekMon(d) {
+  const x = startOfDay(d);
+  const day = x.getDay(); // Sun=0
+  const diffToMon = (day + 6) % 7;
+  return addDays(x, -diffToMon);
+}
+function endOfWeekSun(d) { return endOfDay(addDays(startOfWeekMon(d), 6)); }
+function startOfMonth(d) { return new Date(d.getFullYear(), d.getMonth(), 1); }
+function endOfMonth(d) { return endOfDay(new Date(d.getFullYear(), d.getMonth() + 1, 0)); }
+function dayIndexToCode(idx) { return ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"][idx]; }
+function hhmmToParts(t) {
+  const s = String(t); // "13:00:00" or "13:00"
+  const hh = parseInt(s.slice(0, 2), 10);
+  const mm = parseInt(s.slice(3, 5), 10);
+  return { hh, mm };
+}
+
+function Select({ value, onChange, options, label }) {
+  return (
+    <select
+      value={value}
+      onChange={(e) => onChange(e.target.value)}
+      className="rounded-2xl border bg-white/70 px-4 py-2 text-sm font-semibold outline-none transition focus:bg-white"
+      style={{ borderColor: BRAND.stroke, color: BRAND.brown }}
+    >
+      {options.map((o) => (
+        <option key={o} value={o}>
+          {label}: {o}
+        </option>
+      ))}
+    </select>
+  );
+}
+
+/**
+ * Materialize recurring schedules (day_of_week, start_time, end_time) into concrete events in [rangeStart..rangeEnd].
+ */
+function materializeSchedule(scheduleRows, rangeStart, rangeEnd) {
+  const days = [];
+  let cur = startOfDay(rangeStart);
+  const end = startOfDay(rangeEnd);
+
+  while (cur <= end) {
+    days.push(new Date(cur));
+    cur = addDays(cur, 1);
+  }
+
+  const events = [];
+  for (const d of days) {
+    const dow = dayIndexToCode(d.getDay());
+    const rowsForDay = scheduleRows.filter((r) => r.day_of_week === dow);
+
+    for (const r of rowsForDay) {
+      const { hh: sh, mm: sm } = hhmmToParts(r.start_time);
+      const { hh: eh, mm: em } = hhmmToParts(r.end_time);
+
+      const start = new Date(d.getFullYear(), d.getMonth(), d.getDate(), sh, sm);
+      const endDt = new Date(d.getFullYear(), d.getMonth(), d.getDate(), eh, em);
+
+      events.push({
+        id: `${r.schedule_id}-${start.toISOString()}`,
+        date: startOfDay(d),
+        start,
+        end: endDt,
+        subject: r.subjects?.subject_title ?? "—",
+        className: r.sections?.section_name ?? "—",
+        room: r.room ?? "—",
+        students: r._studentCount ?? 0,
+        day_of_week: r.day_of_week,
+        period_no: r.period_no,
+        _raw: r,
+      });
+    }
+  }
+
+  events.sort((a, b) => a.start - b.start);
+  return events;
+}
+
 export default function TeacherSchedule() {
   const [tab, setTab] = useState("Today");
   const [selectedDate, setSelectedDate] = useState(new Date());
   const [selected, setSelected] = useState(null);
+
+  const [termCode, setTermCode] = useState(DEFAULT_TERM);
+  const [activeSY, setActiveSY] = useState(null); // { sy_id, sy_code }
+  const [term, setTerm] = useState(null); // { term_id, term_code }
+  const [scheduleRows, setScheduleRows] = useState([]); // recurring rows
+  const [loading, setLoading] = useState(true);
+  const [err, setErr] = useState(null);
+
   const now = new Date();
 
-  const items = useMemo(() => {
-    const base = new Date();
-    const today = new Date(base.getFullYear(), base.getMonth(), base.getDate());
-    const mk = (offset, sh, sm, eh, em, subject, className, room, students) => {
-      const d = addDays(today, offset);
-      const start = new Date(d.getFullYear(), d.getMonth(), d.getDate(), sh, sm);
-      const end = new Date(d.getFullYear(), d.getMonth(), d.getDate(), eh, em);
-      return { id: `${subject}-${offset}-${sh}${sm}`, date: d, start, end, subject, className, room, students };
-    };
-    return [
-      mk(0, 8, 0, 9, 0, "Oral Communication", "HUMSS 11-C", "Room 201", 36),
-      mk(0, 10, 0, 11, 30, "General Mathematics", "ABM 11-B", "Room 305", 42),
-      mk(0, 13, 0, 14, 30, "UCSP", "STEM 11-A", "Room 109", 38),
-      mk(1, 9, 30, 11, 0, "Reading & Writing", "STEM 11-A", "Room 114", 38),
-      mk(2, 8, 0, 9, 0, "Oral Communication", "HUMSS 11-C", "Room 201", 36),
-      mk(3, 13, 0, 14, 30, "UCSP", "STEM 11-A", "Room 109", 38),
-    ];
-  }, []);
-
-  const dayItems = useMemo(
-    () => items.filter((x) => sameDay(x.date, selectedDate)).sort((a, b) => a.start - b.start),
-    [items, selectedDate]
-  );
-
+  // Week + month ranges based on selectedDate (for materialization)
   const weekRange = useMemo(() => {
-    const d = new Date(selectedDate);
-    const day = d.getDay();
-    const diffToMon = (day + 6) % 7;
-    const start = addDays(d, -diffToMon);
-    const end = addDays(start, 6);
+    const start = startOfWeekMon(selectedDate);
+    const end = endOfWeekSun(selectedDate);
     return { start, end };
   }, [selectedDate]);
 
-  const weekItems = useMemo(() => {
-    const s = new Date(weekRange.start.getFullYear(), weekRange.start.getMonth(), weekRange.start.getDate());
-    const e = new Date(weekRange.end.getFullYear(), weekRange.end.getMonth(), weekRange.end.getDate(), 23, 59, 59);
-    return items.filter((x) => x.start >= s && x.start <= e).sort((a, b) => a.start - b.start);
-  }, [items, weekRange]);
+  const monthRange = useMemo(() => {
+    const start = startOfMonth(selectedDate);
+    const end = endOfMonth(selectedDate);
+    return { start, end };
+  }, [selectedDate]);
+
+  // Load Active SY once
+  useEffect(() => {
+    let alive = true;
+    async function loadSY() {
+      setLoading(true);
+      setErr(null);
+
+      const { data: syRow, error: syErr } = await supabase
+        .from("school_years")
+        .select("sy_id, sy_code, status, start_date")
+        .eq("status", "Active")
+        .order("start_date", { ascending: false })
+        .limit(1)
+        .maybeSingle();
+
+      if (!alive) return;
+
+      if (syErr) {
+        setErr(syErr.message);
+        setLoading(false);
+        return;
+      }
+      if (!syRow?.sy_id) {
+        setErr("No Active school year found.");
+        setLoading(false);
+        return;
+      }
+
+      setActiveSY({ sy_id: syRow.sy_id, sy_code: syRow.sy_code });
+      setLoading(false);
+    }
+    loadSY();
+    return () => { alive = false; };
+  }, []);
+
+  // Load Term row whenever termCode changes
+  useEffect(() => {
+    let alive = true;
+    async function loadTerm() {
+      setLoading(true);
+      setErr(null);
+
+      const { data: tRow, error: tErr } = await supabase
+        .from("terms")
+        .select("term_id, term_code")
+        .eq("term_code", termCode)
+        .limit(1)
+        .maybeSingle();
+
+      if (!alive) return;
+
+      if (tErr) {
+        setErr(tErr.message);
+        setLoading(false);
+        return;
+      }
+      if (!tRow?.term_id) {
+        setErr(`Term not found: ${termCode}`);
+        setLoading(false);
+        return;
+      }
+
+      setTerm(tRow);
+      setLoading(false);
+    }
+    loadTerm();
+    return () => { alive = false; };
+  }, [termCode]);
+
+  // Load teacher schedule rows (recurring) whenever SY/term changes
+  useEffect(() => {
+    let alive = true;
+
+    async function loadSchedule() {
+      if (!activeSY?.sy_id || !term?.term_id) return;
+
+      setLoading(true);
+      setErr(null);
+
+      const { data: authData, error: authErr } = await supabase.auth.getUser();
+      if (!alive) return;
+
+      if (authErr) {
+        setErr(authErr.message);
+        setLoading(false);
+        return;
+      }
+      const user = authData?.user;
+      if (!user) {
+        setErr("Not authenticated.");
+        setLoading(false);
+        return;
+      }
+
+      // Fetch schedules for this teacher for active SY + selected term
+      const { data, error } = await supabase
+        .from("section_schedules")
+        .select(`
+          schedule_id,
+          sy_id,
+          term_id,
+          section_id,
+          day_of_week,
+          period_no,
+          start_time,
+          end_time,
+          room,
+          subject_id,
+          teacher_id,
+          subjects:subject_id (
+            subject_id,
+            subject_code,
+            subject_title
+          ),
+          sections:section_id (
+            section_id,
+            section_name
+          )
+        `)
+        .eq("sy_id", activeSY.sy_id)
+        .eq("term_id", term.term_id)
+        .eq("teacher_id", user.id);
+
+      if (!alive) return;
+
+      if (error) {
+        setErr(error.message);
+        setLoading(false);
+        return;
+      }
+
+      const rows = data ?? [];
+
+      // student counts per section (Enrolled only)
+      const sectionIds = Array.from(new Set(rows.map((r) => r.section_id).filter(Boolean)));
+      let countsMap = new Map();
+
+      if (sectionIds.length > 0) {
+        const { data: studentsRows, error: studErr } = await supabase
+          .from("students")
+          .select("section_id, status")
+          .in("section_id", sectionIds)
+          .eq("status", "Enrolled");
+
+        if (studErr) {
+          // don’t fail the whole page; just show 0 counts
+          console.warn("Student count query failed:", studErr.message);
+        } else {
+          for (const r of studentsRows ?? []) {
+            const k = r.section_id;
+            countsMap.set(k, (countsMap.get(k) ?? 0) + 1);
+          }
+        }
+      }
+
+      const withCounts = rows.map((r) => ({
+        ...r,
+        _studentCount: countsMap.get(r.section_id) ?? 0,
+      }));
+
+      setScheduleRows(withCounts);
+      setSelected(null);
+      setLoading(false);
+    }
+
+    loadSchedule();
+    return () => { alive = false; };
+  }, [activeSY?.sy_id, term?.term_id]);
+
+  // Materialize items based on view
+  const allMonthItems = useMemo(() => materializeSchedule(scheduleRows, monthRange.start, monthRange.end), [scheduleRows, monthRange]);
+  const dayItems = useMemo(() => materializeSchedule(scheduleRows, selectedDate, selectedDate), [scheduleRows, selectedDate]);
+  const weekItems = useMemo(() => materializeSchedule(scheduleRows, weekRange.start, weekRange.end), [scheduleRows, weekRange]);
 
   return (
     <div className="space-y-5">
@@ -91,10 +332,14 @@ export default function TeacherSchedule() {
             </div>
             <div className="text-xs font-semibold" style={{ color: BRAND.muted }}>
               Today / Week / Month view with timeline and details panel
+              {activeSY?.sy_code ? ` • SY ${activeSY.sy_code}` : ""}
+              {termCode ? ` • ${termCode}` : ""}
             </div>
+            {err ? <div className="mt-2 text-xs font-semibold text-red-600">Error: {err}</div> : null}
           </div>
 
           <div className="flex flex-wrap items-center gap-2">
+            <Select value={termCode} onChange={setTermCode} options={TERM_CODES} label="Term" />
             {["Today", "Week", "Month"].map((t) => (
               <button
                 key={t}
@@ -119,6 +364,7 @@ export default function TeacherSchedule() {
               style={{ borderColor: BRAND.stroke }}
               onClick={() => setSelectedDate((d) => addDays(d, -1))}
               aria-label="Previous day"
+              disabled={loading}
             >
               <ChevronLeft className="h-5 w-5" style={{ color: BRAND.muted }} />
             </button>
@@ -127,18 +373,27 @@ export default function TeacherSchedule() {
               style={{ borderColor: BRAND.stroke }}
               onClick={() => setSelectedDate((d) => addDays(d, 1))}
               aria-label="Next day"
+              disabled={loading}
             >
               <ChevronRight className="h-5 w-5" style={{ color: BRAND.muted }} />
             </button>
 
-            <div className="rounded-2xl border bg-white/70 px-4 py-2 text-sm font-semibold"
-                 style={{ borderColor: BRAND.stroke, color: BRAND.brown }}>
+            <div
+              className="rounded-2xl border bg-white/70 px-4 py-2 text-sm font-semibold"
+              style={{ borderColor: BRAND.stroke, color: BRAND.brown }}
+            >
               {formatDateLong(selectedDate)}
             </div>
           </div>
 
           <div className="text-xs font-semibold" style={{ color: BRAND.muted }}>
-            Current time: <span style={{ color: BRAND.brown }}>{formatTime(now)}</span>
+            {loading ? (
+              <>Loading…</>
+            ) : (
+              <>
+                Current time: <span style={{ color: BRAND.brown }}>{formatTime(now)}</span>
+              </>
+            )}
           </div>
         </div>
       </motion.div>
@@ -153,11 +408,11 @@ export default function TeacherSchedule() {
           style={{ borderColor: BRAND.stroke, boxShadow: BRAND.cardShadow }}
         >
           {tab === "Today" ? (
-            <TodayTimeline items={dayItems} now={now} onPick={setSelected} />
+            <TodayTimeline items={dayItems} now={now} onPick={setSelected} loading={loading} />
           ) : tab === "Week" ? (
-            <WeekGrid items={weekItems} range={weekRange} onPick={setSelected} />
+            <WeekGrid items={weekItems} range={weekRange} onPick={setSelected} loading={loading} />
           ) : (
-            <MonthMini items={items} selectedDate={selectedDate} onPickDate={setSelectedDate} />
+            <MonthMini items={allMonthItems} selectedDate={selectedDate} onPickDate={setSelectedDate} loading={loading} />
           )}
         </motion.div>
 
@@ -255,18 +510,18 @@ export default function TeacherSchedule() {
   );
 }
 
-function TodayTimeline({ items, now, onPick }) {
+function TodayTimeline({ items, now, onPick, loading }) {
   return (
     <div>
       <div className="text-sm font-extrabold" style={{ color: BRAND.brown }}>
         Today Timeline
       </div>
       <div className="mt-1 text-xs font-semibold" style={{ color: BRAND.muted }}>
-        Current time indicator is simulated (UI)
+        {loading ? "Loading…" : "Click a block to open details."}
       </div>
 
       <div className="mt-4 space-y-3">
-        {items.length === 0 ? (
+        {!loading && items.length === 0 ? (
           <div className="rounded-3xl border p-6 text-center" style={{ borderColor: BRAND.stroke }}>
             <div className="text-sm font-extrabold" style={{ color: BRAND.brown }}>
               No classes today
@@ -287,6 +542,7 @@ function TodayTimeline({ items, now, onPick }) {
                 onClick={() => onPick(c)}
                 className="w-full rounded-3xl border bg-white p-4 text-left transition hover:-translate-y-[1px]"
                 style={{ borderColor: BRAND.stroke }}
+                disabled={loading}
               >
                 <div className="flex items-start justify-between gap-2">
                   <div>
@@ -325,7 +581,7 @@ function TodayTimeline({ items, now, onPick }) {
   );
 }
 
-function WeekGrid({ items, range, onPick }) {
+function WeekGrid({ items, range, onPick, loading }) {
   const days = useMemo(() => {
     const arr = [];
     for (let i = 0; i < 7; i++) arr.push(addDays(range.start, i));
@@ -354,7 +610,7 @@ function WeekGrid({ items, range, onPick }) {
               </div>
 
               <div className="mt-3 space-y-2">
-                {dayItems.length === 0 ? (
+                {!loading && dayItems.length === 0 ? (
                   <div className="text-[11px] font-semibold" style={{ color: BRAND.muted }}>
                     No classes
                   </div>
@@ -365,6 +621,7 @@ function WeekGrid({ items, range, onPick }) {
                       onClick={() => onPick(c)}
                       className="w-full rounded-2xl border bg-white/70 px-2 py-2 text-left hover:bg-white"
                       style={{ borderColor: BRAND.stroke }}
+                      disabled={loading}
                     >
                       <div className="text-[11px] font-extrabold" style={{ color: BRAND.brown }}>
                         {c.subject}
@@ -384,7 +641,7 @@ function WeekGrid({ items, range, onPick }) {
   );
 }
 
-function MonthMini({ items, selectedDate, onPickDate }) {
+function MonthMini({ items, selectedDate, onPickDate, loading }) {
   const [cursor, setCursor] = useState(new Date(selectedDate.getFullYear(), selectedDate.getMonth(), 1));
 
   const grid = useMemo(() => {
@@ -418,6 +675,7 @@ function MonthMini({ items, selectedDate, onPickDate }) {
             style={{ borderColor: BRAND.stroke }}
             onClick={() => setCursor((d) => new Date(d.getFullYear(), d.getMonth() - 1, 1))}
             aria-label="Previous month"
+            disabled={loading}
           >
             <ChevronLeft className="h-5 w-5" style={{ color: BRAND.muted }} />
           </button>
@@ -426,6 +684,7 @@ function MonthMini({ items, selectedDate, onPickDate }) {
             style={{ borderColor: BRAND.stroke }}
             onClick={() => setCursor((d) => new Date(d.getFullYear(), d.getMonth() + 1, 1))}
             aria-label="Next month"
+            disabled={loading}
           >
             <ChevronRight className="h-5 w-5" style={{ color: BRAND.muted }} />
           </button>
@@ -453,9 +712,14 @@ function MonthMini({ items, selectedDate, onPickDate }) {
                 background: sel ? BRAND.softGoldBg : "white",
                 opacity: inMonth ? 1 : 0.45,
               }}
+              disabled={loading}
             >
               <div className="text-sm font-extrabold" style={{ color: BRAND.brown }}>{d.getDate()}</div>
-              {has ? <div className="mt-2 h-2 w-2 rounded-full" style={{ background: BRAND.gold }} /> : <div className="mt-2 text-[11px]" style={{ color: BRAND.muted }}>—</div>}
+              {has ? (
+                <div className="mt-2 h-2 w-2 rounded-full" style={{ background: BRAND.gold }} />
+              ) : (
+                <div className="mt-2 text-[11px]" style={{ color: BRAND.muted }}>—</div>
+              )}
             </button>
           );
         })}
