@@ -21,6 +21,7 @@ import {
 } from "lucide-react";
 
 import logo from "../assets/grabsum-logo.png";
+import { supabase } from "../lib/supabaseClient"; // ✅ add
 
 // -----------------------------------------------------
 // Brand tokens (aligned with your Login aesthetic)
@@ -67,6 +68,7 @@ function titleFromPath(path: string) {
 
 export default function TeacherLayout() {
   const location = useLocation();
+  const nav = useNavigate();
   const title = useMemo(() => titleFromPath(location.pathname), [location.pathname]);
 
   // sidebar collapse state (persist)
@@ -79,14 +81,24 @@ export default function TeacherLayout() {
     localStorage.setItem("teacher_sidebar_collapsed", collapsed ? "1" : "0");
   }, [collapsed]);
 
+  // ✅ Logout wired to Supabase
+  async function handleLogout(): Promise<void> {
+    try {
+      const { error } = await supabase.auth.signOut();
+      if (error) console.error("signOut error:", error);
+    } finally {
+      nav("/login", { replace: true });
+    }
+  }
+
   return (
     <div className={`min-h-screen font-[Nunito] ${BRAND.pageBg}`}>
       <div className="mx-auto max-w-7xl px-4 py-4 md:px-6 md:py-6">
         <div className="grid grid-cols-1 gap-4 md:grid-cols-[auto_1fr]">
-          <TeacherSidebar collapsed={collapsed} setCollapsed={setCollapsed} />
+          <TeacherSidebar collapsed={collapsed} setCollapsed={setCollapsed} onLogout={handleLogout} />
 
           <main className="space-y-4">
-            <TeacherTopbar title={title} />
+            <TeacherTopbar title={title} onLogout={handleLogout} />
 
             <AnimatePresence mode="wait">
               <motion.div
@@ -121,9 +133,11 @@ export default function TeacherLayout() {
 function TeacherSidebar({
   collapsed,
   setCollapsed,
+  onLogout,
 }: {
   collapsed: boolean;
   setCollapsed: React.Dispatch<React.SetStateAction<boolean>>;
+  onLogout: () => Promise<void>;
 }) {
   const nav = useNavigate();
 
@@ -189,10 +203,7 @@ function TeacherSidebar({
       </div>
 
       {/* Bottom profile */}
-      <div
-        className="mt-5 rounded-3xl border bg-white/70 p-3"
-        style={{ borderColor: "rgba(43,26,18,0.12)" }}
-      >
+      <div className="mt-5 rounded-3xl border bg-white/70 p-3" style={{ borderColor: "rgba(43,26,18,0.12)" }}>
         <div className="flex items-center gap-3">
           <img
             src="https://api.dicebear.com/8.x/initials/svg?seed=Teacher"
@@ -225,7 +236,7 @@ function TeacherSidebar({
           </button>
 
           <button
-            onClick={() => alert("Hook this to Supabase signOut() later.")}
+            onClick={onLogout} // ✅ wired
             className="inline-flex items-center justify-center gap-2 rounded-2xl border bg-white/70 px-3 py-2 text-sm font-semibold hover:bg-white transition"
             style={{ borderColor: "rgba(43,26,18,0.12)", color: "#b91c1c" }}
             title="Logout"
@@ -274,7 +285,7 @@ function TeacherSideLink({ item, collapsed }: { item: NavItem; collapsed: boolea
 // -----------------------------------------------------
 // Topbar (Dashboard title + search + notif + profile dropdown)
 // -----------------------------------------------------
-function TeacherTopbar({ title }: { title: string }) {
+function TeacherTopbar({ title, onLogout }: { title: string; onLogout: () => Promise<void> }) {
   const nav = useNavigate();
   const [open, setOpen] = useState(false);
   const dropdownRef = useRef<HTMLDivElement | null>(null);
@@ -401,7 +412,10 @@ function TeacherTopbar({ title }: { title: string }) {
                     icon={LogOut}
                     label="Logout"
                     danger
-                    onClick={() => alert("Hook this to Supabase signOut() later.")}
+                    onClick={async () => {
+                      setOpen(false);
+                      await onLogout(); // ✅ wired
+                    }}
                   />
                 </motion.div>
               ) : null}

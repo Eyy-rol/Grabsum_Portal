@@ -1,6 +1,5 @@
-
 // src/pages/auth/PreEnroll.jsx
-import React, { useMemo, useRef, useState } from "react";
+import React, { useMemo, useRef, useState, useEffect } from "react";
 import { Link, useNavigate } from "react-router-dom";
 import { motion, AnimatePresence } from "framer-motion";
 import {
@@ -8,13 +7,13 @@ import {
   User,
   Mail,
   Phone,
-  Hash,
   Calendar,
   MapPin,
   Users,
   GraduationCap,
   CheckCircle2,
   Printer,
+  Hash,
 } from "lucide-react";
 
 import { supabase } from "../lib/supabaseClient";
@@ -43,8 +42,13 @@ function onlyDigits(v) {
   return String(v || "").replace(/[^0-9]/g, "");
 }
 
-// FRONTEND generated: MM-DDNN
-// NOTE: Best-effort ordering; for real guaranteed sequence, do server-side.
+// LRN: typically 12 digits
+function isLRN(v) {
+  const s = onlyDigits(v);
+  return s.length === 12;
+}
+
+// FRONTEND generated: MM-DDNN (Application Code)
 async function generateApplicationId(supabaseClient) {
   const now = new Date();
   const mm = pad2(now.getMonth() + 1);
@@ -67,7 +71,7 @@ async function generateApplicationId(supabaseClient) {
 function computeSchedule(submittedAt = new Date()) {
   const scheduled = new Date(submittedAt);
   scheduled.setDate(scheduled.getDate() + 3);
-  scheduled.setHours(8, 0, 0, 0); // 8:00 AM default
+  scheduled.setHours(8, 0, 0, 0);
 
   return {
     submissionISO: submittedAt.toISOString(),
@@ -109,17 +113,11 @@ function formatTimeOnly(iso) {
 function buildFullName({ st_fname, st_lname, st_mi, st_ext }) {
   const mi = (st_mi || "").trim();
   const ext = (st_ext || "").trim();
-  return [
-    (st_fname || "").trim(),
-    mi ? `${mi}.` : "",
-    (st_lname || "").trim(),
-    ext,
-  ]
+  return [(st_fname || "").trim(), mi ? `${mi}.` : "", (st_lname || "").trim(), ext]
     .filter(Boolean)
     .join(" ");
 }
 
-// Minimal "requirements to bring" (edit as needed)
 const DEFAULT_REQUIREMENTS = [
   "Printed Pre-enrollment slip (Application Code)",
   "Photocopy of PSA Birth Certificate",
@@ -128,26 +126,13 @@ const DEFAULT_REQUIREMENTS = [
   "Good Moral Certificate",
 ];
 
-const STRANDS = [
-  { value: "STEM", label: "STEM (Science, Technology, Engineering, Math)" },
-  { value: "ABM", label: "ABM (Accountancy, Business, Management)" },
-  { value: "HUMSS", label: "HUMSS (Humanities and Social Sciences)" },
-  { value: "GAS", label: "GAS (General Academic Strand)" },
-  { value: "TVL", label: "TVL (Technical-Vocational-Livelihood)" },
-];
-
-const GRADE_LEVELS = [
-  { value: "Grade 11", label: "Grade 11" },
-  { value: "Grade 12", label: "Grade 12" },
-];
-
 export default function PreEnroll() {
   const nav = useNavigate();
   const printRef = useRef(null);
 
   // Student identity
-  const [stNumber, setStNumber] = useState("");
   const [email, setEmail] = useState("");
+  const [lrn, setLrn] = useState("");
 
   // Name fields
   const [fname, setFname] = useState("");
@@ -157,7 +142,7 @@ export default function PreEnroll() {
 
   // Personal info
   const [gender, setGender] = useState("");
-  const [bdate, setBdate] = useState(""); // yyyy-mm-dd
+  const [bdate, setBdate] = useState("");
   const [bplace, setBplace] = useState("");
   const [address, setAddress] = useState("");
   const [civilStatus, setCivilStatus] = useState("");
@@ -170,9 +155,10 @@ export default function PreEnroll() {
   const [guardianContact, setGuardianContact] = useState("");
   const [guardianRelationship, setGuardianRelationship] = useState("");
 
-  // Academic
-  const [gradeLevel, setGradeLevel] = useState("");
-  const [track, setTrack] = useState("");
+  // ✅ Academic (FK-based)
+  const [gradeId, setGradeId] = useState("");
+  const [trackId, setTrackId] = useState("");
+  const [strandId, setStrandId] = useState("");
 
   // Terms
   const [agreed, setAgreed] = useState(false);
@@ -185,42 +171,112 @@ export default function PreEnroll() {
   // receipt after insert
   const [receipt, setReceipt] = useState(null);
 
+  /* ===================== Lookups: grades/tracks/strands ===================== */
+
+  const [grades, setGrades] = useState([]);
+  const [tracks, setTracks] = useState([]);
+  const [strands, setStrands] = useState([]);
+  const [lookupLoading, setLookupLoading] = useState(true);
+
+  useEffect(() => {
+    let alive = true;
+
+    (async () => {
+      try {
+        setLookupLoading(true);
+
+        const [gRes, tRes, sRes] = await Promise.all([
+          supabase
+            .from("grade_levels")
+            .select("grade_id, grade_level, description")
+            .order("grade_level", { ascending: true }),
+          supabase
+            .from("tracks")
+            .select("track_id, track_code, description")
+            .order("track_code", { ascending: true }),
+          supabase
+            .from("strands")
+            .select("strand_id, track_id, strand_code, description")
+            .order("strand_code", { ascending: true }),
+        ]);
+
+        if (gRes.error) throw gRes.error;
+        if (tRes.error) throw tRes.error;
+        if (sRes.error) throw sRes.error;
+
+        if (!alive) return;
+        setGrades(gRes.data ?? []);
+        setTracks(tRes.data ?? []);
+        setStrands(sRes.data ?? []);
+      } catch (e) {
+        // keep form usable, but show message
+        setFormError(String(e?.message || e || "Failed to load program options."));
+      } finally {
+        if (alive) setLookupLoading(false);
+      }
+    })();
+
+    return () => {
+      alive = false;
+    };
+  }, []);
+
+  // ✅ cascade strand by track
+  const strandsForTrack = useMemo(() => {
+    if (!trackId) return [];
+    return (strands ?? []).filter((s) => String(s.track_id) === String(trackId));
+  }, [strands, trackId]);
+
+  // ✅ clear strand if track changes (avoid FK mismatch)
+  useEffect(() => {
+    setStrandId("");
+  }, [trackId]);
+
+  // maps for receipt display
+  const gradeMap = useMemo(() => {
+    const m = new Map();
+    (grades ?? []).forEach((g) => m.set(String(g.grade_id), String(g.grade_level)));
+    return m;
+  }, [grades]);
+
+  const trackMap = useMemo(() => {
+    const m = new Map();
+    (tracks ?? []).forEach((t) => m.set(String(t.track_id), String(t.track_code)));
+    return m;
+  }, [tracks]);
+
+  const strandMap = useMemo(() => {
+    const m = new Map();
+    (strands ?? []).forEach((s) => m.set(String(s.strand_id), String(s.strand_code)));
+    return m;
+  }, [strands]);
+
+  /* ===================== Validation ===================== */
+
   const errors = useMemo(() => {
     const e = {};
 
-    // required fields based on your table screenshot
     if (!fname.trim()) e.fname = "First name is required.";
     if (!lname.trim()) e.lname = "Last name is required.";
 
     if (!email.trim()) e.email = "Email is required.";
     else if (!isEmail(email)) e.email = "Enter a valid email address.";
 
-    // student number (required in your table)
-    if (!stNumber.trim()) e.stNumber = "Student number is required.";
+    if (!onlyDigits(lrn)) e.lrn = "LRN is required.";
+    else if (!isLRN(lrn)) e.lrn = "LRN must be 12 digits.";
 
-    // guardian/contact (table requires guardian fields)
     if (!guardianName.trim()) e.guardianName = "Guardian name is required.";
     if (!guardianContact.trim()) e.guardianContact = "Guardian contact is required.";
 
-    // academic
-    if (!gradeLevel) e.gradeLevel = "Grade level is required.";
-    if (!track) e.track = "Strand/Track is required.";
+    // ✅ FK academic required
+    if (!gradeId) e.gradeId = "Grade level is required.";
+    if (!trackId) e.trackId = "Track is required.";
+    if (!strandId) e.strandId = "Strand is required.";
 
-    // terms
     if (!agreed) e.agreed = "You must agree to the Terms & Conditions.";
 
     return e;
-  }, [
-    fname,
-    lname,
-    email,
-    stNumber,
-    guardianName,
-    guardianContact,
-    gradeLevel,
-    track,
-    agreed,
-  ]);
+  }, [fname, lname, email, lrn, guardianName, guardianContact, gradeId, trackId, strandId, agreed]);
 
   const canSubmit = Object.keys(errors).length === 0 && !loading;
 
@@ -228,8 +284,36 @@ export default function PreEnroll() {
     setTouched((t) => ({ ...t, [key]: true }));
   }
 
+  async function ensureNoDuplicateLRN(lrnDigits) {
+    const { data, error } = await supabase
+      .from("enrollment")
+      .select("id, application_id, st_application_status, st_created_at, st_email")
+      .eq("st_lrn", lrnDigits)
+      .eq("is_archived", false)
+      .order("id", { ascending: false })
+      .limit(1);
+
+    if (error) {
+      const msg = String(error.message || "");
+      if (msg.toLowerCase().includes("st_lrn") && msg.toLowerCase().includes("does not exist")) {
+        throw new Error(
+          "Missing column: enrollment.st_lrn. Please add it in DB, then retry. (ALTER TABLE enrollment ADD COLUMN st_lrn varchar(20);)"
+        );
+      }
+      throw error;
+    }
+
+    if (data && data.length > 0) {
+      const existing = data[0];
+      throw new Error(
+        `Duplicate LRN detected. Existing application: ${existing.application_id || "(no code)"} (status: ${
+          existing.st_application_status || "unknown"
+        }). Please contact the admin.`
+      );
+    }
+  }
+
   async function submitEnrollment(payload) {
-    // retry best-effort if application_id conflicts
     for (let attempt = 1; attempt <= 5; attempt++) {
       const submittedAt = new Date();
       const applicationId = await generateApplicationId(supabase);
@@ -238,16 +322,17 @@ export default function PreEnroll() {
       const insertPayload = {
         ...payload,
 
-        // FRONTEND GENERATED
         application_id: applicationId,
         st_submission_date: submissionISO,
         st_scheduled_date: scheduledISO,
         st_scheduled_time: scheduledISO,
 
-        // SYSTEM GENERATED FIELDS (exclude these from form)
+        // keep your existing behavior
         st_application_status: "pending",
         st_agreed_terms: true,
         st_terms_agreed_at: new Date().toISOString(),
+
+        st_number: null,
       };
 
       const { data, error } = await supabase
@@ -257,12 +342,14 @@ export default function PreEnroll() {
           [
             "application_id",
             "st_number",
+            "st_lrn",
             "st_fname",
             "st_lname",
             "st_mi",
             "st_ext",
-            "st_grade_level",
-            "st_track",
+            "grade_id",
+            "track_id",
+            "strand_id",
             "st_submission_date",
             "st_scheduled_date",
             "st_scheduled_time",
@@ -273,7 +360,8 @@ export default function PreEnroll() {
       if (!error) return data;
 
       const msg = String(error.message || "").toLowerCase();
-      const isDuplicate = msg.includes("duplicate") || msg.includes("unique") || msg.includes("application_id");
+      const isDuplicate =
+        msg.includes("duplicate") || msg.includes("unique") || msg.includes("application_id");
       if (!isDuplicate) throw error;
     }
 
@@ -284,16 +372,16 @@ export default function PreEnroll() {
     e.preventDefault();
     setFormError("");
 
-    // mark all required fields as touched
     setTouched({
       fname: true,
       lname: true,
       email: true,
-      stNumber: true,
+      lrn: true,
       guardianName: true,
       guardianContact: true,
-      gradeLevel: true,
-      track: true,
+      gradeId: true,
+      trackId: true,
+      strandId: true,
       agreed: true,
     });
 
@@ -302,9 +390,10 @@ export default function PreEnroll() {
     try {
       setLoading(true);
 
+      const lrnDigits = onlyDigits(lrn);
+      await ensureNoDuplicateLRN(lrnDigits);
+
       const payload = {
-        // table fields (based on your screenshot)
-        st_number: stNumber.trim(),
         st_fname: fname.trim(),
         st_lname: lname.trim(),
         st_mi: mi.trim(),
@@ -316,7 +405,8 @@ export default function PreEnroll() {
         st_civil_status: civilStatus.trim(),
         st_previous_school: prevSchool.trim(),
 
-        st_email: email.trim(),
+        st_email: email.trim().toLowerCase(),
+        st_lrn: lrnDigits,
 
         st_father_name: fatherName.trim(),
         st_mother_name: motherName.trim(),
@@ -325,11 +415,18 @@ export default function PreEnroll() {
         st_guardian_contact: guardianContact.trim(),
         st_guardian_relationship: guardianRelationship.trim(),
 
-        st_grade_level: gradeLevel,
-        st_track: track,
+        // ✅ FK columns (matches your enrollment table)
+        grade_id: gradeId,
+        track_id: trackId,
+        strand_id: strandId,
+
+        // optional legacy columns (you can remove later)
+        st_grade_level: gradeMap.get(String(gradeId)) ? String(gradeMap.get(String(gradeId))) : null,
+        st_track: trackMap.get(String(trackId)) ? String(trackMap.get(String(trackId))) : null,
       };
 
       const inserted = await submitEnrollment(payload);
+
       setReceipt({
         ...inserted,
         full_name: buildFullName({
@@ -341,7 +438,6 @@ export default function PreEnroll() {
         requirements: DEFAULT_REQUIREMENTS,
       });
 
-      // keep the user on the same page to print receipt
       window.scrollTo({ top: 0, behavior: "smooth" });
     } catch (err) {
       setFormError(err?.message || "Submission failed.");
@@ -395,19 +491,20 @@ export default function PreEnroll() {
     printWindow.document.close();
   }
 
+  const receiptProgram = receipt
+    ? `${gradeMap.get(String(receipt.grade_id || "")) || "—"} • ${
+        trackMap.get(String(receipt.track_id || "")) || "—"
+      } • ${strandMap.get(String(receipt.strand_id || "")) || "—"}`
+    : "";
+
   return (
-    <div
-      className="min-h-screen font-[Nunito]"
-      style={{
-        background: BRAND.bg,
-      }}
-    >
+    <div className="min-h-screen font-[Nunito]" style={{ background: BRAND.bg }}>
       <button
         onClick={() => nav(-1)}
         aria-label="Back"
         className="absolute left-6 top-6 grid h-10 w-10 place-items-center rounded-xl hover:bg-black/5 transition"
       >
-        <ArrowLeft className="h-5 w-5" style={{ color: "rgba(43,26,18,0.55)" }} />
+        <ArrowLeft className="h-5 w-5" style={{ color: BRAND.muted }} />
       </button>
 
       <div className="mx-auto max-w-6xl px-6">
@@ -435,10 +532,13 @@ export default function PreEnroll() {
               Pre-enrollment
             </h1>
 
-            <p className="mt-4 max-w-xl mx-auto lg:mx-0 text-base leading-relaxed" style={{ color: BRAND.muted }}>
+            <p
+              className="mt-4 max-w-xl mx-auto lg:mx-0 text-base leading-relaxed"
+              style={{ color: BRAND.muted }}
+            >
               Fill out the form to receive your <b>Application Code</b> and schedule.
               <br className="hidden md:block" />
-              Please bring the required documents on your scheduled date.
+              Student Number will be assigned after you are <b>enrolled</b> by the admin.
             </p>
 
             <div className="mt-20 text-xs" style={{ color: "rgba(43,26,18,0.45)" }}>
@@ -461,7 +561,6 @@ export default function PreEnroll() {
               }}
             >
               <div className="p-8 md:p-10">
-                {/* Receipt panel */}
                 <AnimatePresence>
                   {receipt ? (
                     <motion.div
@@ -481,8 +580,13 @@ export default function PreEnroll() {
                         <div className="p-5">
                           <div className="flex items-start justify-between gap-3">
                             <div>
-                              <div className="inline-flex items-center gap-2 rounded-full px-3 py-1 text-xs font-bold"
-                                style={{ background: "rgba(251,246,239,0.8)", border: `1px solid ${BRAND.stroke}` }}>
+                              <div
+                                className="inline-flex items-center gap-2 rounded-full px-3 py-1 text-xs font-bold"
+                                style={{
+                                  background: "rgba(251,246,239,0.8)",
+                                  border: `1px solid ${BRAND.stroke}`,
+                                }}
+                              >
                                 <CheckCircle2 className="h-4 w-4" style={{ color: BRAND.brown }} />
                                 Submitted
                               </div>
@@ -490,16 +594,17 @@ export default function PreEnroll() {
                                 Your application code and schedule are ready.
                               </div>
                             </div>
+
                             <button
                               onClick={printSlip}
                               className="inline-flex items-center gap-2 rounded-2xl border border-black/10 bg-white/80 px-3 py-2 text-sm font-semibold hover:bg-white"
+                              type="button"
                             >
                               <Printer className="h-4 w-4 text-black/60" />
                               Print
                             </button>
                           </div>
 
-                          {/* Printable content */}
                           <div ref={printRef} className="mt-4">
                             <div className="rounded-2xl bg-white p-4" style={{ border: `1px solid ${BRAND.stroke}` }}>
                               <div className="flex items-center justify-between gap-3">
@@ -515,7 +620,9 @@ export default function PreEnroll() {
                                   </div>
                                 </div>
                                 <div className="text-right">
-                                  <div className="text-xs" style={{ color: BRAND.muted }}>Application Code</div>
+                                  <div className="text-xs" style={{ color: BRAND.muted }}>
+                                    Application Code
+                                  </div>
                                   <div className="text-xl font-black tracking-wide" style={{ color: BRAND.brown }}>
                                     {receipt.application_id}
                                   </div>
@@ -523,20 +630,33 @@ export default function PreEnroll() {
                               </div>
 
                               <div className="mt-4 grid grid-cols-1 gap-3 sm:grid-cols-2">
-                                <div className="rounded-2xl p-3" style={{ background: BRAND.soft, border: `1px solid ${BRAND.stroke}` }}>
-                                  <div className="text-xs font-bold" style={{ color: BRAND.brown }}>Student</div>
+                                <div
+                                  className="rounded-2xl p-3"
+                                  style={{ background: BRAND.soft, border: `1px solid ${BRAND.stroke}` }}
+                                >
+                                  <div className="text-xs font-bold" style={{ color: BRAND.brown }}>
+                                    Student
+                                  </div>
                                   <div className="mt-1 text-sm font-semibold" style={{ color: BRAND.brown }}>
                                     {receipt.full_name}
                                   </div>
                                   <div className="mt-1 text-xs" style={{ color: BRAND.muted }}>
-                                    Student No.: {receipt.st_number}
+                                    LRN: {receipt.st_lrn || "(not saved)"}
+                                  </div>
+                                  <div className="mt-1 text-xs" style={{ color: BRAND.muted }}>
+                                    Student No.: (assigned upon enrollment)
                                   </div>
                                 </div>
 
-                                <div className="rounded-2xl p-3" style={{ background: BRAND.soft, border: `1px solid ${BRAND.stroke}` }}>
-                                  <div className="text-xs font-bold" style={{ color: BRAND.brown }}>Program</div>
+                                <div
+                                  className="rounded-2xl p-3"
+                                  style={{ background: BRAND.soft, border: `1px solid ${BRAND.stroke}` }}
+                                >
+                                  <div className="text-xs font-bold" style={{ color: BRAND.brown }}>
+                                    Program
+                                  </div>
                                   <div className="mt-1 text-sm font-semibold" style={{ color: BRAND.brown }}>
-                                    {receipt.st_grade_level} • {receipt.st_track}
+                                    {receiptProgram}
                                   </div>
                                   <div className="mt-1 text-xs" style={{ color: BRAND.muted }}>
                                     Submitted: {formatDateTime(receipt.st_submission_date)}
@@ -544,15 +664,25 @@ export default function PreEnroll() {
                                 </div>
                               </div>
 
-                              <div className="mt-3 rounded-2xl p-3" style={{ background: "rgba(212,166,47,0.12)", border: `1px solid ${BRAND.stroke}` }}>
-                                <div className="text-xs font-bold" style={{ color: BRAND.brown }}>Scheduled Date & Time</div>
+                              <div
+                                className="mt-3 rounded-2xl p-3"
+                                style={{
+                                  background: "rgba(212,166,47,0.12)",
+                                  border: `1px solid ${BRAND.stroke}`,
+                                }}
+                              >
+                                <div className="text-xs font-bold" style={{ color: BRAND.brown }}>
+                                  Scheduled Date & Time
+                                </div>
                                 <div className="mt-1 text-sm font-extrabold" style={{ color: BRAND.brown }}>
                                   {formatDateOnly(receipt.st_scheduled_date)} • {formatTimeOnly(receipt.st_scheduled_time)}
                                 </div>
                               </div>
 
                               <div className="mt-3 rounded-2xl p-3" style={{ background: "#fff", border: `1px solid ${BRAND.stroke}` }}>
-                                <div className="text-xs font-bold" style={{ color: BRAND.brown }}>Requirements to Bring</div>
+                                <div className="text-xs font-bold" style={{ color: BRAND.brown }}>
+                                  Requirements to Bring
+                                </div>
                                 <ul className="mt-2 list-disc pl-5 text-sm" style={{ color: BRAND.muted }}>
                                   {receipt.requirements.map((r) => (
                                     <li key={r}>{r}</li>
@@ -584,8 +714,13 @@ export default function PreEnroll() {
                   </div>
                 ) : null}
 
+                {lookupLoading ? (
+                  <div className="mt-4 rounded-2xl border border-black/10 bg-black/[0.02] px-4 py-3 text-sm font-semibold text-black/60">
+                    Loading program options…
+                  </div>
+                ) : null}
+
                 <form onSubmit={onSubmit} className="mt-6 space-y-4">
-                  {/* Row: First + Last */}
                   <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
                     <Field
                       label="First Name *"
@@ -607,26 +742,11 @@ export default function PreEnroll() {
                     />
                   </div>
 
-                  {/* MI + Ext */}
                   <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
-                    <Field
-                      label="Middle Initial"
-                      icon={User}
-                      value={mi}
-                      placeholder="M"
-                      onChange={setMi}
-                      maxLength={2}
-                    />
-                    <Field
-                      label="Extension"
-                      icon={User}
-                      value={ext}
-                      placeholder="Jr. / III"
-                      onChange={setExt}
-                    />
+                    <Field label="Middle Initial" icon={User} value={mi} placeholder="M" onChange={setMi} maxLength={2} />
+                    <Field label="Extension" icon={User} value={ext} placeholder="Jr. / III" onChange={setExt} />
                   </div>
 
-                  Email
                   <Field
                     label="Email Address *"
                     icon={Mail}
@@ -637,16 +757,16 @@ export default function PreEnroll() {
                     error={touched.email && errors.email}
                   />
 
-                  {/* Student number + Contact */}
                   <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
                     <Field
-                      label="Student Number *"
+                      label="LRN (12 digits) *"
                       icon={Hash}
-                      value={stNumber}
-                      placeholder="2025-0001"
-                      onChange={setStNumber}
-                      onBlur={() => touch("stNumber")}
-                      error={touched.stNumber && errors.stNumber}
+                      value={lrn}
+                      placeholder="123456789012"
+                      onChange={(v) => setLrn(onlyDigits(v))}
+                      onBlur={() => touch("lrn")}
+                      error={touched.lrn && errors.lrn}
+                      maxLength={12}
                     />
                     <Field
                       label="Guardian Contact *"
@@ -656,10 +776,10 @@ export default function PreEnroll() {
                       onChange={(v) => setGuardianContact(onlyDigits(v))}
                       onBlur={() => touch("guardianContact")}
                       error={touched.guardianContact && errors.guardianContact}
+                      maxLength={11}
                     />
                   </div>
 
-                  {/* Guardian + Relationship */}
                   <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
                     <Field
                       label="Guardian Name *"
@@ -679,25 +799,11 @@ export default function PreEnroll() {
                     />
                   </div>
 
-                  {/* Father + Mother */}
                   <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
-                    <Field
-                      label="Father Name"
-                      icon={Users}
-                      value={fatherName}
-                      placeholder="Father's full name"
-                      onChange={setFatherName}
-                    />
-                    <Field
-                      label="Mother Name"
-                      icon={Users}
-                      value={motherName}
-                      placeholder="Mother's full name"
-                      onChange={setMotherName}
-                    />
+                    <Field label="Father Name" icon={Users} value={fatherName} placeholder="Father's full name" onChange={setFatherName} />
+                    <Field label="Mother Name" icon={Users} value={motherName} placeholder="Mother's full name" onChange={setMotherName} />
                   </div>
 
-                  {/* Gender + Birthdate */}
                   <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
                     <SelectField
                       label="Gender"
@@ -707,33 +813,12 @@ export default function PreEnroll() {
                       options={["Male", "Female"]}
                       placeholder="Select gender"
                     />
-                    <DateField
-                      label="Birthdate"
-                      icon={Calendar}
-                      value={bdate}
-                      onChange={setBdate}
-                    />
+                    <DateField label="Birthdate" icon={Calendar} value={bdate} onChange={setBdate} />
                   </div>
 
-                  {/* Birthplace */}
-                  <Field
-                    label="Birthplace"
-                    icon={MapPin}
-                    value={bplace}
-                    placeholder="City / Province"
-                    onChange={setBplace}
-                  />
+                  <Field label="Birthplace" icon={MapPin} value={bplace} placeholder="City / Province" onChange={setBplace} />
+                  <TextareaField label="Current Address" icon={MapPin} value={address} placeholder="House no., street, barangay, city" onChange={setAddress} />
 
-                  {/* Address */}
-                  <TextareaField
-                    label="Current Address"
-                    icon={MapPin}
-                    value={address}
-                    placeholder="House no., street, barangay, city"
-                    onChange={setAddress}
-                  />
-
-                  {/* Civil + Prev school */}
                   <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
                     <SelectField
                       label="Civil Status"
@@ -743,36 +828,43 @@ export default function PreEnroll() {
                       options={["Single", "Married", "Separated", "Widowed"]}
                       placeholder="Select status"
                     />
-                    <Field
-                      label="Previous School"
-                      icon={GraduationCap}
-                      value={prevSchool}
-                      placeholder="Last school attended"
-                      onChange={setPrevSchool}
-                    />
+                    <Field label="Previous School" icon={GraduationCap} value={prevSchool} placeholder="Last school attended" onChange={setPrevSchool} />
                   </div>
 
-                  {/* Grade + Strand */}
-                  <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+                  {/* ✅ Grade + Track + Strand (DB-driven) */}
+                  <div className="grid grid-cols-1 gap-3 sm:grid-cols-3">
                     <SelectField
                       label="Year Level (Grade) *"
                       icon={GraduationCap}
-                      value={gradeLevel}
-                      onChange={setGradeLevel}
-                      options={GRADE_LEVELS.map((o) => o.label)}
+                      value={gradeId}
+                      onChange={setGradeId}
+                      options={(grades ?? []).map((g) => ({ value: g.grade_id, label: `Grade ${g.grade_level}` }))}
                       placeholder="Select grade"
-                      onBlur={() => touch("gradeLevel")}
-                      error={touched.gradeLevel && errors.gradeLevel}
+                      onBlur={() => touch("gradeId")}
+                      error={touched.gradeId && errors.gradeId}
                     />
+
                     <SelectField
-                      label="Strand/Track *"
+                      label="Track *"
                       icon={GraduationCap}
-                      value={track}
-                      onChange={setTrack}
-                      options={STRANDS.map((o) => o.value)}
-                      placeholder="Select strand"
-                      onBlur={() => touch("track")}
-                      error={touched.track && errors.track}
+                      value={trackId}
+                      onChange={setTrackId}
+                      options={(tracks ?? []).map((t) => ({ value: t.track_id, label: t.track_code }))}
+                      placeholder="Select track"
+                      onBlur={() => touch("trackId")}
+                      error={touched.trackId && errors.trackId}
+                    />
+
+                    <SelectField
+                      label="Strand *"
+                      icon={GraduationCap}
+                      value={strandId}
+                      onChange={setStrandId}
+                      options={strandsForTrack.map((s) => ({ value: s.strand_id, label: s.strand_code }))}
+                      placeholder={trackId ? "Select strand" : "Select track first"}
+                      onBlur={() => touch("strandId")}
+                      error={touched.strandId && errors.strandId}
+                      disabled={!trackId}
                     />
                   </div>
 
@@ -835,16 +927,11 @@ export default function PreEnroll() {
   );
 }
 
-function Field({
-  label,
-  icon: Icon,
-  value,
-  onChange,
-  onBlur,
-  placeholder,
-  error,
-  maxLength,
-}) {
+// -----------------------------------------------------
+// UI components
+// -----------------------------------------------------
+
+function Field({ label, icon: Icon, value, onChange, onBlur, placeholder, error, maxLength }) {
   return (
     <div>
       <label className="text-sm font-semibold" style={{ color: BRAND.brown }}>
@@ -853,10 +940,7 @@ function Field({
       <div className="mt-2">
         <div className="relative">
           {Icon ? (
-            <Icon
-              className="absolute left-4 top-1/2 -translate-y-1/2 h-4 w-4"
-              style={{ color: "rgba(43,26,18,0.55)" }}
-            />
+            <Icon className="absolute left-4 top-1/2 -translate-y-1/2 h-4 w-4" style={{ color: BRAND.muted }} />
           ) : null}
           <input
             value={value}
@@ -891,12 +975,7 @@ function TextareaField({ label, icon: Icon, value, onChange, placeholder }) {
         {label}
       </label>
       <div className="mt-2 relative">
-        {Icon ? (
-          <Icon
-            className="absolute left-4 top-4 h-4 w-4"
-            style={{ color: "rgba(43,26,18,0.55)" }}
-          />
-        ) : null}
+        {Icon ? <Icon className="absolute left-4 top-4 h-4 w-4" style={{ color: BRAND.muted }} /> : null}
         <textarea
           value={value}
           onChange={(e) => onChange(e.target.value)}
@@ -920,16 +999,12 @@ function TextareaField({ label, icon: Icon, value, onChange, placeholder }) {
   );
 }
 
-function SelectField({
-  label,
-  icon: Icon,
-  value,
-  onChange,
-  options,
-  placeholder,
-  onBlur,
-  error,
-}) {
+// ✅ updated: supports {value,label} objects + disabled
+function SelectField({ label, icon: Icon, value, onChange, options, placeholder, onBlur, error, disabled }) {
+  const normalized = (options ?? []).map((o) =>
+    typeof o === "string" ? { value: o, label: o } : o
+  );
+
   return (
     <div>
       <label className="text-sm font-semibold" style={{ color: BRAND.brown }}>
@@ -938,21 +1013,22 @@ function SelectField({
       <div className="mt-2">
         <div className="relative">
           {Icon ? (
-            <Icon
-              className="absolute left-4 top-1/2 -translate-y-1/2 h-4 w-4"
-              style={{ color: "rgba(43,26,18,0.55)" }}
-            />
+            <Icon className="absolute left-4 top-1/2 -translate-y-1/2 h-4 w-4" style={{ color: BRAND.muted }} />
           ) : null}
           <select
             value={value}
             onChange={(e) => onChange(e.target.value)}
             onBlur={onBlur}
+            disabled={disabled}
             className="w-full appearance-none rounded-xl pl-11 pr-10 py-3 text-sm outline-none transition"
             style={{
-              background: "rgba(251,246,239,0.6)",
+              background: disabled ? "rgba(0,0,0,0.03)" : "rgba(251,246,239,0.6)",
               border: `1px solid ${error ? "rgba(239,68,68,0.55)" : "rgba(43,26,18,0.22)"}`,
+              opacity: disabled ? 0.75 : 1,
+              cursor: disabled ? "not-allowed" : "pointer",
             }}
             onFocus={(e) => {
+              if (disabled) return;
               e.currentTarget.style.boxShadow = "0 0 0 4px rgba(212,166,47,0.18)";
               e.currentTarget.style.background = "rgba(251,246,239,0.85)";
             }}
@@ -961,15 +1037,13 @@ function SelectField({
             }}
           >
             <option value="">{placeholder}</option>
-            {options.map((o) => (
-              <option key={o} value={o}>
-                {o}
+            {normalized.map((o) => (
+              <option key={o.value} value={o.value}>
+                {o.label}
               </option>
             ))}
           </select>
-          <div className="pointer-events-none absolute right-3 top-1/2 -translate-y-1/2 text-black/50">
-            ▾
-          </div>
+          <div className="pointer-events-none absolute right-3 top-1/2 -translate-y-1/2 text-black/50">▾</div>
         </div>
         {error ? <div className="mt-2 text-xs font-semibold text-red-500">{error}</div> : null}
       </div>
@@ -985,12 +1059,7 @@ function DateField({ label, icon: Icon, value, onChange }) {
       </label>
       <div className="mt-2">
         <div className="relative">
-          {Icon ? (
-            <Icon
-              className="absolute left-4 top-1/2 -translate-y-1/2 h-4 w-4"
-              style={{ color: "rgba(43,26,18,0.55)" }}
-            />
-          ) : null}
+          {Icon ? <Icon className="absolute left-4 top-1/2 -translate-y-1/2 h-4 w-4" style={{ color: BRAND.muted }} /> : null}
           <input
             type="date"
             value={value}

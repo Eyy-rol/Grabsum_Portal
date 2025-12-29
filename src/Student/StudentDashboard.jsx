@@ -2,7 +2,10 @@
 import React, { useEffect, useMemo, useState } from "react";
 import { motion } from "framer-motion";
 import { BookOpen, Clock, CheckCircle2, Sparkles } from "lucide-react";
-import { supabase } from "../lib/supabaseClient"; 
+import { supabase } from "../lib/supabaseClient";
+
+// ✅ NEW: Supabase-powered calendar widget
+import CalendarWidget from "../components/CalendarWidget"; // adjust if your folders differ
 
 const BRAND = {
   brown: "rgba(43,26,18,0.95)",
@@ -78,27 +81,6 @@ function startOfDay(d) {
   return x;
 }
 
-function getMonthMatrix(date) {
-  const year = date.getFullYear();
-  const month = date.getMonth();
-  const first = new Date(year, month, 1);
-  const firstDay = first.getDay(); // 0 Sun
-  const start = new Date(year, month, 1 - firstDay);
-
-  const weeks = [];
-  let cur = new Date(start);
-
-  for (let w = 0; w < 6; w++) {
-    const row = [];
-    for (let i = 0; i < 7; i++) {
-      row.push(new Date(cur));
-      cur.setDate(cur.getDate() + 1);
-    }
-    weeks.push(row);
-  }
-  return weeks;
-}
-
 function previewText(s, max = 80) {
   const t = (s ?? "").trim();
   if (!t) return "";
@@ -107,7 +89,6 @@ function previewText(s, max = 80) {
 
 export default function StudentDashboard() {
   const [now, setNow] = useState(new Date());
-  const [monthCursor, setMonthCursor] = useState(new Date());
 
   // ✅ Welcome name
   const [studentName, setStudentName] = useState("Student");
@@ -265,12 +246,6 @@ export default function StudentDashboard() {
     []
   );
 
-  const monthWeeks = useMemo(() => getMonthMatrix(monthCursor), [monthCursor]);
-  const todayKey = useMemo(() => startOfDay(now).toDateString(), [now]);
-
-  // Highlight days with classes (demo: today only)
-  const hasClassOnDay = (d) => d.toDateString() === todayKey;
-
   return (
     <div className="space-y-5">
       {/* Welcome */}
@@ -296,10 +271,7 @@ export default function StudentDashboard() {
             </div>
           </div>
 
-          <div
-            className="rounded-2xl border px-4 py-3"
-            style={{ borderColor: BRAND.stroke, background: BRAND.softGoldBg }}
-          >
+          <div className="rounded-2xl border px-4 py-3" style={{ borderColor: BRAND.stroke, background: BRAND.softGoldBg }}>
             <div className="text-xs font-semibold" style={{ color: BRAND.muted }}>
               Next class in
             </div>
@@ -463,13 +435,7 @@ export default function StudentDashboard() {
                       <div className="text-sm font-extrabold" style={{ color: BRAND.brown }}>
                         {a.title}
                       </div>
-                      <span
-                        className="rounded-full px-3 py-1 text-[11px] font-extrabold"
-                        style={{
-                          background: BRAND.softGoldBg,
-                          color: BRAND.brown,
-                        }}
-                      >
+                      <span className="rounded-full px-3 py-1 text-[11px] font-extrabold" style={{ background: BRAND.softGoldBg, color: BRAND.brown }}>
                         {a.tag}
                       </span>
                     </div>
@@ -485,81 +451,14 @@ export default function StudentDashboard() {
             </div>
           </motion.section>
 
-          {/* Calendar */}
-          <motion.section
+          {/* ✅ CalendarWidget (replaces old demo calendar UI) */}
+          <motion.div
             initial={{ opacity: 0, y: 8 }}
             animate={{ opacity: 1, y: 0 }}
             transition={{ duration: 0.18, delay: 0.06 }}
-            className="rounded-3xl border bg-white p-5"
-            style={{ borderColor: BRAND.stroke, boxShadow: BRAND.cardShadow }}
           >
-            <div className="flex items-center justify-between">
-              <div>
-                <div className="text-sm font-extrabold" style={{ color: BRAND.brown }}>
-                  Academic Calendar
-                </div>
-                <div className="text-xs font-semibold" style={{ color: BRAND.muted }}>
-                  Highlighted class days
-                </div>
-              </div>
-              <div className="flex items-center gap-2">
-                <button
-                  className="rounded-2xl border px-3 py-2 text-sm font-semibold hover:bg-black/5"
-                  style={{ borderColor: BRAND.stroke, color: BRAND.brown }}
-                  onClick={() => setMonthCursor((d) => new Date(d.getFullYear(), d.getMonth() - 1, 1))}
-                >
-                  Prev
-                </button>
-                <button
-                  className="rounded-2xl border px-3 py-2 text-sm font-semibold hover:bg-black/5"
-                  style={{ borderColor: BRAND.stroke, color: BRAND.brown }}
-                  onClick={() => setMonthCursor((d) => new Date(d.getFullYear(), d.getMonth() + 1, 1))}
-                >
-                  Next
-                </button>
-              </div>
-            </div>
-
-            <div className="mt-3 text-sm font-extrabold" style={{ color: BRAND.brown }}>
-              {monthCursor.toLocaleDateString(undefined, { month: "long", year: "numeric" })}
-            </div>
-
-            <div className="mt-3 grid grid-cols-7 gap-1 text-center text-xs font-semibold" style={{ color: BRAND.muted }}>
-              {["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"].map((d) => (
-                <div key={d} className="py-1">
-                  {d}
-                </div>
-              ))}
-            </div>
-
-            <div className="mt-1 grid grid-cols-7 gap-1">
-              {monthWeeks.flat().map((d, idx) => {
-                const inMonth = d.getMonth() === monthCursor.getMonth();
-                const isToday = d.toDateString() === new Date().toDateString();
-
-                return (
-                  <button
-                    key={idx}
-                    className="relative rounded-xl border py-2 text-xs font-semibold transition hover:bg-black/5"
-                    style={{
-                      borderColor: BRAND.stroke,
-                      color: inMonth ? BRAND.brown : "rgba(43,26,18,0.35)",
-                      background: isToday ? BRAND.softGoldBg : "white",
-                    }}
-                    onClick={() => alert(`Selected: ${d.toDateString()}`)}
-                  >
-                    {d.getDate()}
-                    {hasClassOnDay(d) ? (
-                      <span
-                        className="absolute bottom-1 left-1/2 h-1.5 w-1.5 -translate-x-1/2 rounded-full"
-                        style={{ background: BRAND.gold }}
-                      />
-                    ) : null}
-                  </button>
-                );
-              })}
-            </div>
-          </motion.section>
+            <CalendarWidget title="Academic Calendar" subtitle="Official yearly schedule (read-only)" />
+          </motion.div>
         </div>
       </div>
 

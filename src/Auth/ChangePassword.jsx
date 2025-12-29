@@ -4,6 +4,7 @@ import { supabase } from "../lib/supabaseClient";
 
 export default function ChangePassword() {
   const nav = useNavigate();
+
   const [pw1, setPw1] = useState("");
   const [pw2, setPw2] = useState("");
   const [loading, setLoading] = useState(false);
@@ -20,26 +21,41 @@ export default function ChangePassword() {
 
     setLoading(true);
     try {
-      // 1) Update auth password
-      const { data: u, error: passErr } = await supabase.auth.updateUser({ password: pw1 });
-      if (passErr) return setErr(passErr.message || "Failed to update password.");
+      const { data: s, error: sErr } = await supabase.auth.getSession();
+      if (sErr) throw sErr;
+      if (!s.session) throw new Error("No active session. Please log in again.");
 
-      const userId = u?.user?.id;
-      if (!userId) return setErr("Missing session user.");
+      const accessToken = s.session.access_token;
 
-      // 2) Update profile flags (must_change_password -> false)
-      const { error: profErr } = await supabase
-        .from("profiles")
-        .update({
-          must_change_password: false,
-          password_changed_at: new Date().toISOString(),
-        })
-        .eq("user_id", userId);
+      const SUPABASE_URL = import.meta.env.VITE_SUPABASE_URL;
+      const SUPABASE_ANON_KEY = import.meta.env.VITE_SUPABASE_ANON_KEY;
 
-      if (profErr) return setErr(profErr.message || "Password updated, but failed updating profile flags.");
+      if (!SUPABASE_URL || !SUPABASE_ANON_KEY) {
+        throw new Error("Missing VITE_SUPABASE_URL or VITE_SUPABASE_ANON_KEY in .env");
+      }
 
-      setMsg("Password changed successfully. Redirecting...");
-      setTimeout(() => nav("/student"), 800);
+      const res = await fetch(`${SUPABASE_URL}/functions/v1/super-api`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          apikey: SUPABASE_ANON_KEY,
+          Authorization: `Bearer ${accessToken}`, // ✅ required for change_password
+        },
+        body: JSON.stringify({
+          action: "change_password",
+          new_password: pw1,
+        }),
+      });
+
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(data?.error || "Failed to change password.");
+
+      setMsg("Password changed successfully. Redirecting to login...");
+      await supabase.auth.signOut();
+      nav("/login", { replace: true });
+    } catch (e2) {
+      console.error(e2);
+      setErr(e2?.message || String(e2));
     } finally {
       setLoading(false);
     }
@@ -64,6 +80,7 @@ export default function ChangePassword() {
             onChange={(e) => setPw1(e.target.value)}
             className="mt-1 w-full rounded-xl border border-black/10 px-3 py-2"
             disabled={loading}
+            autoComplete="new-password"
           />
         </div>
 
@@ -75,6 +92,7 @@ export default function ChangePassword() {
             onChange={(e) => setPw2(e.target.value)}
             className="mt-1 w-full rounded-xl border border-black/10 px-3 py-2"
             disabled={loading}
+            autoComplete="new-password"
           />
         </div>
 

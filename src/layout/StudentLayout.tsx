@@ -1,5 +1,5 @@
 // src/layouts/StudentLayout.tsx
-import React, { useMemo, useState } from "react";
+import React, { useEffect, useMemo, useState } from "react";
 import { NavLink, Outlet, useLocation, useNavigate } from "react-router-dom";
 import { AnimatePresence, motion } from "framer-motion";
 import {
@@ -10,27 +10,21 @@ import {
   User,
   Settings,
   Bell,
-  HelpCircle,
   LogOut,
   Menu,
   X,
   ChevronDown,
 } from "lucide-react";
-
-import { supabase } from "../lib/supabaseClient"; // adjust path
-
-
-type IconType = React.ComponentType<{ className?: string }>;
+import { supabase } from "../lib/supabaseClient";
 
 const BRAND = {
-  bg: "#fbf6ef", // warm off-white
+  bg: "#fbf6ef",
   brown: "#2b1a12",
   muted: "rgba(43,26,18,0.55)",
   stroke: "rgba(43,26,18,0.16)",
   cardShadow: "0 14px 34px rgba(43,26,18,0.10)",
   gold: "#d4a62f",
   goldHover: "#deb23c",
-  softGold: "rgba(212,166,47,0.18)",
   softGoldBg: "rgba(212,166,47,0.14)",
 };
 
@@ -53,18 +47,123 @@ function titleFromPath(path: string) {
   return "Student Portal";
 }
 
+type StudentMe = {
+  user_id?: string;
+  name: string;
+  student_number?: string;
+  email?: string;
+  role?: string;
+  notifications: number;
+};
+
+function buildStudentName(stu?: {
+  first_name?: string | null;
+  middle_initial?: string | null;
+  last_name?: string | null;
+  extension?: string | null;
+}) {
+  const fn = (stu?.first_name || "").trim();
+  const mi = (stu?.middle_initial || "").trim();
+  const ln = (stu?.last_name || "").trim();
+  const ext = (stu?.extension || "").trim();
+
+  // "Juan D. Cruz Jr"
+  const mid = mi ? `${mi.replace(".", "")}.` : "";
+  const base = [fn, mid, ln].filter(Boolean).join(" ").trim();
+  return [base, ext].filter(Boolean).join(" ").trim();
+}
+
 export default function StudentLayout() {
   const location = useLocation();
+  const nav = useNavigate();
   const title = useMemo(() => titleFromPath(location.pathname), [location.pathname]);
 
   const [mobileOpen, setMobileOpen] = useState(false);
 
-  // demo header identity (replace with your auth user later)
-  const student = {
-    name: "Juan Dela Cruz",
-    id: "2024-000123",
-    notifications: 3,
-  };
+  const [me, setMe] = useState<StudentMe>({
+    name: "Student",
+    student_number: "",
+    notifications: 0,
+  });
+
+  // ✅ Fetch: session -> students (name + student_number) -> profiles (fallback)
+  useEffect(() => {
+    let alive = true;
+
+    async function loadMe() {
+      const { data: sessData } = await supabase.auth.getSession();
+      const user = sessData?.session?.user;
+
+      if (!user?.id) {
+        if (alive) setMe({ name: "Student", student_number: "", notifications: 0 });
+        return;
+      }
+
+      // 1) Students table: best source for student name + student_number
+      const { data: stu } = await supabase
+        .from("students")
+        .select("student_number, email, first_name, middle_initial, last_name, extension")
+        .eq("user_id", user.id)
+        .maybeSingle();
+
+      // 2) Profiles table: fallback for email/role/full_name if needed
+      const { data: prof } = await supabase
+        .from("profiles")
+        .select("user_id, full_name, email, role")
+        .eq("user_id", user.id)
+        .maybeSingle();
+
+      if (!alive) return;
+
+      const nameFromStudents = buildStudentName(stu);
+      const nameFromProfiles = (prof?.full_name || "").trim();
+
+      const displayName =
+        nameFromStudents ||
+        nameFromProfiles ||
+        (user.user_metadata?.full_name as string | undefined) ||
+        user.email ||
+        "Student";
+
+      setMe({
+        user_id: user.id,
+        name: String(displayName),
+        student_number: (stu?.student_number || "").toString(),
+        email: (stu?.email || prof?.email || user.email || "").toString(),
+        role: (prof?.role || "student").toString(),
+        notifications: 0,
+      });
+    }
+
+    loadMe();
+
+    const { data } = supabase.auth.onAuthStateChange((event) => {
+      if (event === "SIGNED_IN" || event === "SIGNED_OUT" || event === "TOKEN_REFRESHED") {
+        loadMe();
+      }
+    });
+
+    return () => {
+      alive = false;
+      data?.subscription?.unsubscribe?.();
+    };
+  }, []);
+
+  // ✅ Proper logout: clears UI, signs out, redirects to /login
+  async function handleLogout(): Promise<void> {
+    try {
+      // close mobile sidebar (if open)
+      setMobileOpen(false);
+
+      // clear UI immediately
+      setMe({ name: "Student", student_number: "", notifications: 0 });
+
+      const { error } = await supabase.auth.signOut();
+      if (error) console.error("signOut error:", error);
+    } finally {
+      nav("/login", { replace: true });
+    }
+  }
 
   return (
     <div className="min-h-screen font-[Nunito]" style={{ background: BRAND.bg }}>
@@ -95,12 +194,12 @@ export default function StudentLayout() {
             aria-label="Notifications"
           >
             <Bell className="h-5 w-5" style={{ color: BRAND.muted }} />
-            {student.notifications > 0 ? (
+            {me.notifications > 0 ? (
               <span
                 className="absolute -right-1 -top-1 grid h-5 w-5 place-items-center rounded-full text-[10px] font-black text-black"
                 style={{ background: BRAND.gold }}
               >
-                {student.notifications}
+                {me.notifications}
               </span>
             ) : null}
           </button>
@@ -109,12 +208,12 @@ export default function StudentLayout() {
         <div className="grid grid-cols-1 gap-4 md:grid-cols-[260px_1fr]">
           {/* Desktop sidebar */}
           <aside className="hidden md:block">
-            <Sidebar />
+            <Sidebar me={me} onLogout={handleLogout} />
           </aside>
 
           {/* Main */}
           <main className="space-y-4">
-            <Topbar title={title} student={student} />
+            <Topbar title={title} me={me} onLogout={handleLogout} />
 
             <AnimatePresence mode="wait">
               <motion.div
@@ -182,7 +281,7 @@ export default function StudentLayout() {
               </div>
 
               <div className="px-4 pb-4">
-                <Sidebar onNavigate={() => setMobileOpen(false)} />
+                <Sidebar me={me} onLogout={handleLogout} onNavigate={() => setMobileOpen(false)} />
               </div>
             </motion.div>
           </motion.div>
@@ -192,14 +291,17 @@ export default function StudentLayout() {
   );
 }
 
-function Sidebar({ onNavigate }: { onNavigate?: () => void }) {
-  const nav = useNavigate();
-
+function Sidebar({
+  onNavigate,
+  me,
+  onLogout,
+}: {
+  onNavigate?: () => void;
+  me: StudentMe;
+  onLogout: () => Promise<void>;
+}) {
   return (
-    <div
-      className="rounded-3xl border bg-white p-4"
-      style={{ borderColor: BRAND.stroke, boxShadow: BRAND.cardShadow }}
-    >
+    <div className="rounded-3xl border bg-white p-4" style={{ borderColor: BRAND.stroke, boxShadow: BRAND.cardShadow }}>
       {/* Brand */}
       <div className="flex items-center justify-between">
         <div className="leading-tight">
@@ -211,13 +313,20 @@ function Sidebar({ onNavigate }: { onNavigate?: () => void }) {
           </div>
         </div>
 
-        <div
-          className="grid h-10 w-10 place-items-center rounded-2xl"
-          style={{ background: BRAND.softGoldBg }}
-        >
+        <div className="grid h-10 w-10 place-items-center rounded-2xl" style={{ background: BRAND.softGoldBg }}>
           <span className="text-sm font-black" style={{ color: BRAND.gold }}>
-            S
+            {String(me.name || "S").slice(0, 1).toUpperCase()}
           </span>
+        </div>
+      </div>
+
+      {/* Identity */}
+      <div className="mt-3 rounded-2xl border bg-white/60 p-3" style={{ borderColor: BRAND.stroke }}>
+        <div className="text-sm font-extrabold" style={{ color: BRAND.brown }}>
+          {me.name}
+        </div>
+        <div className="mt-0.5 text-xs font-semibold" style={{ color: BRAND.muted }}>
+          {me.student_number ? `Student #: ${me.student_number}` : me.email || ""}
         </div>
       </div>
 
@@ -235,8 +344,8 @@ function Sidebar({ onNavigate }: { onNavigate?: () => void }) {
               end
               onClick={onNavigate}
               className={({ isActive }) =>
-                "group flex items-center gap-3 rounded-2xl px-3 py-2 transition"
-                + (isActive ? " border" : " hover:bg-black/5")
+                "group flex items-center gap-3 rounded-2xl px-3 py-2 transition" +
+                (isActive ? " border" : " hover:bg-black/5")
               }
               style={({ isActive }) => ({
                 borderColor: isActive ? BRAND.stroke : "transparent",
@@ -257,32 +366,15 @@ function Sidebar({ onNavigate }: { onNavigate?: () => void }) {
         </nav>
       </div>
 
-      {/* Bottom actions */}
+      {/* Logout */}
       <div className="mt-4 rounded-2xl border bg-white/60 p-3" style={{ borderColor: BRAND.stroke }}>
         <button
-          onClick={() => alert("Help & Support (wire later)")}
+          onClick={onLogout}
           className="inline-flex w-full items-center justify-center gap-2 rounded-2xl border bg-white/70 px-3 py-2 text-sm font-semibold transition hover:bg-white"
-          style={{ borderColor: BRAND.stroke, color: BRAND.brown }}
-        >
-          <HelpCircle className="h-4 w-4" style={{ color: BRAND.muted }} />
-          Help & Support
-        </button>
-
-        <button
-          onClick={() => alert("Logout (wire Supabase later)")}
-          className="mt-2 inline-flex w-full items-center justify-center gap-2 rounded-2xl border bg-white/70 px-3 py-2 text-sm font-semibold transition hover:bg-white"
           style={{ borderColor: BRAND.stroke, color: BRAND.brown }}
         >
           <LogOut className="h-4 w-4" style={{ color: BRAND.muted }} />
           Logout
-        </button>
-
-        <button
-          onClick={() => nav("/")}
-          className="mt-2 w-full text-center text-xs font-semibold hover:underline"
-          style={{ color: BRAND.gold }}
-        >
-          Back to site
         </button>
       </div>
     </div>
@@ -291,18 +383,18 @@ function Sidebar({ onNavigate }: { onNavigate?: () => void }) {
 
 function Topbar({
   title,
-  student,
+  me,
+  onLogout,
 }: {
   title: string;
-  student: { name: string; id: string; notifications: number };
+  me: StudentMe;
+  onLogout: () => Promise<void>;
 }) {
+  const nav = useNavigate();
   const [open, setOpen] = useState(false);
 
   return (
-    <header
-      className="rounded-3xl border bg-white p-3 shadow-sm"
-      style={{ borderColor: BRAND.stroke, boxShadow: BRAND.cardShadow }}
-    >
+    <header className="rounded-3xl border bg-white p-3 shadow-sm" style={{ borderColor: BRAND.stroke, boxShadow: BRAND.cardShadow }}>
       <div className="flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
         <div className="leading-tight">
           <div className="text-xs font-semibold" style={{ color: BRAND.muted }}>
@@ -316,10 +408,10 @@ function Topbar({
         <div className="flex items-center justify-between gap-2 md:justify-end">
           <div className="text-right leading-tight">
             <div className="text-sm font-extrabold" style={{ color: BRAND.brown }}>
-              {student.name}
+              {me.name}
             </div>
             <div className="text-xs font-semibold" style={{ color: BRAND.muted }}>
-              ID: {student.id}
+              {me.student_number ? `Student #: ${me.student_number}` : me.email ? me.email : ""}
             </div>
           </div>
 
@@ -329,12 +421,12 @@ function Topbar({
             aria-label="Notifications"
           >
             <Bell className="h-5 w-5" style={{ color: BRAND.muted }} />
-            {student.notifications > 0 ? (
+            {me.notifications > 0 ? (
               <span
                 className="absolute -right-1 -top-1 grid h-5 w-5 place-items-center rounded-full text-[10px] font-black text-black"
                 style={{ background: BRAND.gold }}
               >
-                {student.notifications}
+                {me.notifications}
               </span>
             ) : null}
           </button>
@@ -346,12 +438,9 @@ function Topbar({
               style={{ borderColor: BRAND.stroke, color: BRAND.brown }}
               aria-label="Open profile menu"
             >
-              <span
-                className="grid h-8 w-8 place-items-center rounded-2xl"
-                style={{ background: BRAND.softGoldBg }}
-              >
+              <span className="grid h-8 w-8 place-items-center rounded-2xl" style={{ background: BRAND.softGoldBg }}>
                 <span className="text-xs font-black" style={{ color: BRAND.gold }}>
-                  {student.name.slice(0, 1).toUpperCase()}
+                  {String(me.name || "S").slice(0, 1).toUpperCase()}
                 </span>
               </span>
               <span className="hidden sm:block">Account</span>
@@ -369,28 +458,32 @@ function Topbar({
                   style={{ borderColor: BRAND.stroke }}
                 >
                   <button
-                    onClick={() => alert("View Profile")}
+                    onClick={() => {
+                      setOpen(false);
+                      nav("/student/profile");
+                    }}
                     className="w-full px-4 py-3 text-left text-sm font-semibold hover:bg-black/5"
                     style={{ color: BRAND.brown }}
                   >
                     View Profile
                   </button>
+
                   <button
-                    onClick={() => alert("Account Settings")}
+                    onClick={() => {
+                      setOpen(false);
+                      nav("/student/settings");
+                    }}
                     className="w-full px-4 py-3 text-left text-sm font-semibold hover:bg-black/5"
                     style={{ color: BRAND.brown }}
                   >
                     Account Settings
                   </button>
+
                   <button
-                    onClick={() => alert("Help")}
-                    className="w-full px-4 py-3 text-left text-sm font-semibold hover:bg-black/5"
-                    style={{ color: BRAND.brown }}
-                  >
-                    Help
-                  </button>
-                  <button
-                    onClick={() => alert("Logout (wire Supabase later)")}
+                    onClick={async () => {
+                      setOpen(false);
+                      await onLogout();
+                    }}
                     className="w-full px-4 py-3 text-left text-sm font-semibold hover:bg-black/5"
                     style={{ color: BRAND.brown }}
                   >

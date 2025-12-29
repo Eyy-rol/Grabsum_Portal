@@ -87,8 +87,17 @@ export default function AdminLayout() {
 
           <AnimatePresence>
             {sidebarOpen ? (
-              <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }} className="fixed inset-0 z-40 md:hidden">
-                <button className="absolute inset-0 bg-black/30" onClick={() => setSidebarOpen(false)} aria-label="Close sidebar overlay" />
+              <motion.div
+                initial={{ opacity: 0 }}
+                animate={{ opacity: 1 }}
+                exit={{ opacity: 0 }}
+                className="fixed inset-0 z-40 md:hidden"
+              >
+                <button
+                  className="absolute inset-0 bg-black/30"
+                  onClick={() => setSidebarOpen(false)}
+                  aria-label="Close sidebar overlay"
+                />
                 <motion.div
                   initial={{ x: -24, opacity: 0 }}
                   animate={{ x: 0, opacity: 1 }}
@@ -145,7 +154,7 @@ function Sidebar({
     teacher: true,
   });
 
-  // ✅ show real logged in profile info
+  // ✅ show logged in profile info (resilient)
   const [me, setMe] = useState<{ email?: string; role?: string } | null>(null);
 
   useEffect(() => {
@@ -154,19 +163,23 @@ function Sidebar({
     if (p.includes("/admin/teacher/")) setOpen((s) => ({ ...s, teacher: true }));
   }, [loc.pathname]);
 
-    useEffect(() => {
+  // ✅ robust "loadMe": uses getSession first, and NEVER signs out here
+  useEffect(() => {
     let alive = true;
 
     async function loadMe() {
-      const { data: authData } = await supabase.auth.getUser();
-      const user = authData?.user ?? null;
+      // 1) session from storage (best for refresh)
+      const { data: sessData } = await supabase.auth.getSession();
+      const session = sessData?.session;
 
+      const user = session?.user;
       if (!user?.id) {
         if (alive) setMe(null);
         return;
       }
 
-      const { data: prof } = await supabase
+      // 2) try profile (may fail due to RLS, don’t kill UI)
+      const { data: prof, error: profErr } = await supabase
         .from("profiles")
         .select("email, role")
         .eq("user_id", user.id)
@@ -174,37 +187,38 @@ function Sidebar({
 
       if (!alive) return;
 
+      if (profErr) {
+        // fallback to auth email if profile isn't readable
+        setMe({
+          email: user.email || "",
+          role: "admin", // optional fallback label
+        });
+        return;
+      }
+
       setMe({
         email: prof?.email || user.email || "",
-        role: prof?.role || "",
+        role: prof?.role || "admin",
       });
     }
 
-    // ✅ IMPORTANT: call immediately
     loadMe();
 
-    // ✅ Keep in sync
-    const { data: sub } = supabase.auth.onAuthStateChange(() => loadMe());
+    const { data } = supabase.auth.onAuthStateChange((_event, _session) => {
+      loadMe();
+    });
 
     return () => {
       alive = false;
-      sub?.subscription?.unsubscribe();
+      data?.subscription?.unsubscribe?.();
     };
   }, []);
 
-
-  // ✅ REAL logout
+  // ✅ logout: do NOT delete storage keys manually
   async function handleLogout() {
     try {
       await supabase.auth.signOut();
     } finally {
-      // ✅ Remove supabase auth token keys safely
-      try {
-        Object.keys(localStorage)
-          .filter((k) => k.startsWith("sb-") && k.endsWith("-auth-token"))
-          .forEach((k) => localStorage.removeItem(k));
-      } catch {}
-
       nav("/login", { replace: true });
       onClose?.();
     }
@@ -247,7 +261,11 @@ function Sidebar({
             aria-label={collapsed ? "Expand sidebar" : "Collapse sidebar"}
             title={collapsed ? "Expand" : "Collapse"}
           >
-            {collapsed ? <PanelLeftOpen className="h-5 w-5 text-black/60" /> : <PanelLeftClose className="h-5 w-5 text-black/60" />}
+            {collapsed ? (
+              <PanelLeftOpen className="h-5 w-5 text-black/60" />
+            ) : (
+              <PanelLeftClose className="h-5 w-5 text-black/60" />
+            )}
           </button>
         )}
       </div>
@@ -278,7 +296,9 @@ function Sidebar({
                   {!collapsed ? (
                     <>
                       <span className="flex-1 font-semibold text-black/75">{item.label}</span>
-                      <ChevronDown className={"h-4 w-4 text-black/60 transition " + (open[item.key] ? "rotate-180" : "")} />
+                      <ChevronDown
+                        className={"h-4 w-4 text-black/60 transition " + (open[item.key] ? "rotate-180" : "")}
+                      />
                     </>
                   ) : null}
                 </button>
@@ -416,7 +436,10 @@ function Topbar({ title, onOpenSidebar }: { title: string; onOpenSidebar: () => 
         <div className="flex items-center gap-2">
           <div className="relative flex-1 md:w-[420px]">
             <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-black/45" />
-            <input className="w-full rounded-2xl border border-black/10 bg-white/70 px-10 py-2.5 text-sm outline-none focus:bg-white" placeholder="Search…" />
+            <input
+              className="w-full rounded-2xl border border-black/10 bg-white/70 px-10 py-2.5 text-sm outline-none focus:bg-white"
+              placeholder="Search…"
+            />
           </div>
 
           <button className="grid h-10 w-10 place-items-center rounded-2xl border border-black/10 bg-white/60 hover:bg-white/80">

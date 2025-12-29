@@ -25,6 +25,15 @@ function isStudentNumber(v) {
   return /^s\d{2}-\d{4}$/i.test(String(v).trim());
 }
 
+function isTeacherNumber(v) {
+  return /^t\d{2}-\d{4}$/i.test(String(v).trim());
+}
+
+// employee_number -> internal auth email (same rule used in create-teacher edge fn)
+function teacherAuthEmail(empNo) {
+  return `${String(empNo).trim().toLowerCase()}@teachers.local`;
+}
+
 function routeForRole(role) {
   const r = (role || "").toLowerCase();
   if (r === "admin") return "/admin";
@@ -48,8 +57,12 @@ export default function Login() {
   const errors = useMemo(() => {
     const e = {};
     const x = ident.trim();
-    if (!x) e.ident = "Email or Student Number is required.";
-    else if (!isEmail(x) && !isStudentNumber(x)) e.ident = "Enter a valid email or student number (S25-0001).";
+
+    if (!x) e.ident = "Email, Student Number, or Teacher Number is required.";
+    else if (!isEmail(x) && !isStudentNumber(x) && !isTeacherNumber(x)) {
+      e.ident = "Enter a valid email or number (S25-0001 / T25-0001).";
+    }
+
     if (!pw) e.pw = "Password is required.";
     return e;
   }, [ident, pw]);
@@ -79,10 +92,7 @@ export default function Login() {
     });
 
     const data = await res.json().catch(() => ({}));
-
-    if (!res.ok) {
-      throw new Error(data?.error || "Login failed.");
-    }
+    if (!res.ok) throw new Error(data?.error || "Login failed.");
 
     const access_token = data?.session?.access_token;
     const refresh_token = data?.session?.refresh_token;
@@ -103,7 +113,7 @@ export default function Login() {
   async function fetchProfile(userId) {
     const { data: profile, error } = await supabase
       .from("profiles")
-      .select("user_id, email, full_name, role, is_active, must_change_password")
+      .select("user_id, email, full_name, role, is_active, is_archived, must_change_password")
       .eq("user_id", userId)
       .single();
 
@@ -122,7 +132,7 @@ export default function Login() {
     try {
       const x = ident.trim();
 
-      // ✅ A) student number login
+      // ✅ A) student number login (S25-0001)
       if (isStudentNumber(x)) {
         const user = await loginByStudentNumber(x.toUpperCase(), pw);
 
@@ -138,15 +148,68 @@ export default function Login() {
           return;
         }
 
+        if (profile.is_archived === true) {
+          setAuthError("Your account is archived. Please contact the administrator.");
+          await supabase.auth.signOut();
+          return;
+        }
+
         if (profile.is_active === false) {
           setAuthError("Your account is inactive. Please contact the administrator.");
           await supabase.auth.signOut();
           return;
         }
 
-        // ✅ FIXED: correct path
         if ((profile.role || "").toLowerCase() === "student" && profile.must_change_password) {
           nav("/student/change-password", { replace: true });
+          return;
+        }
+
+        nav(routeForRole(profile.role), { replace: true });
+        return;
+      }
+
+      // ✅ A2) teacher username login (T25-0001)
+      if (isTeacherNumber(x)) {
+        const email = teacherAuthEmail(x);
+
+        const { data, error } = await supabase.auth.signInWithPassword({
+          email,
+          password: pw,
+        });
+
+        if (error) {
+          setAuthError(error.message || "Login failed. Please try again.");
+          return;
+        }
+
+        const userId = data?.user?.id;
+        if (!userId) {
+          setAuthError("Login failed: missing user session.");
+          return;
+        }
+
+        const profile = await fetchProfile(userId);
+        if (!profile) {
+          setAuthError("Account profile not found. Please contact the administrator.");
+          await supabase.auth.signOut();
+          return;
+        }
+
+        if (profile.is_archived === true) {
+          setAuthError("Your account is archived. Please contact the administrator.");
+          await supabase.auth.signOut();
+          return;
+        }
+
+        if (profile.is_active === false) {
+          setAuthError("Your account is inactive. Please contact the administrator.");
+          await supabase.auth.signOut();
+          return;
+        }
+
+        if ((profile.role || "").toLowerCase() === "teacher" && profile.must_change_password) {
+          nav("/teacher/change-password", { replace: true });
           return;
         }
 
@@ -178,15 +241,26 @@ export default function Login() {
         return;
       }
 
+      if (profile.is_archived === true) {
+        setAuthError("Your account is archived. Please contact the administrator.");
+        await supabase.auth.signOut();
+        return;
+      }
+
       if (profile.is_active === false) {
         setAuthError("Your account is inactive. Please contact the administrator.");
         await supabase.auth.signOut();
         return;
       }
 
-      // ✅ FIXED: correct path
-      if ((profile.role || "").toLowerCase() === "student" && profile.must_change_password) {
+      // ✅ force-change based on role
+      const role = (profile.role || "").toLowerCase();
+      if (role === "student" && profile.must_change_password) {
         nav("/student/change-password", { replace: true });
+        return;
+      }
+      if (role === "teacher" && profile.must_change_password) {
+        nav("/teacher/change-password", { replace: true });
         return;
       }
 
@@ -225,7 +299,7 @@ export default function Login() {
             </h1>
 
             <p className="mt-4 max-w-xl mx-auto lg:mx-0 text-base leading-relaxed" style={{ color: BRAND.muted }}>
-              Sign in using <b>Email</b> or <b>Student Number (S25-0001)</b>.
+              Sign in using <b>Email</b>, <b>Student Number (S25-0001)</b>, or <b>Teacher Number (T25-0001)</b>.
             </p>
 
             <div className="mt-20 text-xs" style={{ color: "rgba(43,26,18,0.45)" }}>
@@ -261,7 +335,7 @@ export default function Login() {
                 ) : null}
 
                 <label className="text-sm font-semibold" style={{ color: BRAND.brown }}>
-                  Email or Student Number
+                  Email / Student Number / Teacher Number
                 </label>
 
                 <div className="mt-2">
@@ -271,7 +345,7 @@ export default function Login() {
                       value={ident}
                       onChange={(e) => setIdent(e.target.value)}
                       onBlur={() => setTouched((t) => ({ ...t, ident: true }))}
-                      placeholder="your.email@grabsum.edu.ph OR S25-0001"
+                      placeholder="your.email@grabsum.edu.ph OR S25-0001 OR T25-0001"
                       className="w-full rounded-xl pl-11 pr-4 py-3 text-sm outline-none transition"
                       style={{
                         background: "rgba(251,246,239,0.6)",
@@ -317,7 +391,11 @@ export default function Login() {
                       aria-label={show ? "Hide password" : "Show password"}
                       disabled={loading}
                     >
-                      {show ? <EyeOff className="h-4 w-4" style={{ color: BRAND.muted }} /> : <Eye className="h-4 w-4" style={{ color: BRAND.muted }} />}
+                      {show ? (
+                        <EyeOff className="h-4 w-4" style={{ color: BRAND.muted }} />
+                      ) : (
+                        <Eye className="h-4 w-4" style={{ color: BRAND.muted }} />
+                      )}
                     </button>
                   </div>
 
