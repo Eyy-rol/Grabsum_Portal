@@ -1,9 +1,7 @@
 // src/dev/pages/ActivityLogs.jsx
-import React, { useMemo, useState } from "react";
-
-function cn(...xs) {
-  return xs.filter(Boolean).join(" ");
-}
+import React, { useMemo, useState, useEffect } from "react";
+import { supabase } from "../../lib/supabaseClient";
+import { getMyProfile } from "../../lib/portalCtx";
 
 function Badge({ tone = "neutral", children }) {
   const cls = {
@@ -88,94 +86,158 @@ function toneForResult(result) {
   return "neutral";
 }
 
+function rangeToStart(range) {
+  const now = new Date();
+  if (range === "today") {
+    const d = new Date(now);
+    d.setHours(0, 0, 0, 0);
+    return d.toISOString();
+  }
+  if (range === "7d") {
+    const d = new Date(now);
+    d.setDate(d.getDate() - 7);
+    return d.toISOString();
+  }
+  if (range === "30d") {
+    const d = new Date(now);
+    d.setDate(d.getDate() - 30);
+    return d.toISOString();
+  }
+  return null; // custom/UI later
+}
+
 export default function ActivityLogs() {
-  // UI-only demo data (swap to Supabase later)
-  const [logs] = useState(() => [
-    {
-      id: "l1",
-      at: "2025-12-29 09:02",
-      actor: "dev@school.com",
-      action: "Viewed Activity Logs",
-      target: "activity_logs",
-      result: "success",
-      ip: "127.0.0.1",
-      meta: "filters=none",
-    },
-    {
-      id: "l2",
-      at: "2025-12-29 09:10",
-      actor: "admin@school.com",
-      action: "Updated Role",
-      target: "student@school.com",
-      result: "success",
-      ip: "203.0.113.45",
-      meta: "student → teacher",
-    },
-    {
-      id: "l3",
-      at: "2025-12-29 09:14",
-      actor: "teacher@school.com",
-      action: "Login Attempt",
-      target: "auth",
-      result: "warning",
-      ip: "203.0.113.77",
-      meta: "2FA pending",
-    },
-    {
-      id: "l4",
-      at: "2025-12-29 09:16",
-      actor: "unknown",
-      action: "Login Attempt",
-      target: "auth",
-      result: "failed",
-      ip: "198.51.100.12",
-      meta: "invalid password",
-    },
-    {
-      id: "l5",
-      at: "2025-12-29 09:20",
-      actor: "admin@school.com",
-      action: "Disabled Account",
-      target: "student2@school.com",
-      result: "success",
-      ip: "203.0.113.45",
-      meta: "reason=inactive",
-    },
-  ]);
+  const [logs, setLogs] = useState([]);
+  const [loading, setLoading] = useState(true);
+  const [errMsg, setErrMsg] = useState("");
+  const [selected, setSelected] = useState(null);
 
   const [q, setQ] = useState("");
   const [type, setType] = useState("all");
   const [result, setResult] = useState("all");
-  const [range, setRange] = useState("today"); // UI-only dropdown
-  const [selected, setSelected] = useState(null);
+  const [range, setRange] = useState("today");
+
+  async function load() {
+    setLoading(true);
+    setErrMsg("");
+    setSelected(null);
+
+    try {
+      // ✅ dev/super_admin only (adjust roles you allow)
+      const { profile } = await getMyProfile();
+      const role = String(profile?.role || "").toLowerCase();
+      if (!["dev", "developer", "super_admin"].includes(role)) {
+        throw new Error("Forbidden: dev/super_admin only");
+      }
+
+      const start = rangeToStart(range);
+
+      // 1) Load logs
+      let query = supabase
+        .from("activity_logs")
+        .select(
+          "id, created_at, actor_user_id, action, entity_type, entity_id, message, metadata, ip_address, application_id, result"
+        )
+        .order("created_at", { ascending: false })
+        .limit(300);
+
+      if (start) query = query.gte("created_at", start);
+      if (result !== "all") query = query.eq("result", result);
+
+      // Type filter is UI-driven, apply via action keywords (or create a real column later)
+      if (type !== "all") {
+        // simple filter by ilike action text
+        const map = {
+          auth: ["login", "auth", "session"],
+          role: ["role"],
+          security: ["security", "policy"],
+          users: ["account", "user", "disable", "archive"],
+          system: ["system", "config", "migration", "backup", "seed"],
+        };
+        const keys = map[type] || [];
+        if (keys.length) {
+          // OR filter
+          const or = keys.map((k) => `action.ilike.%${k}%`).join(",");
+          query = query.or(or);
+        }
+      }
+
+      // Search
+      const qq = q.trim();
+      if (qq) {
+        // Search in action/entity/message/ip/application_id
+        query = query.or(
+          [
+            `action.ilike.%${qq}%`,
+            `entity_type.ilike.%${qq}%`,
+            `entity_id.ilike.%${qq}%`,
+            `message.ilike.%${qq}%`,
+            `ip_address.ilike.%${qq}%`,
+            `application_id.ilike.%${qq}%`,
+          ].join(",")
+        );
+      }
+
+      const { data: rows, error } = await query;
+      if (error) throw error;
+
+      // 2) Resolve actor display via profiles (since actor_user_id FK is auth.users)
+      const actorIds = Array.from(new Set((rows || []).map((r) => r.actor_user_id).filter(Boolean)));
+      let actorMap = new Map();
+
+      if (actorIds.length) {
+        const { data: profs, error: pErr } = await supabase
+          .from("profiles")
+          .select("user_id, full_name, email, role")
+          .in("user_id", actorIds);
+
+        if (pErr) throw pErr;
+
+        (profs || []).forEach((p) => {
+          actorMap.set(p.user_id, {
+            name: p.full_name || p.email || p.user_id,
+            email: p.email || "",
+            role: p.role || "",
+          });
+        });
+      }
+
+      const mapped = (rows || []).map((r) => {
+        const actor = actorMap.get(r.actor_user_id);
+        const actorLabel = actor?.name || (r.actor_user_id ? r.actor_user_id.slice(0, 8) : "unknown");
+
+        return {
+          id: r.id,
+          at: r.created_at ? new Date(r.created_at).toLocaleString() : "—",
+          actor: actorLabel,
+          actor_email: actor?.email || "",
+          action: r.action,
+          target: r.entity_type ? `${r.entity_type}${r.entity_id ? `:${r.entity_id}` : ""}` : (r.entity_id || "—"),
+          result: r.result,
+          ip: r.ip_address || "—",
+          meta: r.message || "",
+          raw: r,
+        };
+      });
+
+      setLogs(mapped);
+    } catch (e) {
+      setErrMsg(String(e?.message || e));
+      setLogs([]);
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  useEffect(() => {
+    load();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   const filtered = useMemo(() => {
-    const qq = q.trim().toLowerCase();
-
-    return logs.filter((l) => {
-      const matchQ =
-        !qq ||
-        String(l.actor).toLowerCase().includes(qq) ||
-        String(l.action).toLowerCase().includes(qq) ||
-        String(l.target).toLowerCase().includes(qq) ||
-        String(l.ip).toLowerCase().includes(qq) ||
-        String(l.meta).toLowerCase().includes(qq);
-
-      const a = (l.action || "").toLowerCase();
-      const matchType =
-        type === "all" ||
-        (type === "auth" && (a.includes("login") || a.includes("auth") || a.includes("session"))) ||
-        (type === "role" && a.includes("role")) ||
-        (type === "security" && (a.includes("security") || a.includes("policy"))) ||
-        (type === "users" && (a.includes("account") || a.includes("user") || a.includes("disable") || a.includes("archive"))) ||
-        (type === "system" && (a.includes("system") || a.includes("config") || a.includes("migration")));
-
-      const matchResult = result === "all" || (l.result || "").toLowerCase() === result;
-
-      // range is UI-only; keep it for later
-      return matchQ && matchType && matchResult;
-    });
-  }, [logs, q, type, result]);
+    // already filtered server-side, but keep client-safe
+    return logs;
+  }, [logs]);
 
   const columns = [
     { key: "at", label: "Time" },
@@ -207,7 +269,7 @@ export default function ActivityLogs() {
     },
     {
       key: "meta",
-      label: "Meta",
+      label: "Message",
       render: (l) => <span className="text-xs text-black/60">{l.meta}</span>,
     },
     {
@@ -231,15 +293,27 @@ export default function ActivityLogs() {
         subtitle="Track system actions, auth events, role changes, and security-related activity."
         right={
           <div className="flex items-center gap-2">
-            <button className="rounded-2xl border border-black/10 bg-[#fafafa] px-4 py-2 text-xs font-semibold hover:bg-black/5">
+            <button
+              onClick={() => alert("Export CSV: wire later")}
+              className="rounded-2xl border border-black/10 bg-[#fafafa] px-4 py-2 text-xs font-semibold hover:bg-black/5"
+            >
               Export CSV
             </button>
-            <button className="rounded-2xl bg-[#e7aa2f] px-4 py-2 text-xs font-semibold text-black hover:opacity-90">
+            <button
+              onClick={load}
+              className="rounded-2xl bg-[#e7aa2f] px-4 py-2 text-xs font-semibold text-black hover:opacity-90"
+            >
               Refresh
             </button>
           </div>
         }
       >
+        {errMsg ? (
+          <div className="mb-4 rounded-xl border border-rose-200 bg-rose-50 px-3 py-2 text-xs font-semibold text-rose-800">
+            {errMsg}
+          </div>
+        ) : null}
+
         {/* Filters */}
         <div className="mb-4 grid gap-3 md:grid-cols-5">
           <div className="md:col-span-2">
@@ -247,7 +321,7 @@ export default function ActivityLogs() {
             <input
               value={q}
               onChange={(e) => setQ(e.target.value)}
-              placeholder="Search actor, action, target, IP, meta…"
+              placeholder="Search action, entity, message, IP, application_id…"
               className="mt-1 w-full rounded-2xl border border-black/10 bg-[#fafafa] px-4 py-2 text-sm outline-none focus:ring-2 focus:ring-black/10"
             />
           </div>
@@ -295,13 +369,28 @@ export default function ActivityLogs() {
               <option value="custom">Custom (UI)</option>
             </select>
           </div>
+
+          <div className="md:col-span-5 flex justify-end">
+            <button
+              onClick={load}
+              disabled={loading}
+              className="rounded-2xl border border-black/10 bg-white px-4 py-2 text-xs font-semibold hover:bg-black/5 disabled:opacity-60"
+            >
+              Apply Filters
+            </button>
+          </div>
         </div>
 
-        {/* Table */}
-        <Table columns={columns} rows={filtered} />
+        {loading ? (
+          <div className="rounded-2xl border border-black/10 bg-white p-5 text-sm font-semibold text-black/60">
+            Loading…
+          </div>
+        ) : (
+          <Table columns={columns} rows={filtered} />
+        )}
       </Card>
 
-      {/* Details drawer/modal (simple) */}
+      {/* Details */}
       {selected ? (
         <div className="rounded-[28px] border border-black/10 bg-white p-5 shadow-sm">
           <div className="mb-4 flex items-start justify-between gap-4">
@@ -317,48 +406,9 @@ export default function ActivityLogs() {
             </button>
           </div>
 
-          <div className="grid gap-3 md:grid-cols-2">
-            <div className="rounded-[22px] border border-black/10 bg-[#fafafa] p-4">
-              <div className="text-xs text-black/50">Timestamp</div>
-              <div className="mt-1 text-sm font-semibold">{selected.at}</div>
-            </div>
-
-            <div className="rounded-[22px] border border-black/10 bg-[#fafafa] p-4">
-              <div className="text-xs text-black/50">Result</div>
-              <div className="mt-2">
-                <Badge tone={toneForResult(selected.result)}>{selected.result}</Badge>
-              </div>
-            </div>
-
-            <div className="rounded-[22px] border border-black/10 bg-[#fafafa] p-4">
-              <div className="text-xs text-black/50">Actor</div>
-              <div className="mt-1 text-sm font-semibold">{selected.actor}</div>
-              <div className="mt-1 text-xs text-black/50">IP: {selected.ip}</div>
-            </div>
-
-            <div className="rounded-[22px] border border-black/10 bg-[#fafafa] p-4">
-              <div className="text-xs text-black/50">Action</div>
-              <div className="mt-2 flex flex-wrap items-center gap-2">
-                <Badge tone={toneForAction(selected.action)}>{selected.action}</Badge>
-                <span className="text-xs text-black/50">→</span>
-                <span className="text-sm font-semibold">{selected.target}</span>
-              </div>
-            </div>
-
-            <div className="md:col-span-2 rounded-[22px] border border-black/10 bg-[#fafafa] p-4">
-              <div className="text-xs text-black/50">Meta</div>
-              <div className="mt-1 text-sm text-black/70">{selected.meta}</div>
-            </div>
-          </div>
-
-          <div className="mt-4 flex justify-end gap-2">
-            <button className="rounded-2xl border border-black/10 bg-white px-4 py-2 text-xs font-semibold hover:bg-black/5">
-              Copy JSON (UI)
-            </button>
-            <button className="rounded-2xl bg-[#e7aa2f] px-4 py-2 text-xs font-semibold text-black hover:opacity-90">
-              Create Report (UI)
-            </button>
-          </div>
+          <pre className="overflow-auto rounded-2xl border border-black/10 bg-[#fafafa] p-4 text-xs text-black/70">
+{JSON.stringify(selected.raw, null, 2)}
+          </pre>
         </div>
       ) : null}
     </div>

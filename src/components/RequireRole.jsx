@@ -4,12 +4,13 @@ import { supabase } from "../lib/supabaseClient";
 
 function routeForRole(role) {
   const r = (role || "").toLowerCase();
-  if (r === "admin") return "/admin";
+  if (r === "admin" || r === "super_admin") return "/admin";
   if (r === "teacher") return "/teacher/dashboard";
   if (r === "student") return "/student/dashboard";
   if (r === "dev") return "/dev";
   return "/login";
 }
+
 
 export default function RequireRole({ allow = [] }) {
   const loc = useLocation();
@@ -74,6 +75,12 @@ export default function RequireRole({ allow = [] }) {
 
         // Force password change routing
         if (mustChange) {
+  if ((role === "admin" || role === "super_admin") && !loc.pathname.startsWith("/admin/change-password")) {
+    setSafe({ loading: false, ok: false, role, mustChange: true, authed: true });
+    running = false;
+    return;
+  }
+
           if (role === "teacher" && !loc.pathname.startsWith("/teacher/change-password")) {
             setSafe({ loading: false, ok: false, role: "teacher", mustChange: true, authed: true });
             running = false;
@@ -118,10 +125,12 @@ export default function RequireRole({ allow = [] }) {
 
   if (state.loading) return <div className="p-6 text-sm text-black/60">Checking access…</div>;
 
-  if (state.mustChange) {
-    if (state.role === "teacher") return <Navigate to="/teacher/change-password" replace />;
-    if (state.role === "student") return <Navigate to="/student/change-password" replace />;
-  }
+if (state.mustChange) {
+  if (state.role === "teacher") return <Navigate to="/teacher/change-password" replace />;
+  if (state.role === "student") return <Navigate to="/student/change-password" replace />;
+  if (state.role === "admin" || state.role === "super_admin") return <Navigate to="/admin/change-password" replace />;
+}
+
 
   if (!state.ok) {
     if (state.role) return <Navigate to={routeForRole(state.role)} replace />;

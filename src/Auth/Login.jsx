@@ -39,6 +39,7 @@ function routeForRole(role) {
   if (r === "admin") return "/admin";
   if (r === "teacher") return "/teacher/dashboard";
   if (r === "student") return "/student/dashboard";
+  if (r === "super_admin") return "/admin";
   if (r === "dev") return "/dev";
   return "/login";
 }

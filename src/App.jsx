@@ -37,11 +37,7 @@ import StudentSettings from "./student/StudentSettings";
 import DevLayout from "./layout/DevLayout.js";
 import DevDashboard from "./dev/pages/Dashboard.jsx";
 import AdminManagement from "./dev/pages/AdminManagement.jsx";
-import RoleManagement from "./dev/pages/RoleManagement.jsx";
 import ActivityLogs from "./dev/pages/ActivityLogs.jsx";
-import SecuritySettings from "./dev/pages/SecuritySettings.jsx";
-import SystemConfiguration from "./dev/pages/SystemConfiguration.jsx";
-import DatabaseManagement from "./dev/pages/DatabaseManagement.jsx";
 import AuditReports from "./dev/pages/AuditReports.jsx";
 
 export default function App() {
@@ -57,7 +53,7 @@ export default function App() {
         {/* ===========================
             ADMIN (protected)
            =========================== */}
-        <Route element={<RequireRole allow={["admin"]} />}>
+        <Route element={<RequireRole allow={["admin", "super_admin"]} />}>
           <Route path="/admin" element={<AdminLayout />}>
             <Route index element={<AdminHome />} />
             <Route path="students/enrollment" element={<Enrollment />} />
@@ -110,12 +106,7 @@ export default function App() {
         </Route>
 
 
-        <Route element={<RequirePasswordChange />}>
-  <Route path="/student" element={<StudentDashboard />} />
-  {/* other protected student routes */}
-</Route>
-
-<Route path="/student/change-password" element={<ChangePassword />} />
+ 
 
 
         {/* ===========================
@@ -125,11 +116,9 @@ export default function App() {
           <Route path="/dev" element={<DevLayout />}>
             <Route index element={<DevDashboard />} />
             <Route path="admins" element={<AdminManagement />} />
-            <Route path="roles" element={<RoleManagement />} />
+
             <Route path="activity" element={<ActivityLogs />} />
-            <Route path="security" element={<SecuritySettings />} />
-            <Route path="config" element={<SystemConfiguration />} />
-            <Route path="database" element={<DatabaseManagement />} />
+           
             <Route path="audit" element={<AuditReports />} />
           </Route>
         </Route>
