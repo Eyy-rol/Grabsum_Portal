@@ -1,13 +1,16 @@
 // src/admin/AdminHome.jsx
-// Admin Home (wired to Supabase) — Stats + Quick shortcuts + Activity Logs
-// - Uses @tanstack/react-query for polling
-// - Activity logs: supports teacher/student/enrollment/announcement actions
-// - Quick navigation cards include an arrow shortcut (→)
-// NOTE: Adjust table/column names if your schema differs.
+// Admin Home (wired to Supabase) — Stats + Quick shortcuts + Activity Logs + Calendar
+// Changes (per request):
+// ✅ “Recent Activity” card smaller to make room for calendar
+// ✅ Removed “View all” from Calendar
+// ✅ Removed Shortcuts card (chips) at the bottom
+// ✅ Everything is routable/clickable (cards + activity rows)
+// ✅ Teachers count is fetched (kept + improved; supports fallback column)
+// ✅ Recent activity logs modernized (card-like rows + hover + icon + pill time)
 
-import React from "react";
+import React, { useMemo } from "react";
 import { useQuery } from "@tanstack/react-query";
-import { supabase } from "../../lib/supabaseClient"; // ✅ adjust path if needed
+import { supabase } from "../../lib/supabaseClient";
 import {
   Users,
   Clock,
@@ -17,9 +20,13 @@ import {
   LayoutList,
   Activity,
   ArrowRight,
+  UserCog,
+  Bell,
+  ShieldCheck,
+  BookOpenCheck,
 } from "lucide-react";
 import { formatDistanceToNow } from "date-fns";
-import CalendarWidget from "../../components/CalendarWidget"; // ✅ adjust path if needed
+import CalendarWidget from "../../components/CalendarWidget";
 
 /* =======================
    TOKENS (light + gold)
@@ -40,7 +47,6 @@ const TOKENS = {
 ======================= */
 
 async function fetchEnrollmentStats() {
-  // NOTE: Your earlier code uses "enrollment" table and "st_application_status"
   const totalRes = await supabase
     .from("enrollment")
     .select("id", { count: "exact", head: true });
@@ -66,14 +72,15 @@ async function fetchEnrollmentStats() {
 }
 
 async function fetchTeachersCount() {
-  // NOTE: Your schema might have "teachers" with either "id" or "user_id"
-  // If "id" doesn't exist, change to: .select("user_id", { count: "exact", head: true })
-  const res = await supabase
-    .from("teachers")
-    .select("id", { count: "exact", head: true });
+  // Handles both `id` or `user_id` column setups gracefully.
+  const r1 = await supabase.from("teachers").select("id", { count: "exact", head: true });
+  if (!r1.error) return r1.count ?? 0;
 
-  if (res.error) return 0;
-  return res.count ?? 0;
+  const r2 = await supabase.from("teachers").select("user_id", { count: "exact", head: true });
+  if (!r2.error) return r2.count ?? 0;
+
+  // If both fail, surface the original error to React Query (so you can see it).
+  throw r1.error;
 }
 
 function formatStudentName(e) {
@@ -83,17 +90,6 @@ function formatStudentName(e) {
   return `${e.st_lname}, ${e.st_fname}${mi}${ext}`.trim();
 }
 
-/**
- * Activity logs wiring:
- * - Reads activity_logs + joins to enrollment by application_id (based on your FK)
- * - Falls back to metadata content if join is missing
- *
- * IMPORTANT:
- * Your table definition shows:
- *   activity_logs.application_id varchar(50) FK -> enrollment(application_id)
- * So we join using:
- *   enrollment:enrollment!activity_logs_application_id_fkey (...)
- */
 async function fetchActivities() {
   const { data, error } = await supabase
     .from("activity_logs")
@@ -128,24 +124,21 @@ async function fetchActivities() {
     const e = a.enrollment;
     const studentName = formatStudentName(e);
 
-    // classify type for colored dot
+    // classify type
     let type = "system";
     const action = String(a.action || "");
     if (action.startsWith("enrollment")) type = "student";
     if (action.startsWith("teacher")) type = "teacher";
     if (action.startsWith("announcement")) type = "announcement";
     if (action.startsWith("calendar")) type = "calendar";
-    if (action.startsWith("section")) type = "section";
+    if (action.startsWith("section") || action.startsWith("student.section")) type = "section";
 
-    // Build a nice text message
     let text = a.message || a.action || "Activity";
 
-    // Special: enrollment created
     if (a.action === "enrollment.created" && studentName) {
       text = `New application submitted: ${studentName}${e?.application_id ? ` (App ID: ${e.application_id})` : ""}`;
     }
 
-    // Special: status changed
     if (a.action === "enrollment.status_changed") {
       const from = a.metadata?.from ?? a.metadata?.old ?? a.metadata?.prev;
       const to = a.metadata?.to ?? a.metadata?.new ?? a.metadata?.next;
@@ -156,38 +149,32 @@ async function fetchActivities() {
       }
     }
 
-    // Special: enrolled
     if (a.action === "enrollment.status_changed" && a.metadata?.to === "Enrolled") {
-      if (studentName) {
-        text = `Student enrolled: ${studentName}${e?.application_id ? ` (App ID: ${e.application_id})` : ""}`;
-      } else {
-        text = `Student enrolled`;
-      }
+      text = studentName
+        ? `Student enrolled: ${studentName}${e?.application_id ? ` (App ID: ${e.application_id})` : ""}`
+        : `Student enrolled`;
     }
 
-    // Teacher created
     if (a.action === "teacher.created") {
       const tname = a.metadata?.name || a.metadata?.teacher_name;
-      text = tname ? `New teacher added: ${tname}` : (a.message || "New teacher added");
+      text = tname ? `New teacher added: ${tname}` : a.message || "New teacher added";
     }
 
-    // Teacher deleted
     if (a.action === "teacher.deleted") {
       const tname = a.metadata?.name || a.metadata?.teacher_name;
-      text = tname ? `Teacher deleted: ${tname}` : (a.message || "Teacher deleted");
+      text = tname ? `Teacher deleted: ${tname}` : a.message || "Teacher deleted";
     }
 
-    // Calendar event created/updated/deleted (if you implement later)
     if (a.action === "calendar.created") {
       const title = a.metadata?.title;
-      text = title ? `Calendar event added: ${title}` : (a.message || "Calendar event added");
-    }
-    if (a.action === "calendar.deleted") {
-      const title = a.metadata?.title;
-      text = title ? `Calendar event deleted: ${title}` : (a.message || "Calendar event deleted");
+      text = title ? `Calendar event added: ${title}` : a.message || "Calendar event added";
     }
 
-    // Section assignment (student.section_assigned)
+    if (a.action === "calendar.deleted") {
+      const title = a.metadata?.title;
+      text = title ? `Calendar event deleted: ${title}` : a.message || "Calendar event deleted";
+    }
+
     if (a.action === "student.section_assigned" && studentName) {
       text = `Section assignment updated: ${studentName}`;
     }
@@ -209,7 +196,6 @@ async function fetchActivities() {
 ======================= */
 
 export default function AdminHome({ onNavigate }) {
-  // Stats
   const statsQ = useQuery({
     queryKey: ["adminhome", "stats"],
     queryFn: fetchEnrollmentStats,
@@ -222,14 +208,18 @@ export default function AdminHome({ onNavigate }) {
     refetchInterval: 30000,
   });
 
-  // Activity logs
   const activityQ = useQuery({
     queryKey: ["adminhome", "activity"],
     queryFn: fetchActivities,
-    refetchInterval: 15000, // more responsive for logs
+    refetchInterval: 15000,
   });
 
   const anyError = statsQ.error || teachersQ.error || activityQ.error;
+
+  const liveText = useMemo(() => {
+    const fetching = statsQ.isFetching || teachersQ.isFetching || activityQ.isFetching;
+    return fetching ? "Refreshing data…" : null;
+  }, [statsQ.isFetching, teachersQ.isFetching, activityQ.isFetching]);
 
   return (
     <div style={styles.page}>
@@ -249,8 +239,7 @@ export default function AdminHome({ onNavigate }) {
 
       {anyError ? (
         <div style={styles.errorBox}>
-          <strong>Dashboard data error:</strong>{" "}
-          {String(anyError?.message || anyError)}
+          <strong>Dashboard data error:</strong> {String(anyError?.message || anyError)}
         </div>
       ) : null}
 
@@ -261,34 +250,38 @@ export default function AdminHome({ onNavigate }) {
           value={statsQ.data?.total}
           icon={<Users size={18} />}
           loading={statsQ.isLoading}
+          onClick={() => onNavigate?.("enrollment")}
         />
         <StatCard
           title="Pending Applications"
           value={statsQ.data?.pending}
           icon={<Clock size={18} />}
           loading={statsQ.isLoading}
+          onClick={() => onNavigate?.("enrollment")}
         />
         <StatCard
           title="Total Enrolled"
           value={statsQ.data?.enrolled}
           icon={<GraduationCap size={18} />}
           loading={statsQ.isLoading}
+          onClick={() => onNavigate?.("students")}
         />
         <StatCard
           title="Total Teachers"
           value={teachersQ.data}
           icon={<Users size={18} />}
           loading={teachersQ.isLoading}
+          onClick={() => onNavigate?.("teachers")}
         />
       </div>
 
-      {/* Quick Actions */}
+      {/* Quick Actions (routable) */}
       <div style={styles.quickGrid}>
         <QuickCard
           icon={<LayoutList size={18} />}
           label="Teacher Schedule"
           hint="View schedules"
-          onClick={() => onNavigate?.("teacher_schedule")}
+          onClick={() => onNavigate?.("admin/teacher/schedule")}
         />
         <QuickCard
           icon={<CalendarDays size={18} />}
@@ -304,56 +297,52 @@ export default function AdminHome({ onNavigate }) {
         />
       </div>
 
-      {/* Activity Logs */}
+      {/* Lower Grid */}
       <div style={styles.lowerGrid}>
+        {/* Recent Activity — smaller + modern list */}
         <Card
           title="Recent Activity"
-          subtitle="Latest 12 actions (auto-refresh)"
+          subtitle="Latest actions (auto-refresh)"
+          onClickHeader={() => onNavigate?.("activity_logs")}
+          headerHint="Open full activity logs"
           rightAction={
             <button
               type="button"
               onClick={() => onNavigate?.("activity_logs")}
-              style={styles.viewAllBtn}
+              style={styles.headerLinkBtn}
               title="Open full activity logs"
             >
-              View all <ArrowRight size={16} />
+              Open logs <ArrowRight size={16} />
             </button>
           }
+          compact
         >
           {activityQ.isLoading ? (
             <div style={{ color: TOKENS.muted }}>Loading activity…</div>
           ) : (
-            <div style={styles.activityList}>
+            <div style={styles.activityListCompact}>
               {(activityQ.data || []).map((a) => (
-                <div key={a.id} style={styles.activityItem}>
-                  <div style={{ ...styles.activityDot, background: activityColor(a.type) }} />
-                  <div style={{ minWidth: 0 }}>
-                    <div style={styles.activityText} title={a.text}>
-                      {a.text}
+                <button
+                  key={a.id}
+                  type="button"
+                  style={styles.activityRowBtn}
+                  onClick={() => routeForActivity(a, onNavigate)}
+                  title="Open related page"
+                >
+                  <div style={styles.activityIconWrap}>{activityIcon(a.type)}</div>
+
+                  <div style={{ minWidth: 0, flex: 1 }}>
+                    <div style={styles.activityTextModern}>{a.text}</div>
+                    <div style={styles.activityMetaRow}>
+                      <span style={styles.activityPill}>{labelForType(a.type)}</span>
+                      <span style={styles.activityTime}>
+                        {formatDistanceToNow(a.at, { addSuffix: true })}
+                      </span>
                     </div>
-                    <small style={styles.time}>
-                      {formatDistanceToNow(a.at, { addSuffix: true })}
-                    </small>
                   </div>
 
-                  {/* Optional: click-through shortcut based on action */}
-                  <button
-                    type="button"
-                    style={styles.rowArrowBtn}
-                    title="Open related page"
-                    onClick={() => {
-                      // Simple routing map (adjust keys to your app routes)
-                      const action = String(a.action || "");
-                      if (action.startsWith("teacher")) return onNavigate?.("teachers");
-                      if (action.startsWith("enrollment")) return onNavigate?.("enrollment");
-                      if (action.startsWith("announcement")) return onNavigate?.("announcements");
-                      if (action.startsWith("calendar")) return onNavigate?.("calendar");
-                      return onNavigate?.("activity_logs");
-                    }}
-                  >
-                    <ArrowRight size={16} />
-                  </button>
-                </div>
+                  <ArrowRight size={16} style={{ color: TOKENS.gold }} />
+                </button>
               ))}
 
               {(activityQ.data || []).length === 0 ? (
@@ -363,58 +352,71 @@ export default function AdminHome({ onNavigate }) {
           )}
         </Card>
 
-<Card
-  title="Calendar"
-  subtitle="Read-only view of school events"
-  rightAction={
-    <button
-      type="button"
-      onClick={() => onNavigate?.("calendar")}
-      style={styles.viewAllBtn}
-      title="Open full calendar"
-    >
-      View <ArrowRight size={16} />
-    </button>
-  }
->
-  <CalendarWidget readOnly />
-</Card>
+        {/* Calendar — removed View All + clickable header */}
+        <Card
+          title="Calendar"
+          subtitle="Read-only view of school events"
+          onClickHeader={() => onNavigate?.("calendar")}
+          headerHint="Open calendar"
+        >
+          <CalendarWidget readOnly />
+        </Card>
+      </div>
 
-
-  <Card title="Shortcuts" subtitle="Fast access">
-    <div style={styles.shortcutGrid}>
-      <ShortcutChip label="Enrollment" onClick={() => onNavigate?.("enrollment")} />
-      <ShortcutChip label="Students" onClick={() => onNavigate?.("students")} />
-      <ShortcutChip label="Teachers" onClick={() => onNavigate?.("teachers")} />
-      <ShortcutChip label="Calendar" onClick={() => onNavigate?.("calendar")} />
-    </div>
-  </Card>
-</div>
-      
-
-      {(statsQ.isFetching || teachersQ.isFetching || activityQ.isFetching) ? (
-        <div style={{ marginTop: 12, color: TOKENS.muted, fontSize: 12 }}>
-          Refreshing data…
-        </div>
+      {liveText ? (
+        <div style={{ marginTop: 12, color: TOKENS.muted, fontSize: 12 }}>{liveText}</div>
       ) : null}
     </div>
   );
 }
 
 /* =======================
+   HELPERS (routing + icons)
+======================= */
+
+function routeForActivity(a, onNavigate) {
+  const action = String(a.action || "");
+  if (action.startsWith("teacher")) return onNavigate?.("teachers");
+  if (action.startsWith("enrollment")) return onNavigate?.("enrollment");
+  if (action.startsWith("announcement")) return onNavigate?.("announcements");
+  if (action.startsWith("calendar")) return onNavigate?.("calendar");
+  if (action.startsWith("section") || action.startsWith("student.section")) return onNavigate?.("students");
+  return onNavigate?.("activity_logs");
+}
+
+function labelForType(type) {
+  if (type === "teacher") return "Teacher";
+  if (type === "student") return "Enrollment";
+  if (type === "announcement") return "Announcement";
+  if (type === "calendar") return "Calendar";
+  if (type === "section") return "Section";
+  return "System";
+}
+
+function activityIcon(type) {
+  const common = { size: 16 };
+  if (type === "teacher") return <UserCog {...common} />;
+  if (type === "student") return <BookOpenCheck {...common} />;
+  if (type === "announcement") return <Bell {...common} />;
+  if (type === "calendar") return <CalendarDays {...common} />;
+  if (type === "section") return <ShieldCheck {...common} />;
+  return <Activity {...common} />;
+}
+
+/* =======================
    UI COMPONENTS
 ======================= */
 
-function StatCard({ title, value, icon, loading }) {
+function StatCard({ title, value, icon, loading, onClick }) {
   return (
-    <div style={styles.statCard}>
+    <button type="button" onClick={onClick} style={styles.statCardBtn} title={`Open ${title}`}>
       <div style={styles.statIcon}>{icon}</div>
-      <div style={{ minWidth: 0 }}>
+      <div style={{ minWidth: 0, textAlign: "left" }}>
         <div style={styles.statValue}>{loading ? "…" : value ?? 0}</div>
         <div style={styles.statLabel}>{title}</div>
       </div>
       <div style={styles.goldEdge} />
-    </div>
+    </button>
   );
 }
 
@@ -433,37 +435,28 @@ function QuickCard({ icon, label, hint, onClick }) {
   );
 }
 
-function Card({ title, subtitle, rightAction, children }) {
+function Card({ title, subtitle, rightAction, children, onClickHeader, headerHint, compact }) {
   return (
-    <div style={styles.card}>
+    <div style={{ ...styles.card, ...(compact ? styles.cardCompact : null) }}>
       <div style={styles.cardHeaderRow}>
-        <div>
-          <h3 style={styles.cardTitle}>{title}</h3>
-          {subtitle ? <div style={styles.cardSub}>{subtitle}</div> : null}
-        </div>
+        <button
+          type="button"
+          onClick={onClickHeader}
+          style={styles.cardHeaderBtn}
+          title={headerHint || ""}
+        >
+          <div>
+            <h3 style={styles.cardTitle}>{title}</h3>
+            {subtitle ? <div style={styles.cardSub}>{subtitle}</div> : null}
+          </div>
+        </button>
+
         {rightAction ? <div>{rightAction}</div> : null}
       </div>
+
       <div style={{ marginTop: 12 }}>{children}</div>
     </div>
   );
-}
-
-function ShortcutChip({ label, onClick }) {
-  return (
-    <button type="button" onClick={onClick} style={styles.chip}>
-      <span style={{ fontWeight: 900 }}>{label}</span>
-      <ArrowRight size={16} />
-    </button>
-  );
-}
-
-function activityColor(type) {
-  if (type === "teacher") return "#3B82F6";
-  if (type === "student") return TOKENS.gold;
-  if (type === "announcement") return "#F59E0B";
-  if (type === "calendar") return "#10B981";
-  if (type === "section") return "#8B5CF6";
-  return "#D1D5DB";
 }
 
 /* =======================
@@ -514,7 +507,7 @@ const styles = {
     gap: 14,
   },
 
-  statCard: {
+  statCardBtn: {
     position: "relative",
     background: TOKENS.card,
     borderRadius: 16,
@@ -524,6 +517,8 @@ const styles = {
     border: `1px solid ${TOKENS.border}`,
     boxShadow: "0 10px 25px rgba(0,0,0,0.06)",
     overflow: "hidden",
+    cursor: "pointer",
+    textAlign: "left",
   },
 
   goldEdge: {
@@ -545,6 +540,7 @@ const styles = {
     display: "grid",
     placeItems: "center",
     color: TOKENS.text,
+    flex: "0 0 auto",
   },
 
   statValue: { fontSize: 28, fontWeight: 900, lineHeight: 1.1, color: TOKENS.text },
@@ -578,6 +574,7 @@ const styles = {
     background: TOKENS.goldSoft,
     border: "1px solid rgba(218,165,32,0.28)",
     color: TOKENS.text,
+    flex: "0 0 auto",
   },
 
   quickChevron: {
@@ -587,11 +584,13 @@ const styles = {
     placeItems: "center",
   },
 
+  // Make Recent Activity smaller so Calendar has space
   lowerGrid: {
     marginTop: 16,
     display: "grid",
-    gridTemplateColumns: "1.2fr 1fr",
+    gridTemplateColumns: "1fr 1.15fr", // calendar slightly bigger
     gap: 14,
+    alignItems: "start",
   },
 
   card: {
@@ -602,6 +601,10 @@ const styles = {
     boxShadow: "0 10px 25px rgba(0,0,0,0.05)",
   },
 
+  cardCompact: {
+    padding: 14,
+  },
+
   cardHeaderRow: {
     display: "flex",
     alignItems: "flex-start",
@@ -609,10 +612,17 @@ const styles = {
     gap: 10,
   },
 
+  cardHeaderBtn: {
+    all: "unset",
+    cursor: "pointer",
+    display: "block",
+    flex: 1,
+  },
+
   cardTitle: { margin: 0, fontWeight: 900, color: TOKENS.text },
   cardSub: { marginTop: 4, color: TOKENS.muted, fontSize: 12 },
 
-  viewAllBtn: {
+  headerLinkBtn: {
     display: "inline-flex",
     alignItems: "center",
     gap: 8,
@@ -626,83 +636,71 @@ const styles = {
     boxShadow: "0 8px 20px rgba(0,0,0,0.06)",
   },
 
-  activityList: {
-    maxHeight: 340,
+  // Modern activity list (smaller height)
+  activityListCompact: {
+    maxHeight: 260,
     overflowY: "auto",
     display: "grid",
-    gap: 12,
+    gap: 10,
     paddingRight: 6,
   },
 
-  activityItem: {
+  activityRowBtn: {
+    width: "100%",
     display: "flex",
-    gap: 10,
+    gap: 12,
     alignItems: "flex-start",
+    textAlign: "left",
+    cursor: "pointer",
+    borderRadius: 14,
+    border: `1px solid ${TOKENS.border}`,
+    background: "linear-gradient(180deg, rgba(255,255,255,1), rgba(0,0,0,0.01))",
+    padding: 12,
+    boxShadow: "0 10px 22px rgba(0,0,0,0.04)",
   },
 
-  activityDot: {
-    width: 10,
-    height: 10,
-    borderRadius: "50%",
-    marginTop: 6,
+  activityIconWrap: {
+    width: 34,
+    height: 34,
+    borderRadius: 12,
+    background: "rgba(17,24,39,0.04)",
+    border: "1px solid rgba(0,0,0,0.06)",
+    display: "grid",
+    placeItems: "center",
+    color: TOKENS.text,
     flex: "0 0 auto",
   },
 
-  activityText: {
+  activityTextModern: {
     color: TOKENS.text,
-    fontWeight: 700,
+    fontWeight: 800,
     overflow: "hidden",
     textOverflow: "ellipsis",
     whiteSpace: "nowrap",
-    maxWidth: 560,
+    maxWidth: "100%",
   },
 
-  time: { color: "#9CA3AF", fontSize: 12 },
-
-  rowArrowBtn: {
-    marginLeft: "auto",
-    border: `1px solid ${TOKENS.border}`,
-    background: "#fff",
-    borderRadius: 12,
-    width: 36,
-    height: 36,
-    display: "grid",
-    placeItems: "center",
-    cursor: "pointer",
-    color: TOKENS.gold,
-    boxShadow: "0 8px 20px rgba(0,0,0,0.04)",
-  },
-
-  tipList: {
-    margin: 0,
-    paddingLeft: 18,
-    color: TOKENS.text,
-    display: "grid",
-    gap: 10,
-  },
-
-  tipItem: {
-    color: TOKENS.text,
-    fontWeight: 600,
-  },
-
-  shortcutGrid: {
-    display: "grid",
-    gridTemplateColumns: "repeat(2, minmax(0, 1fr))",
-    gap: 10,
-  },
-
-  chip: {
-    display: "inline-flex",
+  activityMetaRow: {
+    marginTop: 6,
+    display: "flex",
     alignItems: "center",
-    justifyContent: "space-between",
-    gap: 10,
-    padding: "10px 12px",
-    borderRadius: 14,
-    border: `1px solid ${TOKENS.border}`,
-    background: TOKENS.goldSoft,
-    cursor: "pointer",
+    gap: 8,
+    flexWrap: "wrap",
+  },
+
+  activityPill: {
+    fontSize: 11,
+    fontWeight: 900,
     color: TOKENS.text,
-    boxShadow: "0 10px 25px rgba(0,0,0,0.04)",
+    background: TOKENS.goldSoft,
+    border: "1px solid rgba(218,165,32,0.25)",
+    padding: "4px 8px",
+    borderRadius: 999,
+  },
+
+  activityTime: {
+    color: "#9CA3AF",
+    fontSize: 12,
+    fontWeight: 700,
   },
 };
