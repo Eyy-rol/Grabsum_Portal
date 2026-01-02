@@ -1,135 +1,234 @@
+// src/dev/pages/AdminManagement.jsx
 import React, { useMemo, useState } from "react";
-import { AnimatePresence, motion } from "framer-motion";
-import { Plus, Search, Trash2, Pencil, Shield, X, Save, Upload } from "lucide-react";
-import { TOKENS } from "../../styles/tokens.js";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { supabase } from "../../lib/supabaseClient";
+import { TOKENS } from "../../styles/tokens";
+import {
+  Plus,
+  Search,
+  Trash2,
+  Pencil,
+  Eye,
+  X,
+  Save,
+  ArchiveRestore,
+  KeyRound,
+} from "lucide-react";
 
-const ROLE_OPTIONS = ["Super Admin", "Admin", "Moderator", "Staff"];
-const STATUS_OPTIONS = ["Active", "Inactive", "Suspended"];
-
-const PERMS = [
-  "View Students",
-  "Add Students",
-  "Edit Students",
-  "Delete Students",
-  "Approve Enrollments",
-  "Manage Payments",
-  "View Reports",
-  "Export Data",
-  "Manage Subjects/Classes",
-  "Manage Faculty",
-  "System Settings Access",
-  "View Audit Logs",
-];
-
-const MOCK_ADMINS = [
-  {
-    id: "ADM-2025-0001",
-    fullName: "Juan Dela Cruz",
-    email: "juan@grabsum.edu",
-    role: "Super Admin",
-    status: "Active",
-    phone: "0917-000-0000",
-    dept: "IT",
-    createdAt: "2025-01-10",
-    lastLogin: "2025-12-18 09:12",
-    perms: new Set(PERMS),
-    avatarUrl: "",
-  },
-  {
-    id: "ADM-2025-0002",
-    fullName: "Maria Santos",
-    email: "maria@grabsum.edu",
-    role: "Admin",
-    status: "Active",
-    phone: "0917-111-2222",
-    dept: "Registrar",
-    createdAt: "2025-02-05",
-    lastLogin: "2025-12-17 18:04",
-    perms: new Set(["View Students", "Add Students", "Edit Students", "Approve Enrollments"]),
-    avatarUrl: "",
-  },
-];
-
-function nextAdminId(existing) {
-  const year = new Date().getFullYear();
-  const prefix = `ADM-${year}-`;
-  const nums = existing
-    .map((a) => String(a.id || ""))
-    .filter((s) => s.startsWith(prefix))
-    .map((s) => parseInt(s.slice(prefix.length), 10))
-    .filter((n) => Number.isFinite(n));
-  const next = (nums.length ? Math.max(...nums) : 0) + 1;
-  return `${prefix}${String(next).padStart(4, "0")}`;
+function errMsg(e) {
+  return String(e?.message || e || "Unknown error");
 }
 
+const ROLE_OPTIONS = [
+  { value: "admin", label: "admin" },
+  { value: "super_admin", label: "super_admin" },
+];
+
 export default function AdminManagement() {
+  const qc = useQueryClient();
+
   const [q, setQ] = useState("");
-  const [rows, setRows] = useState(MOCK_ADMINS);
+  const [tab, setTab] = useState("active"); // active | archived
   const [modal, setModal] = useState({ open: false, mode: "create", row: null });
+  const [creds, setCreds] = useState(null); // { email, tempPassword, user_id }
+
+  /**
+   * ✅ FETCH ADMINS + PROFILE JOIN
+   * Requires FK: admins.user_id -> profiles.user_id (admins_profile_fkey)
+   */
+  const adminsQ = useQuery({
+    queryKey: ["dev-admins"],
+    queryFn: async () => {
+      const { data, error } = await supabase
+        .from("admins")
+        .select(`
+          user_id,
+          department,
+          phone,
+          is_active,
+          is_archived,
+          created_at,
+          updated_at,
+          profiles:profiles!admins_profile_fkey (
+            email,
+            full_name,
+            role,
+            is_active,
+            is_archived,
+            must_change_password
+          )
+        `)
+        .order("updated_at", { ascending: false });
+
+      if (error) throw error;
+      return data ?? [];
+    },
+  });
+
+  const rows = adminsQ.data ?? [];
+
+  const visibleRows = useMemo(() => {
+    const wantArchived = tab === "archived";
+    return rows.filter((r) => !!r.is_archived === wantArchived);
+  }, [rows, tab]);
 
   const filtered = useMemo(() => {
     const needle = q.trim().toLowerCase();
-    if (!needle) return rows;
-    return rows.filter((r) =>
-      `${r.id} ${r.fullName} ${r.email} ${r.role} ${r.status}`.toLowerCase().includes(needle)
-    );
-  }, [q, rows]);
+    if (!needle) return visibleRows;
 
-  function openCreate() {
-    setModal({
-      open: true,
-      mode: "create",
-      row: {
-        id: nextAdminId(rows),
-        fullName: "",
-        email: "",
-        role: "Admin",
-        status: "Active",
-        phone: "",
-        dept: "",
-        createdAt: new Date().toISOString().slice(0, 10),
-        lastLogin: "—",
-        perms: new Set(),
-        avatarUrl: "",
-      },
+    return visibleRows.filter((r) => {
+      const hay =
+        `${r?.profiles?.email || ""} ${r?.profiles?.full_name || ""} ` +
+        `${r?.profiles?.role || ""} ${r?.department || ""} ${r?.phone || ""}`.toLowerCase();
+      return hay.includes(needle);
     });
-  }
+  }, [visibleRows, q]);
 
-  function openEdit(r) {
-    setModal({ open: true, mode: "edit", row: { ...r, perms: new Set(r.perms || []) } });
-  }
+  // ======================
+  // CREATE ADMIN (Edge Function)
+  // Body: { email, full_name, role: "admin"|"super_admin", department?, phone? }
+  // ======================
+  const createM = useMutation({
+    mutationFn: async (values) => {
+      setCreds(null);
+      const { data, error } = await supabase.functions.invoke("create-admin", {
+        body: values,
+      });
+      if (error) throw error;
+      if (!data?.ok) throw new Error(data?.error || "Create failed");
 
-  function close() {
+      setCreds({
+        email: data.email,
+        tempPassword: data.tempPassword,
+        user_id: data.user_id,
+      });
+
+      return data;
+    },
+    onSuccess: () => qc.invalidateQueries({ queryKey: ["dev-admins"] }),
+  });
+
+  // ======================
+  // UPDATE ADMIN (admins + profiles)
+  // NOTE: We do NOT change auth email here.
+  // ======================
+  const updateM = useMutation({
+    mutationFn: async ({ user_id, values }) => {
+      // admins metadata
+      const { error: aErr } = await supabase
+        .from("admins")
+        .update({
+          department: values.department || null,
+          phone: values.phone || null,
+          is_active: !!values.is_active,
+          is_archived: !!values.is_archived,
+        })
+        .eq("user_id", user_id);
+
+      if (aErr) throw aErr;
+
+      // profiles: role controls admin vs super_admin
+      const { error: pErr } = await supabase
+        .from("profiles")
+        .update({
+          full_name: values.full_name,
+          role: values.role, // ✅ admin or super_admin
+          is_active: !!values.is_active,
+          is_archived: !!values.is_archived,
+        })
+        .eq("user_id", user_id);
+
+      if (pErr) throw pErr;
+    },
+    onSuccess: () => qc.invalidateQueries({ queryKey: ["dev-admins"] }),
+  });
+
+  // ======================
+  // ARCHIVE / RESTORE (sync both)
+  // ======================
+  const archiveM = useMutation({
+    mutationFn: async ({ user_id, is_archived }) => {
+      const { error: aErr } = await supabase
+        .from("admins")
+        .update({ is_archived })
+        .eq("user_id", user_id);
+      if (aErr) throw aErr;
+
+      const { error: pErr } = await supabase
+        .from("profiles")
+        .update({ is_archived })
+        .eq("user_id", user_id);
+      if (pErr) throw pErr;
+    },
+    onSuccess: () => qc.invalidateQueries({ queryKey: ["dev-admins"] }),
+  });
+
+  // ======================
+  // RESET PASSWORD (Edge Function)
+  // Body: { user_id }
+  // Returns: { ok, user_id, tempPassword }
+  // ======================
+  const resetPwdM = useMutation({
+    mutationFn: async ({ user_id }) => {
+      setCreds(null);
+
+      const { data, error } = await supabase.functions.invoke("admin-reset-user-password", {
+        body: { user_id },
+      });
+      if (error) throw error;
+      if (!data?.ok) throw new Error(data?.error || "Reset failed");
+
+      // show email using the current row's profile
+      const row = rows.find((r) => r.user_id === user_id);
+      setCreds({
+        email: row?.profiles?.email || "",
+        tempPassword: data.tempPassword,
+        user_id,
+      });
+
+      return data;
+    },
+  });
+
+  // ======================
+  // UI HANDLERS
+  // ======================
+  function openCreate() {
+    setCreds(null);
+    setModal({ open: true, mode: "create", row: null });
+  }
+  function openView(row) {
+    setCreds(null);
+    setModal({ open: true, mode: "view", row });
+  }
+  function openEdit(row) {
+    setCreds(null);
+    setModal({ open: true, mode: "edit", row });
+  }
+  function closeModal() {
     setModal({ open: false, mode: "create", row: null });
   }
 
-  function save(next) {
-    setRows((prev) => {
-      const idx = prev.findIndex((p) => p.id === next.id);
-      if (idx >= 0) return prev.map((p) => (p.id === next.id ? next : p));
-      return [next, ...prev];
-    });
-    close();
+  function onArchiveToggle(row) {
+    archiveM.mutate({ user_id: row.user_id, is_archived: !row.is_archived });
   }
 
-  function del(id) {
-    const ok = window.confirm(`Delete ${id}?`);
+  function onResetPassword(row) {
+    const ok = window.confirm(`Reset password for ${row?.profiles?.email || row.user_id}?`);
     if (!ok) return;
-    setRows((prev) => prev.filter((p) => p.id !== id));
+    resetPwdM.mutate({ user_id: row.user_id });
   }
 
-  function toggleStatus(r) {
-    const next = r.status === "Active" ? "Suspended" : "Active";
-    setRows((prev) => prev.map((p) => (p.id === r.id ? { ...p, status: next } : p)));
-  }
+  const busy =
+    createM.isPending || updateM.isPending || archiveM.isPending || resetPwdM.isPending;
 
   return (
     <div className="space-y-4">
       <div className="flex flex-col gap-3 md:flex-row md:items-end md:justify-between">
         <div>
-          <div className="text-sm font-extrabold">Admin Account Management</div>
+          <div className="text-sm font-extrabold">Admin Accounts</div>
           <div className="text-xs text-black/55">
-            UI-only: create/edit/suspend admins. Wire to Supabase later.
+            Create and manage admin & super admin accounts (role stored in profiles.role)
           </div>
         </div>
 
@@ -142,77 +241,137 @@ export default function AdminManagement() {
         </button>
       </div>
 
-      <div className={`rounded-2xl border ${TOKENS.border} bg-white/60 p-4`}>
-        <div className="relative md:max-w-md">
-          <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-black/45" />
-          <input
-            value={q}
-            onChange={(e) => setQ(e.target.value)}
-            placeholder="Search admins…"
-            className="w-full rounded-2xl border border-black/10 bg-white/70 px-10 py-2 text-sm outline-none focus:bg-white"
-          />
+      {/* Credentials banner */}
+      {creds ? (
+        <div className="rounded-2xl border border-black/10 bg-white/70 p-4">
+          <div className="text-sm font-extrabold">Login Credentials</div>
+          <div className="mt-2 grid gap-2 text-sm">
+            <div className="flex flex-wrap items-center gap-2">
+              <span className="text-black/60">Email:</span>
+              <span className="font-extrabold">{creds.email || "-"}</span>
+              <button
+                className="rounded-xl border border-black/10 bg-white px-3 py-1 text-xs font-semibold hover:bg-white/80"
+                onClick={() => navigator.clipboard.writeText(String(creds.email || ""))}
+              >
+                Copy
+              </button>
+            </div>
+
+            <div className="flex flex-wrap items-center gap-2">
+              <span className="text-black/60">Temp Password:</span>
+              <span className="font-extrabold">{creds.tempPassword}</span>
+              <button
+                className="rounded-xl border border-black/10 bg-white px-3 py-1 text-xs font-semibold hover:bg-white/80"
+                onClick={() => navigator.clipboard.writeText(String(creds.tempPassword || ""))}
+              >
+                Copy
+              </button>
+            </div>
+
+            <div className="text-xs text-black/55">
+              User will be forced to change password on next login.
+            </div>
+          </div>
+        </div>
+      ) : null}
+
+      {/* Search + Tabs */}
+      <div className="rounded-2xl border border-black/10 bg-white/60 p-4 space-y-3">
+        <div className="flex flex-wrap items-center justify-between gap-3">
+          <div className="relative w-full md:max-w-md">
+            <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-black/45" />
+            <input
+              value={q}
+              onChange={(e) => setQ(e.target.value)}
+              placeholder="Search email, name, role…"
+              className="w-full rounded-2xl border border-black/10 bg-white/70 px-10 py-2 text-sm outline-none focus:bg-white"
+            />
+          </div>
+
+          <div className="flex items-center gap-2">
+            <button
+              onClick={() => setTab("active")}
+              className={`rounded-2xl px-4 py-2 text-sm font-extrabold border border-black/10 ${
+                tab === "active" ? "bg-white" : "bg-white/60"
+              }`}
+            >
+              Active
+            </button>
+            <button
+              onClick={() => setTab("archived")}
+              className={`rounded-2xl px-4 py-2 text-sm font-extrabold border border-black/10 ${
+                tab === "archived" ? "bg-white" : "bg-white/60"
+              }`}
+            >
+              Archived
+            </button>
+          </div>
         </div>
       </div>
 
-      <div className={`overflow-hidden rounded-2xl border ${TOKENS.border} bg-white/70`}>
+      {/* Table */}
+      <div className="overflow-hidden rounded-2xl border border-black/10 bg-white/70">
         <div className="flex items-center justify-between border-b border-black/10 bg-black/[0.02] px-4 py-3">
-          <div className="text-sm font-extrabold">Admin Accounts</div>
+          <div className="text-sm font-extrabold">{tab === "archived" ? "Archived Admins" : "Admins"}</div>
           <div className="text-xs text-black/55">
-            Showing {filtered.length} of {rows.length}
+            Showing {filtered.length} of {visibleRows.length}
           </div>
         </div>
 
-        <div className="overflow-auto">
-          <table className="min-w-[980px] w-full text-left text-sm">
+        {adminsQ.isLoading ? (
+          <div className="p-6 text-sm text-black/60">Loading…</div>
+        ) : adminsQ.isError ? (
+          <div className="p-6 text-sm text-rose-700">Load error: {errMsg(adminsQ.error)}</div>
+        ) : (
+          <table className="w-full text-left text-sm">
             <thead className="bg-black/[0.03] text-xs text-black/60">
               <tr>
-                <th className="px-4 py-3 font-semibold">Admin</th>
-                <th className="px-4 py-3 font-semibold">Admin ID</th>
                 <th className="px-4 py-3 font-semibold">Email</th>
+                <th className="px-4 py-3 font-semibold">Name</th>
                 <th className="px-4 py-3 font-semibold">Role</th>
-                <th className="px-4 py-3 font-semibold">Status</th>
-                <th className="px-4 py-3 font-semibold">Date Created</th>
-                <th className="px-4 py-3 font-semibold">Last Login</th>
+                <th className="px-4 py-3 font-semibold">Active</th>
+                <th className="px-4 py-3 font-semibold">Archived</th>
                 <th className="px-4 py-3 font-semibold text-right">Actions</th>
               </tr>
             </thead>
             <tbody>
               {filtered.map((r) => (
-                <tr key={r.id} className="border-t border-black/10 hover:bg-black/[0.02]">
-                  <td className="px-4 py-3">
-                    <div className="flex items-center gap-3">
-                      <Avatar name={r.fullName} url={r.avatarUrl} />
-                      <div>
-                        <div className="font-semibold">{r.fullName}</div>
-                        <div className="text-xs text-black/55">{r.dept || "—"}</div>
-                      </div>
-                    </div>
-                  </td>
-                  <td className="px-4 py-3 font-semibold">{r.id}</td>
-                  <td className="px-4 py-3 text-black/70">{r.email}</td>
-                  <td className="px-4 py-3">
-                    <Badge>{r.role}</Badge>
-                  </td>
-                  <td className="px-4 py-3">
-                    <StatusPill value={r.status} />
-                  </td>
-                  <td className="px-4 py-3 text-black/70">{r.createdAt}</td>
-                  <td className="px-4 py-3 text-black/70">{r.lastLogin}</td>
+                <tr key={r.user_id} className="border-t border-black/10">
+                  <td className="px-4 py-3">{r?.profiles?.email || "-"}</td>
+                  <td className="px-4 py-3 font-semibold">{r?.profiles?.full_name || "-"}</td>
+                  <td className="px-4 py-3 font-semibold">{r?.profiles?.role || "-"}</td>
+                  <td className="px-4 py-3">{r.is_active ? "Yes" : "No"}</td>
+                  <td className="px-4 py-3">{r.is_archived ? "Yes" : "No"}</td>
+
                   <td className="px-4 py-3">
                     <div className="flex justify-end gap-2">
-                      <IconBtn title="Edit" tone="gold" onClick={() => openEdit(r)}>
-                        <Pencil className="h-5 w-5" />
+                      <IconBtn title="View" onClick={() => openView(r)} tone="neutral">
+                        <Eye className="h-5 w-5" />
                       </IconBtn>
-                      <IconBtn
-                        title={r.status === "Active" ? "Suspend" : "Activate"}
-                        tone="neutral"
-                        onClick={() => toggleStatus(r)}
-                      >
-                        <Shield className="h-5 w-5" />
-                      </IconBtn>
-                      <IconBtn title="Delete" tone="danger" onClick={() => del(r.id)}>
-                        <Trash2 className="h-5 w-5" />
-                      </IconBtn>
+
+                      {!r.is_archived ? (
+                        <>
+                          <IconBtn title="Edit" onClick={() => openEdit(r)} tone="gold">
+                            <Pencil className="h-5 w-5" />
+                          </IconBtn>
+
+                          <IconBtn title="Reset Password" onClick={() => onResetPassword(r)} tone="neutral">
+                            <KeyRound className="h-5 w-5" />
+                          </IconBtn>
+
+                          <IconBtn title="Archive" onClick={() => onArchiveToggle(r)} tone="neutral">
+                            <ArchiveRestore className="h-5 w-5" />
+                          </IconBtn>
+
+                          <IconBtn title="Delete (Archive)" onClick={() => onArchiveToggle(r)} tone="danger">
+                            <Trash2 className="h-5 w-5" />
+                          </IconBtn>
+                        </>
+                      ) : (
+                        <IconBtn title="Restore" onClick={() => onArchiveToggle(r)} tone="neutral">
+                          <ArchiveRestore className="h-5 w-5" />
+                        </IconBtn>
+                      )}
                     </div>
                   </td>
                 </tr>
@@ -220,213 +379,231 @@ export default function AdminManagement() {
 
               {filtered.length === 0 ? (
                 <tr>
-                  <td colSpan={8} className="px-4 py-10 text-center text-sm text-black/55">
-                    No admins found.
+                  <td colSpan={6} className="px-4 py-10 text-center text-sm text-black/55">
+                    No admin accounts found.
                   </td>
                 </tr>
               ) : null}
             </tbody>
           </table>
-        </div>
+        )}
       </div>
 
-      <AnimatePresence>
-        {modal.open ? (
-          <motion.div className="fixed inset-0 z-50" initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}>
-            <div className="absolute inset-0 bg-black/25 backdrop-blur" onClick={close} />
-            <motion.div
-              initial={{ opacity: 0, y: 10, scale: 0.98 }}
-              animate={{ opacity: 1, y: 0, scale: 1 }}
-              exit={{ opacity: 0, y: 8, scale: 0.98 }}
-              transition={{ duration: 0.18 }}
-              className={`absolute left-1/2 top-1/2 w-[94vw] max-w-3xl -translate-x-1/2 -translate-y-1/2 rounded-2xl border ${TOKENS.border} ${TOKENS.panel} shadow-xl`}
-            >
-              <AdminModal mode={modal.mode} value={modal.row} onClose={close} onSave={save} />
-            </motion.div>
-          </motion.div>
-        ) : null}
-      </AnimatePresence>
+      {/* Modal */}
+      {modal.open ? (
+        <AdminModal
+          mode={modal.mode}
+          row={modal.row}
+          busy={busy}
+          onClose={closeModal}
+          onCreate={(values) => createM.mutate(values)}
+          onUpdate={(user_id, values) => updateM.mutate({ user_id, values })}
+        />
+      ) : null}
+
+      {/* Errors */}
+      {createM.isError ? (
+        <div className="rounded-2xl border border-rose-200 bg-rose-50 p-4 text-sm text-rose-700">
+          Create error: {errMsg(createM.error)}
+        </div>
+      ) : null}
+
+      {resetPwdM.isError ? (
+        <div className="rounded-2xl border border-rose-200 bg-rose-50 p-4 text-sm text-rose-700">
+          Reset error: {errMsg(resetPwdM.error)}
+        </div>
+      ) : null}
     </div>
   );
 }
 
-function AdminModal({ mode, value, onClose, onSave }) {
-  const [draft, setDraft] = useState(() => ({ ...value }));
-  const [pw, setPw] = useState("");
-  const [pw2, setPw2] = useState("");
+/** ======================
+ *  MODAL
+ *  ====================== */
+function AdminModal({ mode, row, onClose, onCreate, onUpdate, busy }) {
+  const isView = mode === "view";
+  const isEdit = mode === "edit";
 
-  const pwScore = useMemo(() => strength(pw), [pw]);
-  const pwOk = mode === "edit" ? true : pw.length >= 8 && pw === pw2;
+  const [draft, setDraft] = useState(() => ({
+    // from profiles
+    email: row?.profiles?.email || "",
+    full_name: row?.profiles?.full_name || "",
+    role: row?.profiles?.role || "admin", // ✅ admin/super_admin
+
+    // from admins (metadata)
+    department: row?.department || "",
+    phone: row?.phone || "",
+
+    // flags
+    is_active: row?.is_active ?? true,
+    is_archived: row?.is_archived ?? false,
+  }));
 
   function set(k, v) {
     setDraft((d) => ({ ...d, [k]: v }));
   }
 
-  function togglePerm(p) {
-    setDraft((d) => {
-      const s = new Set(d.perms || []);
-      if (s.has(p)) s.delete(p);
-      else s.add(p);
-      return { ...d, perms: s };
-    });
+  function submit() {
+    if (!draft.full_name.trim()) {
+      alert("Full name is required.");
+      return;
+    }
+
+    // On CREATE: email required
+    if (!isEdit && !isView && !draft.email.trim()) {
+      alert("Email is required.");
+      return;
+    }
+
+    // CREATE
+    if (!isEdit && !isView) {
+      onCreate({
+        email: draft.email.trim().toLowerCase(),
+        full_name: draft.full_name.trim(),
+        role: draft.role,
+        department: draft.department || null,
+        phone: draft.phone || null,
+      });
+      onClose();
+      return;
+    }
+
+    // EDIT
+    if (isEdit) {
+      onUpdate(row.user_id, {
+        full_name: draft.full_name.trim(),
+        role: draft.role,
+        department: draft.department || null,
+        phone: draft.phone || null,
+        is_active: !!draft.is_active,
+        is_archived: !!draft.is_archived,
+      });
+      onClose();
+      return;
+    }
+
+    onClose();
   }
 
   return (
-    <div>
-      <div className="flex items-center justify-between border-b border-black/10 p-4">
-        <div>
-          <div className="text-sm font-extrabold">{mode === "edit" ? "Edit Admin" : "Add Admin"}</div>
-          <div className="text-xs text-black/55">Center modal • blurred backdrop • gold accents</div>
-        </div>
-        <button onClick={onClose} className="grid h-9 w-9 place-items-center rounded-2xl hover:bg-black/5">
-          <X className="h-5 w-5 text-black/60" />
-        </button>
-      </div>
-
-      <div className="max-h-[72vh] overflow-auto p-4 space-y-4">
-        <div className="grid gap-3 md:grid-cols-2">
-          <Field label="Admin ID (auto-generated)">
-            <input value={draft.id} readOnly className="mt-1 w-full rounded-2xl border border-black/10 bg-white/60 px-3 py-2 text-sm" />
-          </Field>
-
-          <Field label="Role">
-            <select value={draft.role} onChange={(e) => set("role", e.target.value)} className="mt-1 w-full rounded-2xl border border-black/10 bg-white/70 px-3 py-2 text-sm outline-none focus:bg-white">
-              {ROLE_OPTIONS.map((r) => <option key={r} value={r}>{r}</option>)}
-            </select>
-          </Field>
-
-          <Field label="Full name *">
-            <input value={draft.fullName} onChange={(e) => set("fullName", e.target.value)} className="mt-1 w-full rounded-2xl border border-black/10 bg-white/70 px-3 py-2 text-sm outline-none focus:bg-white" />
-          </Field>
-
-          <Field label="Email *">
-            <input value={draft.email} onChange={(e) => set("email", e.target.value)} className="mt-1 w-full rounded-2xl border border-black/10 bg-white/70 px-3 py-2 text-sm outline-none focus:bg-white" />
-          </Field>
-
-          <Field label="Phone number">
-            <input value={draft.phone} onChange={(e) => set("phone", e.target.value)} className="mt-1 w-full rounded-2xl border border-black/10 bg-white/70 px-3 py-2 text-sm outline-none focus:bg-white" />
-          </Field>
-
-          <Field label="Department / Section">
-            <input value={draft.dept} onChange={(e) => set("dept", e.target.value)} className="mt-1 w-full rounded-2xl border border-black/10 bg-white/70 px-3 py-2 text-sm outline-none focus:bg-white" />
-          </Field>
-
-          <Field label="Status">
-            <select value={draft.status} onChange={(e) => set("status", e.target.value)} className="mt-1 w-full rounded-2xl border border-black/10 bg-white/70 px-3 py-2 text-sm outline-none focus:bg-white">
-              {STATUS_OPTIONS.map((s) => <option key={s} value={s}>{s}</option>)}
-            </select>
-          </Field>
-
-          <Field label="Profile picture (optional)">
-            <button type="button" onClick={() => alert("Wire upload to Supabase Storage later.")} className="mt-1 inline-flex w-full items-center justify-center gap-2 rounded-2xl border border-black/10 bg-white/70 px-3 py-2 text-sm font-semibold hover:bg-white">
-              <Upload className="h-4 w-4 text-black/60" />
-              Upload
-            </button>
-          </Field>
-        </div>
-
-        {mode !== "edit" ? (
-          <div className="rounded-2xl border border-black/10 bg-white/70 p-4">
-            <div className="text-sm font-extrabold">Password *</div>
-            <div className="mt-3 grid gap-3 md:grid-cols-2">
-              <Field label="Password">
-                <input type="password" value={pw} onChange={(e) => setPw(e.target.value)} className="mt-1 w-full rounded-2xl border border-black/10 bg-white/70 px-3 py-2 text-sm outline-none focus:bg-white" />
-                <div className="mt-2 h-2 w-full rounded-full bg-black/10">
-                  <div className={`${TOKENS.goldBg} h-2 rounded-full`} style={{ width: `${pwScore}%` }} />
-                </div>
-                <div className="mt-1 text-xs text-black/55">Strength: {pwScore < 35 ? "Weak" : pwScore < 70 ? "Okay" : "Strong"}</div>
-              </Field>
-              <Field label="Confirm password">
-                <input type="password" value={pw2} onChange={(e) => setPw2(e.target.value)} className="mt-1 w-full rounded-2xl border border-black/10 bg-white/70 px-3 py-2 text-sm outline-none focus:bg-white" />
-                {pw2 && pw !== pw2 ? <div className="mt-1 text-xs text-rose-700">Passwords do not match</div> : null}
-              </Field>
+    <>
+      <div className="fixed inset-0 z-40 bg-black/25" onClick={onClose} />
+      <div
+        className={`fixed right-4 top-4 bottom-4 z-50 w-[92vw] max-w-xl rounded-2xl border ${TOKENS.border} ${TOKENS.panel} shadow-xl`}
+      >
+        <div className="flex items-center justify-between border-b border-black/10 p-4">
+          <div>
+            <div className="text-sm font-extrabold">
+              {isView ? "View Admin" : isEdit ? "Edit Admin" : "Add Admin"}
+            </div>
+            <div className="text-xs text-black/55">
+              Role is stored in <b>profiles.role</b> (admin / super_admin).
             </div>
           </div>
-        ) : (
-          <div className="rounded-2xl border border-black/10 bg-white/70 p-4">
-            <div className="flex flex-col gap-2 md:flex-row md:items-center md:justify-between">
-              <div>
-                <div className="text-sm font-extrabold">Security</div>
-                <div className="text-xs text-black/55">UI-only actions</div>
-              </div>
-              <div className="flex gap-2">
-                <button type="button" onClick={() => alert("Reset Password email (Supabase) later")} className="rounded-2xl border border-black/10 bg-white/70 px-3 py-2 text-sm font-semibold hover:bg-white">
-                  Reset Password
-                </button>
-                <button type="button" onClick={() => alert("Change Password UI later")} className={`rounded-2xl px-3 py-2 text-sm font-extrabold ${TOKENS.goldBg} text-black hover:opacity-95`}>
-                  Change Password
-                </button>
-              </div>
-            </div>
-          </div>
-        )}
 
-        <div className="rounded-2xl border border-black/10 bg-white/70 p-4">
-          <div className="flex items-center justify-between">
-            <div>
-              <div className="text-sm font-extrabold">Permissions</div>
-              <div className="text-xs text-black/55">Checkbox grid</div>
-            </div>
-            <button type="button" onClick={() => alert("Save permissions to DB later")} className={`rounded-2xl px-3 py-2 text-sm font-extrabold ${TOKENS.goldBg} text-black hover:opacity-95`}>
-              Save Permissions
-            </button>
-          </div>
-
-          <div className="mt-3 grid gap-2 md:grid-cols-2">
-            {PERMS.map((p) => (
-              <label key={p} className="flex items-center gap-3 rounded-2xl border border-black/10 bg-white/70 p-3 hover:bg-white">
-                <input type="checkbox" checked={draft.perms?.has(p)} onChange={() => togglePerm(p)} />
-                <span className="text-sm font-semibold text-black/70">{p}</span>
-              </label>
-            ))}
-          </div>
-        </div>
-
-        <div className="flex items-center justify-end gap-2">
-          <button onClick={onClose} className="rounded-2xl border border-black/10 bg-white/70 px-4 py-2 text-sm font-semibold hover:bg-white">
-            Cancel
+          <button onClick={onClose} className="grid h-9 w-9 place-items-center rounded-2xl hover:bg-black/5">
+            <X className="h-5 w-5 text-black/60" />
           </button>
-          <button
-            onClick={() => {
-              if (!draft.fullName.trim() || !draft.email.trim()) return alert("Full name and Email are required.");
-              if (mode !== "edit" && !pwOk) return alert("Password must be at least 8 chars and match confirm.");
-              onSave(draft);
-            }}
-            className={`inline-flex items-center gap-2 rounded-2xl px-4 py-2 text-sm font-extrabold ${TOKENS.goldBg} text-black hover:opacity-95`}
+        </div>
+
+        <div className="h-[calc(100%-64px)] overflow-auto p-4 space-y-4">
+          {/* Email: create only (editing auth email requires admin API; keep locked for now) */}
+          <Input
+            label="Email *"
+            disabled={isView || isEdit}
+            value={draft.email}
+            onChange={(e) => set("email", e.target.value)}
+          />
+
+          <Input
+            label="Full name *"
+            disabled={isView}
+            value={draft.full_name}
+            onChange={(e) => set("full_name", e.target.value)}
+          />
+
+          <Select
+            label="Role (profiles.role)"
+            disabled={isView}
+            value={draft.role}
+            onChange={(e) => set("role", e.target.value)}
           >
-            <Save className="h-4 w-4" />
-            {mode === "edit" ? "Save Changes" : "Create Admin"}
-          </button>
+            {ROLE_OPTIONS.map((o) => (
+              <option key={o.value} value={o.value}>
+                {o.label}
+              </option>
+            ))}
+          </Select>
+
+          <Input
+            label="Department"
+            disabled={isView}
+            value={draft.department}
+            onChange={(e) => set("department", e.target.value)}
+          />
+
+          <Input
+            label="Phone"
+            disabled={isView}
+            value={draft.phone}
+            onChange={(e) => set("phone", e.target.value)}
+          />
+
+          {/* flags only available in edit */}
+          {isEdit ? (
+            <div className="grid gap-2">
+              <label className="flex items-center gap-2 rounded-2xl border border-black/10 bg-white/70 px-3 py-2 text-sm">
+                <input
+                  type="checkbox"
+                  disabled={isView}
+                  checked={!!draft.is_active}
+                  onChange={(e) => set("is_active", e.target.checked)}
+                />
+                Active
+              </label>
+
+              <label className="flex items-center gap-2 rounded-2xl border border-black/10 bg-white/70 px-3 py-2 text-sm">
+                <input
+                  type="checkbox"
+                  disabled={isView}
+                  checked={!!draft.is_archived}
+                  onChange={(e) => set("is_archived", e.target.checked)}
+                />
+                Archived
+              </label>
+            </div>
+          ) : null}
+
+          <div className="flex items-center justify-end gap-2">
+            <button
+              type="button"
+              onClick={onClose}
+              className="rounded-2xl border border-black/10 bg-white/70 px-4 py-2 text-sm font-semibold hover:bg-white"
+            >
+              Close
+            </button>
+
+            {!isView ? (
+              <button
+                disabled={busy}
+                type="button"
+                onClick={submit}
+                className={`inline-flex items-center gap-2 rounded-2xl px-4 py-2 text-sm font-extrabold ${TOKENS.goldBg} text-black hover:opacity-95 disabled:opacity-60`}
+              >
+                <Save className="h-4 w-4" />
+                {isEdit ? "Save Changes" : "Create Admin"}
+              </button>
+            ) : null}
+          </div>
         </div>
       </div>
-    </div>
+    </>
   );
 }
 
-function Field({ label, children }) {
-  return (
-    <label className="block">
-      <span className="text-xs font-semibold text-black/55">{label}</span>
-      {children}
-    </label>
-  );
-}
-
-function Badge({ children }) {
-  return <span className="rounded-full bg-black/5 px-3 py-1 text-xs font-semibold text-black/70">{children}</span>;
-}
-
-function StatusPill({ value }) {
-  const v = String(value || "").toLowerCase();
-  const cls =
-    v === "active"
-      ? "bg-emerald-500/10 text-emerald-700"
-      : v === "inactive"
-      ? "bg-black/10 text-black/60"
-      : "bg-rose-500/10 text-rose-700";
-  return <span className={`inline-flex rounded-full px-3 py-1 text-xs font-semibold ${cls}`}>{value}</span>;
-}
-
+/** ======================
+ *  SMALL COMPONENTS
+ *  ====================== */
 function IconBtn({ title, onClick, tone, children }) {
   const cls =
     tone === "danger"
@@ -434,30 +611,44 @@ function IconBtn({ title, onClick, tone, children }) {
       : tone === "gold"
       ? "bg-[#C9A227]/10 text-[#C9A227] hover:opacity-90"
       : "bg-white/70 text-black/65 hover:bg-white";
+
   return (
-    <button title={title} onClick={onClick} className={`grid h-9 w-9 place-items-center rounded-2xl border border-black/10 ${cls}`}>
+    <button
+      title={title}
+      onClick={onClick}
+      className={`grid h-9 w-9 place-items-center rounded-2xl border border-black/10 ${cls}`}
+    >
       {children}
     </button>
   );
 }
 
-function Avatar({ name, url }) {
-  if (url) return <img alt={name} src={url} className="h-10 w-10 rounded-2xl object-cover border border-black/10" />;
-  const letter = (name || "A").trim().slice(0, 1).toUpperCase();
+function Input({ label, disabled, value, onChange }) {
   return (
-    <div className={`h-10 w-10 rounded-2xl ${TOKENS.goldSoft} grid place-items-center border border-black/10`}>
-      <span className={`text-sm font-black ${TOKENS.gold}`}>{letter}</span>
-    </div>
+    <label className="block">
+      <span className="text-xs font-semibold text-black/55">{label}</span>
+      <input
+        disabled={disabled}
+        value={value}
+        onChange={onChange}
+        className="mt-1 w-full rounded-2xl border border-black/10 bg-white/70 px-3 py-2 text-sm outline-none focus:bg-white disabled:opacity-60"
+      />
+    </label>
   );
 }
 
-function strength(pw) {
-  let score = 0;
-  if (!pw) return 0;
-  if (pw.length >= 8) score += 25;
-  if (/[A-Z]/.test(pw)) score += 20;
-  if (/[a-z]/.test(pw)) score += 20;
-  if (/[0-9]/.test(pw)) score += 20;
-  if (/[^A-Za-z0-9]/.test(pw)) score += 15;
-  return Math.min(100, score);
+function Select({ label, disabled, value, onChange, children }) {
+  return (
+    <label className="block">
+      <span className="text-xs font-semibold text-black/55">{label}</span>
+      <select
+        disabled={disabled}
+        value={value}
+        onChange={onChange}
+        className="mt-1 w-full rounded-2xl border border-black/10 bg-white/70 px-3 py-2 text-sm outline-none focus:bg-white disabled:opacity-60"
+      >
+        {children}
+      </select>
+    </label>
+  );
 }

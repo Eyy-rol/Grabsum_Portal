@@ -5,7 +5,7 @@ import { motion } from "framer-motion";
 import { ArrowLeft, Mail, Lock, Eye, EyeOff } from "lucide-react";
 
 import logo from "../assets/grabsum-logo.png";
-import { supabase } from "../lib/supabaseClient"; // ✅ adjust path if needed
+import { supabase } from "../lib/supabaseClient";
 
 const BRAND = {
   bg: "#fbf6ef",
@@ -21,149 +21,253 @@ function isEmail(v) {
   return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(String(v).trim());
 }
 
+function isStudentNumber(v) {
+  return /^s\d{2}-\d{4}$/i.test(String(v).trim());
+}
+
+function isTeacherNumber(v) {
+  return /^t\d{2}-\d{4}$/i.test(String(v).trim());
+}
+
+// employee_number -> internal auth email (same rule used in create-teacher edge fn)
+function teacherAuthEmail(empNo) {
+  return `${String(empNo).trim().toLowerCase()}@teachers.local`;
+}
+
 function routeForRole(role) {
   const r = (role || "").toLowerCase();
-
-  if (r === "super_admin" || r === "superadmin" || r === "super admin") return "/dev";
   if (r === "admin") return "/admin";
-  if (r === "teacher") return "/teacher";
-  if (r === "student") return "/student";
-
-  // fallback if role is missing/unknown
-  return "/admin";
+  if (r === "teacher") return "/teacher/dashboard";
+  if (r === "student") return "/student/dashboard";
+  if (r === "super_admin") return "/admin";
+  if (r === "dev") return "/dev";
+  return "/login";
 }
 
 export default function Login() {
   const nav = useNavigate();
 
-  const [email, setEmail] = useState("");
+  const [ident, setIdent] = useState("");
   const [pw, setPw] = useState("");
   const [show, setShow] = useState(false);
-  const [remember, setRemember] = useState(false);
 
-  const [touched, setTouched] = useState({ email: false, pw: false });
+  const [touched, setTouched] = useState({ ident: false, pw: false });
   const [loading, setLoading] = useState(false);
   const [authError, setAuthError] = useState("");
 
   const errors = useMemo(() => {
     const e = {};
-    if (!email.trim()) e.email = "Email is required.";
-    else if (!isEmail(email)) e.email = "Enter a valid email address.";
+    const x = ident.trim();
+
+    if (!x) e.ident = "Email, Student Number, or Teacher Number is required.";
+    else if (!isEmail(x) && !isStudentNumber(x) && !isTeacherNumber(x)) {
+      e.ident = "Enter a valid email or number (S25-0001 / T25-0001).";
+    }
+
     if (!pw) e.pw = "Password is required.";
     return e;
-  }, [email, pw]);
+  }, [ident, pw]);
 
   const canSubmit = Object.keys(errors).length === 0 && !loading;
 
-  async function writeLoginLog({ userId, role, emailAddr, success, message }) {
-    try {
-      // Optional: you can include application_id if you want to distinguish apps
-      const applicationId = "grabsum-portal";
+  async function loginByStudentNumber(studentNumber, password) {
+    const SUPABASE_URL = import.meta.env.VITE_SUPABASE_URL;
+    const SUPABASE_ANON_KEY = import.meta.env.VITE_SUPABASE_ANON_KEY;
 
-      await supabase.from("activity_logs").insert({
-        actor_user_id: userId,
-        action: success ? "auth.login.success" : "auth.login.failed",
-        entity_type: "auth",
-        entity_id: userId,
-        message: message || (success ? "User logged in" : "Login failed"),
-        metadata: { role, email: emailAddr, remember_me: !!remember },
-        ip_address: null, // browser can't reliably access client IP (usually)
-        user_agent: navigator.userAgent,
-        application_id: applicationId,
-      });
-    } catch {
-      // Don’t block login if logging fails
+    if (!SUPABASE_URL || !SUPABASE_ANON_KEY) {
+      throw new Error("Missing VITE_SUPABASE_URL or VITE_SUPABASE_ANON_KEY in .env");
     }
+
+    const res = await fetch(`${SUPABASE_URL}/functions/v1/super-api`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        apikey: SUPABASE_ANON_KEY,
+        Authorization: `Bearer ${SUPABASE_ANON_KEY}`,
+      },
+      body: JSON.stringify({
+        action: "login_student",
+        student_number: studentNumber,
+        password,
+      }),
+    });
+
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) throw new Error(data?.error || "Login failed.");
+
+    const access_token = data?.session?.access_token;
+    const refresh_token = data?.session?.refresh_token;
+
+    if (!access_token || !refresh_token) {
+      throw new Error("Login failed: missing session tokens from Edge.");
+    }
+
+    const { data: sessData, error: setErr } = await supabase.auth.setSession({
+      access_token,
+      refresh_token,
+    });
+
+    if (setErr) throw new Error(setErr.message || "Failed to set session.");
+    return sessData?.user;
+  }
+
+  async function fetchProfile(userId) {
+    const { data: profile, error } = await supabase
+      .from("profiles")
+      .select("user_id, email, full_name, role, is_active, is_archived, must_change_password")
+      .eq("user_id", userId)
+      .single();
+
+    if (error || !profile) return null;
+    return profile;
   }
 
   async function onSubmit(e) {
     e.preventDefault();
-    setTouched({ email: true, pw: true });
+    setTouched({ ident: true, pw: true });
     setAuthError("");
 
-    if (!Object.keys(errors).length === 0) return;
     if (!canSubmit) return;
-
     setLoading(true);
 
     try {
-      // ✅ Supabase auth sign-in
+      const x = ident.trim();
+
+      // ✅ A) student number login (S25-0001)
+      if (isStudentNumber(x)) {
+        const user = await loginByStudentNumber(x.toUpperCase(), pw);
+
+        if (!user?.id) {
+          setAuthError("Login failed: missing user session.");
+          return;
+        }
+
+        const profile = await fetchProfile(user.id);
+        if (!profile) {
+          setAuthError("Account profile not found. Please contact the administrator.");
+          await supabase.auth.signOut();
+          return;
+        }
+
+        if (profile.is_archived === true) {
+          setAuthError("Your account is archived. Please contact the administrator.");
+          await supabase.auth.signOut();
+          return;
+        }
+
+        if (profile.is_active === false) {
+          setAuthError("Your account is inactive. Please contact the administrator.");
+          await supabase.auth.signOut();
+          return;
+        }
+
+        if ((profile.role || "").toLowerCase() === "student" && profile.must_change_password) {
+          nav("/student/change-password", { replace: true });
+          return;
+        }
+
+        nav(routeForRole(profile.role), { replace: true });
+        return;
+      }
+
+      // ✅ A2) teacher username login (T25-0001)
+      if (isTeacherNumber(x)) {
+        const email = teacherAuthEmail(x);
+
+        const { data, error } = await supabase.auth.signInWithPassword({
+          email,
+          password: pw,
+        });
+
+        if (error) {
+          setAuthError(error.message || "Login failed. Please try again.");
+          return;
+        }
+
+        const userId = data?.user?.id;
+        if (!userId) {
+          setAuthError("Login failed: missing user session.");
+          return;
+        }
+
+        const profile = await fetchProfile(userId);
+        if (!profile) {
+          setAuthError("Account profile not found. Please contact the administrator.");
+          await supabase.auth.signOut();
+          return;
+        }
+
+        if (profile.is_archived === true) {
+          setAuthError("Your account is archived. Please contact the administrator.");
+          await supabase.auth.signOut();
+          return;
+        }
+
+        if (profile.is_active === false) {
+          setAuthError("Your account is inactive. Please contact the administrator.");
+          await supabase.auth.signOut();
+          return;
+        }
+
+        if ((profile.role || "").toLowerCase() === "teacher" && profile.must_change_password) {
+          nav("/teacher/change-password", { replace: true });
+          return;
+        }
+
+        nav(routeForRole(profile.role), { replace: true });
+        return;
+      }
+
+      // ✅ B) email login
       const { data, error } = await supabase.auth.signInWithPassword({
-        email: email.trim(),
+        email: x.toLowerCase(),
         password: pw,
       });
 
       if (error) {
         setAuthError(error.message || "Login failed. Please try again.");
-        // If no user, we can't insert actor_user_id; skip log insert
-        setLoading(false);
         return;
       }
 
-      const user = data?.user;
-      const userId = user?.id;
-
+      const userId = data?.user?.id;
       if (!userId) {
         setAuthError("Login failed: missing user session.");
-        setLoading(false);
         return;
       }
 
-      // ✅ Fetch role from profiles
-      const { data: profile, error: profileError } = await supabase
-        .from("profiles")
-        .select("user_id, email, full_name, role, is_active")
-        .eq("user_id", userId)
-        .single();
-
-      if (profileError || !profile) {
+      const profile = await fetchProfile(userId);
+      if (!profile) {
         setAuthError("Account profile not found. Please contact the administrator.");
-        await writeLoginLog({
-          userId,
-          role: null,
-          emailAddr: email.trim(),
-          success: false,
-          message: "Login succeeded but profile lookup failed",
-        });
-        setLoading(false);
+        await supabase.auth.signOut();
         return;
       }
 
-      // Optional: block inactive users
+      if (profile.is_archived === true) {
+        setAuthError("Your account is archived. Please contact the administrator.");
+        await supabase.auth.signOut();
+        return;
+      }
+
       if (profile.is_active === false) {
         setAuthError("Your account is inactive. Please contact the administrator.");
-        await writeLoginLog({
-          userId,
-          role: profile.role,
-          emailAddr: profile.email || email.trim(),
-          success: false,
-          message: "Login blocked: inactive account",
-        });
-
-        // sign out to prevent session staying active
         await supabase.auth.signOut();
-        setLoading(false);
         return;
       }
 
-      // ✅ (Optional) "Remember me"
-      // Supabase manages session persistence automatically in localStorage by default.
-      // If you want "Remember me" to *disable* persistence, we can implement custom storage.
-      // For now: keep checkbox purely UI (like your current version).
+      // ✅ force-change based on role
+      const role = (profile.role || "").toLowerCase();
+      if (role === "student" && profile.must_change_password) {
+        nav("/student/change-password", { replace: true });
+        return;
+      }
+      if (role === "teacher" && profile.must_change_password) {
+        nav("/teacher/change-password", { replace: true });
+        return;
+      }
 
-      await writeLoginLog({
-        userId,
-        role: profile.role,
-        emailAddr: profile.email || email.trim(),
-        success: true,
-        message: "Login successful",
-      });
-
-      nav(routeForRole(profile.role));
+      nav(routeForRole(profile.role), { replace: true });
     } catch (err) {
-      setAuthError("Something went wrong. Please try again.");
-      setLoading(false);
-      return;
+      setAuthError(err?.message || "Something went wrong. Please try again.");
     } finally {
       setLoading(false);
     }
@@ -171,7 +275,6 @@ export default function Login() {
 
   return (
     <div className="min-h-screen font-[Nunito]" style={{ background: BRAND.bg }}>
-      {/* back arrow */}
       <button
         onClick={() => nav(-1)}
         aria-label="Back"
@@ -182,7 +285,6 @@ export default function Login() {
 
       <div className="mx-auto max-w-6xl px-6">
         <div className="min-h-screen grid items-center gap-10 lg:grid-cols-2">
-          {/* LEFT */}
           <motion.section
             initial={{ opacity: 0, y: 8 }}
             animate={{ opacity: 1, y: 0 }}
@@ -198,15 +300,7 @@ export default function Login() {
             </h1>
 
             <p className="mt-4 max-w-xl mx-auto lg:mx-0 text-base leading-relaxed" style={{ color: BRAND.muted }}>
-              Sign in to access your personalized dashboard and
-              <br className="hidden md:block" />
-              continue your journey with{" "}
-              <span className="font-extrabold" style={{ color: BRAND.link }}>
-                GRABSUM
-              </span>{" "}
-              Senior High
-              <br className="hidden md:block" />
-              School.
+              Sign in using <b>Email</b>, <b>Student Number (S25-0001)</b>, or <b>Teacher Number (T25-0001)</b>.
             </p>
 
             <div className="mt-20 text-xs" style={{ color: "rgba(43,26,18,0.45)" }}>
@@ -214,7 +308,6 @@ export default function Login() {
             </div>
           </motion.section>
 
-          {/* RIGHT CARD */}
           <motion.section
             initial={{ opacity: 0, y: 10 }}
             animate={{ opacity: 1, y: 0 }}
@@ -229,55 +322,46 @@ export default function Login() {
               }}
             >
               <form onSubmit={onSubmit} className="p-8 md:p-10">
-                {/* Auth error */}
                 {authError ? (
                   <div
                     className="mb-5 rounded-2xl border px-4 py-3 text-sm font-semibold"
-                    style={{ borderColor: "rgba(239,68,68,0.35)", background: "rgba(239,68,68,0.06)", color: "#b91c1c" }}
+                    style={{
+                      borderColor: "rgba(239,68,68,0.35)",
+                      background: "rgba(239,68,68,0.06)",
+                      color: "#b91c1c",
+                    }}
                   >
                     {authError}
                   </div>
                 ) : null}
 
-                {/* Email */}
                 <label className="text-sm font-semibold" style={{ color: BRAND.brown }}>
-                  Email Address
+                  Email / Student Number / Teacher Number
                 </label>
 
                 <div className="mt-2">
                   <div className="relative">
                     <Mail className="absolute left-4 top-1/2 -translate-y-1/2 h-4 w-4" style={{ color: BRAND.muted }} />
                     <input
-                      value={email}
-                      onChange={(e) => setEmail(e.target.value)}
-                      onBlur={() => setTouched((t) => ({ ...t, email: true }))}
-                      placeholder="your.email@grabsum.edu.ph"
-                      autoComplete="username"
+                      value={ident}
+                      onChange={(e) => setIdent(e.target.value)}
+                      onBlur={() => setTouched((t) => ({ ...t, ident: true }))}
+                      placeholder="your.email@grabsum.edu.ph OR S25-0001 OR T25-0001"
                       className="w-full rounded-xl pl-11 pr-4 py-3 text-sm outline-none transition"
                       style={{
                         background: "rgba(251,246,239,0.6)",
                         border: `1px solid ${
-                          touched.email && errors.email ? "rgba(239,68,68,0.55)" : "rgba(43,26,18,0.22)"
+                          touched.ident && errors.ident ? "rgba(239,68,68,0.55)" : "rgba(43,26,18,0.22)"
                         }`,
-                        boxShadow: "none",
-                      }}
-                      onFocus={(e) => {
-                        e.currentTarget.style.boxShadow = "0 0 0 4px rgba(212,166,47,0.18)";
-                        e.currentTarget.style.background = "rgba(251,246,239,0.85)";
-                      }}
-                      onBlurCapture={(e) => {
-                        e.currentTarget.style.boxShadow = "none";
                       }}
                       disabled={loading}
                     />
                   </div>
-
-                  {touched.email && errors.email ? (
-                    <div className="mt-2 text-xs font-semibold text-red-500">{errors.email}</div>
+                  {touched.ident && errors.ident ? (
+                    <div className="mt-2 text-xs font-semibold text-red-500">{errors.ident}</div>
                   ) : null}
                 </div>
 
-                {/* Password */}
                 <label className="mt-6 block text-sm font-semibold" style={{ color: BRAND.brown }}>
                   Password
                 </label>
@@ -291,21 +375,12 @@ export default function Login() {
                       onBlur={() => setTouched((t) => ({ ...t, pw: true }))}
                       type={show ? "text" : "password"}
                       placeholder="••••••••"
-                      autoComplete="current-password"
                       className="w-full rounded-xl pl-11 pr-12 py-3 text-sm outline-none transition"
                       style={{
                         background: "rgba(251,246,239,0.6)",
                         border: `1px solid ${
                           touched.pw && errors.pw ? "rgba(239,68,68,0.55)" : "rgba(43,26,18,0.22)"
                         }`,
-                        boxShadow: "none",
-                      }}
-                      onFocus={(e) => {
-                        e.currentTarget.style.boxShadow = "0 0 0 4px rgba(212,166,47,0.18)";
-                        e.currentTarget.style.background = "rgba(251,246,239,0.85)";
-                      }}
-                      onBlurCapture={(e) => {
-                        e.currentTarget.style.boxShadow = "none";
                       }}
                       disabled={loading}
                     />
@@ -317,32 +392,25 @@ export default function Login() {
                       aria-label={show ? "Hide password" : "Show password"}
                       disabled={loading}
                     >
-                      {show ? <EyeOff className="h-4 w-4" style={{ color: BRAND.muted }} /> : <Eye className="h-4 w-4" style={{ color: BRAND.muted }} />}
+                      {show ? (
+                        <EyeOff className="h-4 w-4" style={{ color: BRAND.muted }} />
+                      ) : (
+                        <Eye className="h-4 w-4" style={{ color: BRAND.muted }} />
+                      )}
                     </button>
                   </div>
 
-                  {touched.pw && errors.pw ? <div className="mt-2 text-xs font-semibold text-red-500">{errors.pw}</div> : null}
+                  {touched.pw && errors.pw ? (
+                    <div className="mt-2 text-xs font-semibold text-red-500">{errors.pw}</div>
+                  ) : null}
                 </div>
 
-                {/* Remember + Forgot */}
-                <div className="mt-4 flex items-center justify-between">
-                  <label className="inline-flex items-center gap-2 text-sm" style={{ color: BRAND.muted }}>
-                    <input
-                      type="checkbox"
-                      checked={remember}
-                      onChange={(e) => setRemember(e.target.checked)}
-                      className="h-4 w-4 rounded border-black/20"
-                      disabled={loading}
-                    />
-                    Remember me
-                  </label>
-
+                <div className="mt-4 flex items-center justify-end">
                   <Link to="/forgot-password" className="text-sm hover:underline" style={{ color: BRAND.link }}>
                     Forgot password?
                   </Link>
                 </div>
 
-                {/* Button */}
                 <button
                   type="submit"
                   disabled={!canSubmit}
@@ -353,22 +421,11 @@ export default function Login() {
                     boxShadow: "0 10px 18px rgba(212,166,47,0.28)",
                     opacity: canSubmit ? 1 : 0.65,
                     cursor: canSubmit ? "pointer" : "not-allowed",
-                    transform: "translateY(0px)",
-                  }}
-                  onMouseEnter={(e) => {
-                    if (!canSubmit) return;
-                    e.currentTarget.style.background = BRAND.goldHover;
-                    e.currentTarget.style.transform = "translateY(-1px)";
-                  }}
-                  onMouseLeave={(e) => {
-                    e.currentTarget.style.background = BRAND.gold;
-                    e.currentTarget.style.transform = "translateY(0px)";
                   }}
                 >
                   {loading ? "Signing in…" : "Sign In"}
                 </button>
 
-                {/* Bottom link */}
                 <div className="mt-8 text-center text-sm" style={{ color: BRAND.muted }}>
                   Don&apos;t have an account?{" "}
                   <Link to="/pre-enroll" className="hover:underline" style={{ color: BRAND.link }}>

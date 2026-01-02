@@ -1,41 +1,91 @@
-import React, { useMemo } from "react";
+import React, { useEffect, useMemo, useState } from "react";
 import { NavLink, Outlet, useLocation, useNavigate } from "react-router-dom";
 import { AnimatePresence, motion } from "framer-motion";
 import {
   LayoutDashboard,
   Users,
-  KeyRound,
   Activity,
   Shield,
-  Settings,
-  Database,
   FileText,
   Search,
   Bell,
   LogOut,
 } from "lucide-react";
 import { TOKENS } from "../styles/tokens.js";
+import { supabase } from "../lib/supabaseClient"; // ✅ adjust path if needed
 
-const DEV_NAV = [
+// Base dev-safe navigation
+const DEV_NAV_BASE = [
   { key: "dash", label: "Dashboard", icon: LayoutDashboard, to: "/dev" },
-  { key: "admins", label: "Admin Management", icon: Users, to: "/dev/admins" },
-  { key: "roles", label: "Role Management", icon: KeyRound, to: "/dev/roles" },
   { key: "activity", label: "Activity Logs", icon: Activity, to: "/dev/activity" },
-  { key: "security", label: "Security Settings", icon: Shield, to: "/dev/security" },
-  { key: "config", label: "System Configuration", icon: Settings, to: "/dev/config" },
-  { key: "database", label: "Database Management", icon: Database, to: "/dev/database" },
   { key: "audit", label: "Audit & Reports", icon: FileText, to: "/dev/audit" },
+  { key: "Admin", label: "Admin", icon: Users, to: "/dev/admins" },
+
 ];
+
+// Admin Management entry (kept as requested)
+const ADMIN_MGMT_ITEM = {
+  key: "admins",
+  label: "Admin Management",
+  icon: Users,
+  to: "/dev/admins",
+};
 
 export default function DevLayout() {
   const location = useLocation();
   const title = useMemo(() => titleFromPath(location.pathname), [location.pathname]);
 
+  const [me, setMe] = useState({ email: "", role: "", full_name: "" });
+
+  useEffect(() => {
+    let mounted = true;
+
+    async function loadMe() {
+      const { data: auth } = await supabase.auth.getUser();
+      const userId = auth?.user?.id;
+
+      if (!userId) {
+        // not logged in → redirect to login
+        return;
+      }
+
+      const { data: prof } = await supabase
+        .from("profiles")
+        .select("email, role, full_name")
+        .eq("user_id", userId)
+        .maybeSingle();
+
+      if (!mounted) return;
+
+      setMe({
+        email: prof?.email || auth?.user?.email || "",
+        role: String(prof?.role || "").toLowerCase(),
+        full_name: prof?.full_name || "",
+      });
+    }
+
+    loadMe();
+
+    return () => {
+      mounted = false;
+    };
+  }, []);
+
+  // ✅ Only show Admin Management if user is allowed
+  // Recommended: super_admin only
+  const canSeeAdminManagement = me.role === "super_admin";
+
+  const navItems = useMemo(() => {
+    const items = [...DEV_NAV_BASE];
+    if (canSeeAdminManagement) items.splice(1, 0, ADMIN_MGMT_ITEM); // insert after dashboard
+    return items;
+  }, [canSeeAdminManagement]);
+
   return (
     <div className={`min-h-screen ${TOKENS.bg} ${TOKENS.text} font-[Nunito]`}>
       <div className="mx-auto max-w-7xl p-4 md:p-6">
         <div className="grid grid-cols-1 gap-4 md:grid-cols-[280px_1fr]">
-          <Sidebar />
+          <Sidebar me={me} navItems={navItems} />
           <main className="space-y-4">
             <Topbar title={title} />
 
@@ -62,8 +112,17 @@ export default function DevLayout() {
   );
 }
 
-function Sidebar() {
+function Sidebar({ me, navItems }) {
   const nav = useNavigate();
+
+  async function logout() {
+    await supabase.auth.signOut();
+    nav("/login"); // change to your login route
+  }
+
+  const displayName = me.full_name || "Developer";
+  const displayEmail = me.email || "—";
+  const displayRole = me.role || "—";
 
   return (
     <aside className={`rounded-2xl border ${TOKENS.border} ${TOKENS.panel} p-4 shadow-sm`}>
@@ -80,7 +139,7 @@ function Sidebar() {
       <div className="mt-4">
         <div className="text-xs font-semibold text-black/50">Navigation</div>
         <nav className="mt-2 space-y-1">
-          {DEV_NAV.map((i) => (
+          {navItems.map((i) => (
             <NavLink
               key={i.key}
               to={i.to}
@@ -100,18 +159,25 @@ function Sidebar() {
       </div>
 
       <div className="mt-4 rounded-2xl border border-black/10 bg-white/60 p-3">
-        <div className="text-sm font-bold">Developer</div>
-        <div className="mt-1 text-xs text-black/55">dev@grabsum.edu</div>
+        <div className="text-sm font-bold">{displayName}</div>
+        <div className="mt-1 text-xs text-black/55">{displayEmail}</div>
+        <div className="mt-1 text-[11px] text-black/45">
+          role: <span className="font-semibold">{displayRole}</span>
+        </div>
+
         <div className="mt-3 grid grid-cols-2 gap-2">
           <button
             onClick={() => nav("/admin")}
             className="rounded-2xl border border-black/10 bg-white/70 px-3 py-2 text-sm font-semibold hover:bg-white"
+            type="button"
           >
             Admin UI
           </button>
+
           <button
-            onClick={() => alert("Supabase Auth later.")}
+            onClick={logout}
             className="inline-flex items-center justify-center gap-2 rounded-2xl border border-black/10 bg-white/70 px-3 py-2 text-sm font-semibold hover:bg-white"
+            type="button"
           >
             <LogOut className="h-4 w-4 text-black/60" />
             Logout
@@ -130,6 +196,7 @@ function Topbar({ title }) {
           <div className="text-xs font-semibold text-black/50">Developer Console</div>
           <div className="text-xl font-extrabold">{title}</div>
         </div>
+
         <div className="flex items-center gap-2">
           <div className="relative flex-1 md:w-[360px]">
             <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-black/45" />
@@ -138,9 +205,12 @@ function Topbar({ title }) {
               placeholder="Search… (UI only)"
             />
           </div>
-          <button className="relative grid h-10 w-10 place-items-center rounded-2xl border border-black/10 bg-white/60 hover:bg-white/80">
+
+          <button className="relative grid h-10 w-10 place-items-center rounded-2xl border border-black/10 bg-white/60 hover:bg-white/80" type="button">
             <Bell className="h-5 w-5 text-black/60" />
-            <span className={`absolute -right-1 -top-1 grid h-5 w-5 place-items-center rounded-full ${TOKENS.goldBg} text-[10px] font-black text-black`}>
+            <span
+              className={`absolute -right-1 -top-1 grid h-5 w-5 place-items-center rounded-full ${TOKENS.goldBg} text-[10px] font-black text-black`}
+            >
               3
             </span>
           </button>
@@ -153,11 +223,7 @@ function Topbar({ title }) {
 function titleFromPath(path) {
   if (path === "/dev") return "Dashboard";
   if (path.includes("/dev/admins")) return "Admin Management";
-  if (path.includes("/dev/roles")) return "Role Management";
   if (path.includes("/dev/activity")) return "Activity Logs";
-  if (path.includes("/dev/security")) return "Security Settings";
-  if (path.includes("/dev/config")) return "System Configuration";
-  if (path.includes("/dev/database")) return "Database Management";
   if (path.includes("/dev/audit")) return "Audit & Reports";
   return "Developer";
 }

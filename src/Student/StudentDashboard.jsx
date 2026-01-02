@@ -1,17 +1,14 @@
 // src/pages/student/StudentDashboard.jsx
 import React, { useEffect, useMemo, useState } from "react";
 import { motion } from "framer-motion";
-import {
-  BookOpen,
-  CalendarDays,
-  Megaphone,
-  Clock,
-  CheckCircle2,
-  Sparkles,
-} from "lucide-react";
+import { BookOpen, Clock, CheckCircle2, Sparkles } from "lucide-react";
+import { supabase } from "../lib/supabaseClient";
+
+// ✅ NEW: Supabase-powered calendar widget
+import CalendarWidget from "../components/CalendarWidget"; // adjust if your folders differ
 
 const BRAND = {
-  brown: "#2b1a12",
+  brown: "rgba(43,26,18,0.95)",
   muted: "rgba(43,26,18,0.55)",
   stroke: "rgba(43,26,18,0.16)",
   gold: "#d4a62f",
@@ -20,6 +17,30 @@ const BRAND = {
   softGoldRing: "rgba(212,166,47,0.18)",
   cardShadow: "0 14px 34px rgba(43,26,18,0.10)",
 };
+
+// ✅ Frontend-generated tips (random per login/session)
+const TIPS = [
+  "Review your lessons for 10 minutes before class.",
+  "Write down 3 key points after every lesson.",
+  "Prepare your bag the night before to avoid rushing.",
+  "Use 25 minutes focus + 5 minutes break (Pomodoro).",
+  "Ask one question in class today—even a small one.",
+  "Read your notes aloud to remember them faster.",
+  "Start assignments early—finish the easiest part first.",
+  "Sleep early. Your brain learns better with rest.",
+  "Turn off notifications while studying for better focus.",
+  "Summarize today’s lesson in 2–3 sentences.",
+];
+
+function pickRandomTipPerSession() {
+  const key = "student_dashboard_tip";
+  const saved = sessionStorage.getItem(key);
+  if (saved) return saved;
+
+  const tip = TIPS[Math.floor(Math.random() * TIPS.length)];
+  sessionStorage.setItem(key, tip);
+  return tip;
+}
 
 function pad2(n) {
   return String(n).padStart(2, "0");
@@ -60,51 +81,124 @@ function startOfDay(d) {
   return x;
 }
 
-function addDays(d, days) {
-  const x = new Date(d);
-  x.setDate(x.getDate() + days);
-  return x;
-}
-
-function getMonthMatrix(date) {
-  const year = date.getFullYear();
-  const month = date.getMonth();
-  const first = new Date(year, month, 1);
-  const firstDay = first.getDay(); // 0 Sun
-  const start = new Date(year, month, 1 - firstDay);
-
-  const weeks = [];
-  let cur = new Date(start);
-
-  for (let w = 0; w < 6; w++) {
-    const row = [];
-    for (let i = 0; i < 7; i++) {
-      row.push(new Date(cur));
-      cur.setDate(cur.getDate() + 1);
-    }
-    weeks.push(row);
-  }
-  return weeks;
+function previewText(s, max = 80) {
+  const t = (s ?? "").trim();
+  if (!t) return "";
+  return t.length > max ? t.slice(0, max).trimEnd() + "..." : t;
 }
 
 export default function StudentDashboard() {
-  // Replace with real user later
-  const student = useMemo(
-    () => ({
-      name: "Juan Dela Cruz",
-    }),
-    []
-  );
-
   const [now, setNow] = useState(new Date());
-  const [monthCursor, setMonthCursor] = useState(new Date());
+
+  // ✅ Welcome name
+  const [studentName, setStudentName] = useState("Student");
+  const [loadingStudent, setLoadingStudent] = useState(true);
+
+  // ✅ Announcements
+  const [announcements, setAnnouncements] = useState([]);
+  const [loadingAnnouncements, setLoadingAnnouncements] = useState(true);
+
+  // ✅ Tip of the day (random per session / login)
+  const [tip, setTip] = useState("");
 
   useEffect(() => {
     const t = setInterval(() => setNow(new Date()), 1000);
     return () => clearInterval(t);
   }, []);
 
-  // Demo schedule (replace with Supabase data later)
+  // pick a tip once per session
+  useEffect(() => {
+    setTip(pickRandomTipPerSession());
+  }, []);
+
+  // OPTIONAL: if you want NEW tip on every SIGNED_IN event
+  useEffect(() => {
+    const { data: sub } = supabase.auth.onAuthStateChange((event) => {
+      if (event === "SIGNED_IN") {
+        sessionStorage.removeItem("student_dashboard_tip");
+        setTip(pickRandomTipPerSession());
+      }
+    });
+
+    return () => sub.subscription.unsubscribe();
+  }, []);
+
+  useEffect(() => {
+    let isMounted = true;
+
+    async function loadDashboardBasics() {
+      setLoadingStudent(true);
+      setLoadingAnnouncements(true);
+
+      const {
+        data: { user },
+        error: authErr,
+      } = await supabase.auth.getUser();
+
+      if (!isMounted) return;
+
+      if (authErr || !user) {
+        setStudentName("Student");
+        setAnnouncements([]);
+        setLoadingStudent(false);
+        setLoadingAnnouncements(false);
+        return;
+      }
+
+      // 1) Student first_name (preferred) + fallback to profiles.full_name
+      const [{ data: studentRow }, { data: profileRow }] = await Promise.all([
+        supabase.from("students").select("first_name").eq("user_id", user.id).maybeSingle(),
+        supabase.from("profiles").select("full_name").eq("user_id", user.id).maybeSingle(),
+      ]);
+
+      if (!isMounted) return;
+
+      const name =
+        (studentRow?.first_name && studentRow.first_name.trim()) ||
+        (profileRow?.full_name && profileRow.full_name.trim()) ||
+        "Student";
+
+      setStudentName(name);
+      setLoadingStudent(false);
+
+      // 2) Announcements for students
+      const { data: annRows, error: annErr } = await supabase
+        .from("announcements")
+        .select("id, title, content, priority, posted_at, posted_by")
+        .eq("status", "Published")
+        .eq("is_archived", false)
+        .eq("target_audience", "All Students")
+        .order("posted_at", { ascending: false })
+        .limit(3);
+
+      if (!isMounted) return;
+
+      if (annErr) {
+        setAnnouncements([]);
+      } else {
+        setAnnouncements(
+          (annRows ?? []).map((a) => ({
+            id: a.id,
+            title: a.title,
+            by: "Admin", // can be joined to profiles later
+            tag: a.priority, // High / Medium / Low
+            preview: previewText(a.content, 80),
+            posted_at: a.posted_at,
+          }))
+        );
+      }
+
+      setLoadingAnnouncements(false);
+    }
+
+    loadDashboardBasics();
+
+    return () => {
+      isMounted = false;
+    };
+  }, []);
+
+  // Demo schedule (temporary until schedule tables exist)
   const todaysClasses = useMemo(() => {
     const d = startOfDay(now);
 
@@ -152,21 +246,6 @@ export default function StudentDashboard() {
     []
   );
 
-  const announcements = useMemo(
-    () => [
-      { title: "ID Picture Schedule", by: "Admin", tag: "Important", preview: "ID pictures will be taken next week..." },
-      { title: "Library Reminder", by: "Admin", tag: "General", preview: "Please return borrowed books on time..." },
-      { title: "Intramurals", by: "Admin", tag: "Event", preview: "Join the sports fest! Sign-ups are open..." },
-    ],
-    []
-  );
-
-  const monthWeeks = useMemo(() => getMonthMatrix(monthCursor), [monthCursor]);
-  const todayKey = useMemo(() => startOfDay(now).toDateString(), [now]);
-
-  // Highlight days with classes (demo: today only)
-  const hasClassOnDay = (d) => d.toDateString() === todayKey;
-
   return (
     <div className="space-y-5">
       {/* Welcome */}
@@ -182,16 +261,17 @@ export default function StudentDashboard() {
             <div className="text-sm font-semibold" style={{ color: BRAND.muted }}>
               {formatDate(now)} • {formatTime(now)}
             </div>
+
             <div className="mt-1 text-2xl font-extrabold" style={{ color: BRAND.brown }}>
-              Welcome back, {student.name}!
+              Welcome back, {loadingStudent ? "..." : studentName}!
             </div>
+
             <div className="mt-2 text-sm" style={{ color: BRAND.muted }}>
-              Tip of the day: Review your lessons for 10 minutes before class.
+              Tip of the day: {tip || "—"}
             </div>
           </div>
 
-          <div className="rounded-2xl border px-4 py-3"
-               style={{ borderColor: BRAND.stroke, background: BRAND.softGoldBg }}>
+          <div className="rounded-2xl border px-4 py-3" style={{ borderColor: BRAND.stroke, background: BRAND.softGoldBg }}>
             <div className="text-xs font-semibold" style={{ color: BRAND.muted }}>
               Next class in
             </div>
@@ -207,24 +287,14 @@ export default function StudentDashboard() {
 
       {/* Stats */}
       <div className="grid gap-4 md:grid-cols-3">
-        <StatCard
-          icon={BookOpen}
-          title="Total Courses"
-          value={stats.totalCourses}
-          hint="Tap Courses to view subjects"
-        />
+        <StatCard icon={BookOpen} title="Total Courses" value={stats.totalCourses} hint="Tap Courses to view subjects" />
         <StatCard
           icon={Clock}
           title="Today's Classes"
           value={stats.todaysClasses}
           hint={nextClass ? `Next: ${formatTime(nextClass.start)}` : "No more classes today"}
         />
-        <StatCard
-          icon={CheckCircle2}
-          title="Pending Assignments"
-          value={stats.pendingAssignments}
-          hint="Due soon"
-        />
+        <StatCard icon={CheckCircle2} title="Pending Assignments" value={stats.pendingAssignments} hint="Due soon" />
       </div>
 
       {/* Two-column main widgets */}
@@ -263,8 +333,7 @@ export default function StudentDashboard() {
 
           <div className="mt-4 space-y-3">
             {todaysClasses.map((c, idx) => {
-              const status =
-                now < c.start ? "Upcoming" : now >= c.start && now <= c.end ? "In Progress" : "Completed";
+              const status = now < c.start ? "Upcoming" : now >= c.start && now <= c.end ? "In Progress" : "Completed";
 
               return (
                 <div
@@ -272,10 +341,7 @@ export default function StudentDashboard() {
                   className="flex items-start gap-3 rounded-2xl border p-4"
                   style={{
                     borderColor: BRAND.stroke,
-                    background:
-                      status === "In Progress"
-                        ? "rgba(212,166,47,0.10)"
-                        : "rgba(255,255,255,1)",
+                    background: status === "In Progress" ? "rgba(212,166,47,0.10)" : "rgba(255,255,255,1)",
                   }}
                 >
                   <div className="min-w-[110px]">
@@ -354,112 +420,49 @@ export default function StudentDashboard() {
             </div>
 
             <div className="mt-4 space-y-3">
-              {announcements.map((a, idx) => (
-                <div key={idx} className="rounded-2xl border p-4" style={{ borderColor: BRAND.stroke }}>
-                  <div className="flex items-center justify-between gap-2">
-                    <div className="text-sm font-extrabold" style={{ color: BRAND.brown }}>
-                      {a.title}
-                    </div>
-                    <span
-                      className="rounded-full px-3 py-1 text-[11px] font-extrabold"
-                      style={{
-                        background: BRAND.softGoldBg,
-                        color: BRAND.brown,
-                      }}
-                    >
-                      {a.tag}
-                    </span>
-                  </div>
-                  <div className="mt-1 text-xs font-semibold" style={{ color: BRAND.muted }}>
-                    Posted by {a.by}
-                  </div>
-                  <div className="mt-2 text-sm" style={{ color: BRAND.muted }}>
-                    {a.preview}
-                  </div>
+              {loadingAnnouncements ? (
+                <div className="text-sm font-semibold" style={{ color: BRAND.muted }}>
+                  Loading announcements...
                 </div>
-              ))}
+              ) : announcements.length === 0 ? (
+                <div className="text-sm font-semibold" style={{ color: BRAND.muted }}>
+                  No announcements yet.
+                </div>
+              ) : (
+                announcements.map((a) => (
+                  <div key={a.id} className="rounded-2xl border p-4" style={{ borderColor: BRAND.stroke }}>
+                    <div className="flex items-center justify-between gap-2">
+                      <div className="text-sm font-extrabold" style={{ color: BRAND.brown }}>
+                        {a.title}
+                      </div>
+                      <span className="rounded-full px-3 py-1 text-[11px] font-extrabold" style={{ background: BRAND.softGoldBg, color: BRAND.brown }}>
+                        {a.tag}
+                      </span>
+                    </div>
+                    <div className="mt-1 text-xs font-semibold" style={{ color: BRAND.muted }}>
+                      Posted by {a.by}
+                    </div>
+                    <div className="mt-2 text-sm" style={{ color: BRAND.muted }}>
+                      {a.preview}
+                    </div>
+                  </div>
+                ))
+              )}
             </div>
           </motion.section>
 
-          {/* Calendar */}
-          <motion.section
+          {/* ✅ CalendarWidget (replaces old demo calendar UI) */}
+          <motion.div
             initial={{ opacity: 0, y: 8 }}
             animate={{ opacity: 1, y: 0 }}
             transition={{ duration: 0.18, delay: 0.06 }}
-            className="rounded-3xl border bg-white p-5"
-            style={{ borderColor: BRAND.stroke, boxShadow: BRAND.cardShadow }}
           >
-            <div className="flex items-center justify-between">
-              <div>
-                <div className="text-sm font-extrabold" style={{ color: BRAND.brown }}>
-                  Academic Calendar
-                </div>
-                <div className="text-xs font-semibold" style={{ color: BRAND.muted }}>
-                  Highlighted class days
-                </div>
-              </div>
-              <div className="flex items-center gap-2">
-                <button
-                  className="rounded-2xl border px-3 py-2 text-sm font-semibold hover:bg-black/5"
-                  style={{ borderColor: BRAND.stroke, color: BRAND.brown }}
-                  onClick={() => setMonthCursor((d) => new Date(d.getFullYear(), d.getMonth() - 1, 1))}
-                >
-                  Prev
-                </button>
-                <button
-                  className="rounded-2xl border px-3 py-2 text-sm font-semibold hover:bg-black/5"
-                  style={{ borderColor: BRAND.stroke, color: BRAND.brown }}
-                  onClick={() => setMonthCursor((d) => new Date(d.getFullYear(), d.getMonth() + 1, 1))}
-                >
-                  Next
-                </button>
-              </div>
-            </div>
-
-            <div className="mt-3 text-sm font-extrabold" style={{ color: BRAND.brown }}>
-              {monthCursor.toLocaleDateString(undefined, { month: "long", year: "numeric" })}
-            </div>
-
-            <div className="mt-3 grid grid-cols-7 gap-1 text-center text-xs font-semibold" style={{ color: BRAND.muted }}>
-              {["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"].map((d) => (
-                <div key={d} className="py-1">
-                  {d}
-                </div>
-              ))}
-            </div>
-
-            <div className="mt-1 grid grid-cols-7 gap-1">
-              {monthWeeks.flat().map((d, idx) => {
-                const inMonth = d.getMonth() === monthCursor.getMonth();
-                const isToday = d.toDateString() === new Date().toDateString();
-
-                return (
-                  <button
-                    key={idx}
-                    className="relative rounded-xl border py-2 text-xs font-semibold transition hover:bg-black/5"
-                    style={{
-                      borderColor: BRAND.stroke,
-                      color: inMonth ? BRAND.brown : "rgba(43,26,18,0.35)",
-                      background: isToday ? BRAND.softGoldBg : "white",
-                    }}
-                    onClick={() => alert(`Selected: ${d.toDateString()}`)}
-                  >
-                    {d.getDate()}
-                    {hasClassOnDay(d) ? (
-                      <span
-                        className="absolute bottom-1 left-1/2 h-1.5 w-1.5 -translate-x-1/2 rounded-full"
-                        style={{ background: BRAND.gold }}
-                      />
-                    ) : null}
-                  </button>
-                );
-              })}
-            </div>
-          </motion.section>
+            <CalendarWidget title="Academic Calendar" subtitle="Official yearly schedule (read-only)" />
+          </motion.div>
         </div>
       </div>
 
-      {/* Recent Lessons */}
+      {/* Recent Lessons (demo for now) */}
       <motion.section
         initial={{ opacity: 0, y: 8 }}
         animate={{ opacity: 1, y: 0 }}
@@ -527,10 +530,7 @@ function StatCard({ icon: Icon, title, value, hint }) {
       style={{ borderColor: BRAND.stroke, boxShadow: BRAND.cardShadow }}
     >
       <div className="flex items-start gap-3">
-        <div
-          className="grid h-11 w-11 place-items-center rounded-2xl"
-          style={{ background: BRAND.softGoldBg }}
-        >
+        <div className="grid h-11 w-11 place-items-center rounded-2xl" style={{ background: BRAND.softGoldBg }}>
           <Icon className="h-5 w-5" style={{ color: "rgba(43,26,18,0.70)" }} />
         </div>
 

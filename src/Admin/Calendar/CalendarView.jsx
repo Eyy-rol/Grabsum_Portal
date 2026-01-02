@@ -1,22 +1,11 @@
 // src/admin/Calendar/CalendarView.jsx
-// Grabsum School Admin — Calendar (UI-first)
-//
-// ✅ Features included (per spec):
-// - Header + Add Event button
-// - View toggles: Month (default), Week, List
-// - Prev / Today / Next navigation + current month/year label
-// - Month grid (Sun–Sat) with today highlight + event indicators
-// - Day sidebar panel (click a date) listing events with actions
-// - Add/Edit modal with Zod + react-hook-form validation
-// - View Details modal
-// - Delete confirmation modal (handles recurring with options in UI)
-// - Filters (top) by type + month + audience
-// - List view grouped by month
-//
-// ⚠️ UI-only for now: data is stored in component state with mock seed.
-// Next step later: connect to Supabase events table.
+// ✅ Admin Calendar — Full CRUD + Supabase (calendar_events)
+// ✅ Everyone else: use a separate "read-only" calendar page/component
+// ✅ Audience removed (all events visible to everyone)
+// ✅ Keeps: Month/Week/List, filters (Type + Month), day sidebar, modals, validation
+// ✅ Uses your TOKENS design system
 
-import { useEffect, useMemo, useState } from "react";
+import React, { useEffect, useMemo, useState } from "react";
 import { z } from "zod";
 import { useForm } from "react-hook-form";
 import { zodResolver } from "@hookform/resolvers/zod";
@@ -34,6 +23,9 @@ import {
   Trash2,
   Filter,
 } from "lucide-react";
+
+import { TOKENS } from "../../styles/tokens"; // adjust if needed
+import { supabase } from "../../lib/supabaseClient"; // ✅ adjust path if needed
 
 /* =====================
    CONSTANTS
@@ -55,27 +47,12 @@ const EVENT_TYPES = [
   { key: "Others", emoji: "📌", color: "#6B7280" },
 ];
 
-const AUDIENCES = [
-  "All Students",
-  "Grade 11 Students",
-  "Grade 12 Students",
-  "STEM Students",
-  "ABM Students",
-  "HUMSS Students",
-  "GAS Students",
-  "TVL Students",
-  "All Teachers",
-  "Specific Teachers",
-  "Parents/Guardians",
-  "Admin Staff",
-];
-
 function typeMeta(type) {
   return EVENT_TYPES.find((t) => t.key === type) || EVENT_TYPES[EVENT_TYPES.length - 1];
 }
 
 /* =====================
-   ZOD VALIDATION
+   VALIDATION (Audience Removed)
 ===================== */
 
 const eventSchema = z
@@ -92,7 +69,6 @@ const eventSchema = z
     end_time: z.string().optional().or(z.literal("")),
 
     location: z.string().optional().or(z.literal("")),
-    audiences: z.array(z.string()).min(1, "Select at least one target audience"),
 
     recurring: z.boolean().default(false),
     repeat_pattern: z.enum(["Daily", "Weekly", "Monthly", "Yearly"]).optional().or(z.literal("")),
@@ -110,7 +86,6 @@ const eventSchema = z
   .refine(
     (v) => {
       if (v.all_day) return true;
-      // if not all-day, times can be blank (allowed) but if both provided must be valid range
       if (!v.start_time && !v.end_time) return true;
       if (!v.start_time || !v.end_time) return false;
       return v.end_time > v.start_time;
@@ -126,113 +101,27 @@ const eventSchema = z
   );
 
 /* =====================
-   MOCK SEED
-===================== */
-
-const seedEvents = [
-  {
-    id: "ev1",
-    title: "Foundation Day Celebration",
-    description: "Annual celebration of the school's founding.",
-    type: "School Activity",
-    start_date: "2025-12-18",
-    end_date: "",
-    all_day: true,
-    start_time: "",
-    end_time: "",
-    location: "School Gymnasium",
-    audiences: ["All Students", "All Teachers", "Parents/Guardians"],
-    recurring: false,
-    repeat_pattern: "",
-    repeat_until: "",
-    custom_color: "",
-    created_by: "Admin",
-    created_at: "2025-12-01T08:00:00Z",
-    updated_at: "2025-12-01T08:00:00Z",
-  },
-  {
-    id: "ev2",
-    title: "Final Exams (Grade 11)",
-    description: "Final examination week for Grade 11.",
-    type: "Examination",
-    start_date: "2025-12-15",
-    end_date: "2025-12-19",
-    all_day: true,
-    start_time: "",
-    end_time: "",
-    location: "Assigned classrooms",
-    audiences: ["Grade 11 Students", "All Teachers"],
-    recurring: false,
-    repeat_pattern: "",
-    repeat_until: "",
-    custom_color: "",
-    created_by: "Admin",
-    created_at: "2025-11-20T08:00:00Z",
-    updated_at: "2025-11-20T08:00:00Z",
-  },
-  {
-    id: "ev3",
-    title: "Faculty Meeting",
-    description: "Monthly faculty meeting.",
-    type: "Meeting",
-    start_date: "2025-12-20",
-    end_date: "",
-    all_day: false,
-    start_time: "14:00",
-    end_time: "16:00",
-    location: "Conference Room",
-    audiences: ["All Teachers", "Admin Staff"],
-    recurring: true,
-    repeat_pattern: "Monthly",
-    repeat_until: "2026-06-30",
-    custom_color: "",
-    created_by: "Admin",
-    created_at: "2025-11-01T08:00:00Z",
-    updated_at: "2025-11-01T08:00:00Z",
-  },
-];
-
-/* =====================
    DATE HELPERS
 ===================== */
 
-function pad2(n) {
-  return String(n).padStart(2, "0");
-}
-
-function toISODate(d) {
-  return `${d.getFullYear()}-${pad2(d.getMonth() + 1)}-${pad2(d.getDate())}`;
-}
-
-function startOfMonth(d) {
-  return new Date(d.getFullYear(), d.getMonth(), 1);
-}
-
-function endOfMonth(d) {
-  return new Date(d.getFullYear(), d.getMonth() + 1, 0);
-}
-
-function addDays(d, days) {
+const pad2 = (n) => String(n).padStart(2, "0");
+const toISODate = (d) => `${d.getFullYear()}-${pad2(d.getMonth() + 1)}-${pad2(d.getDate())}`;
+const startOfMonth = (d) => new Date(d.getFullYear(), d.getMonth(), 1);
+const endOfMonth = (d) => new Date(d.getFullYear(), d.getMonth() + 1, 0);
+const addDays = (d, days) => {
   const x = new Date(d);
   x.setDate(x.getDate() + days);
   return x;
-}
-
-function startOfWeekSunday(d) {
+};
+const startOfWeekSunday = (d) => {
   const x = new Date(d);
   x.setHours(0, 0, 0, 0);
-  const day = x.getDay(); // 0 Sun
+  const day = x.getDay();
   return addDays(x, -day);
-}
-
-function formatMonthYear(d) {
-  return d.toLocaleDateString(undefined, { month: "long", year: "numeric" });
-}
-
-function formatNiceDate(iso) {
-  const d = new Date(iso);
-  return d.toLocaleDateString(undefined, { month: "long", day: "numeric", year: "numeric" });
-}
+};
+const formatMonthYear = (d) => d.toLocaleDateString(undefined, { month: "long", year: "numeric" });
+const formatNiceDate = (iso) =>
+  new Date(iso).toLocaleDateString(undefined, { month: "long", day: "numeric", year: "numeric" });
 
 function formatTimeRange(ev) {
   if (ev.all_day) return "All Day";
@@ -247,18 +136,29 @@ function formatTimeRange(ev) {
 }
 
 function occursOnDay(ev, isoDay) {
-  // Simple range check (supports multi-day)
   const s = ev.start_date;
   const e = ev.end_date || ev.start_date;
   return isoDay >= s && isoDay <= e;
 }
 
 /* =====================
-   MAIN COMPONENT
+   RANGE FETCH HELPER (overlap)
+===================== */
+function buildRange(cursorDate) {
+  const first = startOfMonth(cursorDate);
+  const last = endOfMonth(cursorDate);
+
+  const from = toISODate(addDays(startOfWeekSunday(first), -7)); // buffer
+  const to = toISODate(addDays(last, 14)); // buffer
+  return { from, to };
+}
+
+/* =====================
+   MAIN
 ===================== */
 
 export default function CalendarView() {
-  const [events, setEvents] = useState(seedEvents);
+  const [events, setEvents] = useState([]);
   const [view, setView] = useState(VIEW.MONTH);
 
   const today = useMemo(() => {
@@ -270,40 +170,80 @@ export default function CalendarView() {
   const [cursorDate, setCursorDate] = useState(today);
   const [selectedDay, setSelectedDay] = useState(toISODate(today));
 
-  // Filters
+  // Filters (Audience removed)
   const [typeFilter, setTypeFilter] = useState(() => new Set());
-  const [audienceFilter, setAudienceFilter] = useState("");
   const [monthFilter, setMonthFilter] = useState("");
+
+  // Loading + error
+  const [loading, setLoading] = useState(true);
+  const [errorMsg, setErrorMsg] = useState("");
 
   // Modals
   const [openForm, setOpenForm] = useState(false);
   const [editing, setEditing] = useState(null);
+
   const [openView, setOpenView] = useState(false);
   const [viewing, setViewing] = useState(null);
+
   const [openDelete, setOpenDelete] = useState(false);
   const [deleting, setDeleting] = useState(null);
 
-  // Keep selected day within visible month when navigating month view
+  // Ensure selected day stays within visible month for month view
   useEffect(() => {
     if (view !== VIEW.MONTH) return;
-    const iso = selectedDay;
-    const m = cursorDate.getMonth();
-    const y = cursorDate.getFullYear();
-    const d = new Date(iso);
-    if (d.getMonth() !== m || d.getFullYear() !== y) {
-      setSelectedDay(toISODate(new Date(y, m, 1)));
+    const d = new Date(selectedDay);
+    if (d.getMonth() !== cursorDate.getMonth() || d.getFullYear() !== cursorDate.getFullYear()) {
+      setSelectedDay(toISODate(new Date(cursorDate.getFullYear(), cursorDate.getMonth(), 1)));
     }
-  }, [cursorDate, view]);
+  }, [cursorDate, view, selectedDay]);
+
+  // ✅ Fetch events from Supabase on cursorDate change
+  useEffect(() => {
+    let alive = true;
+
+    async function loadEvents() {
+      setLoading(true);
+      setErrorMsg("");
+
+      const { from, to } = buildRange(cursorDate);
+
+      // Overlap logic:
+      // include events where start_date <= to AND (end_date is null OR end_date >= from)
+      // This is easiest with OR + AND patterns:
+      //   start_date <= to AND (end_date >= from OR end_date is null)
+      const { data, error } = await supabase
+        .from("calendar_events")
+        .select("*")
+        .lte("start_date", to)
+        .or(`end_date.gte.${from},end_date.is.null`)
+        .order("start_date", { ascending: true })
+        .order("start_time", { ascending: true });
+
+      if (!alive) return;
+
+      if (error) {
+        setErrorMsg(error.message);
+        setEvents([]);
+      } else {
+        setEvents(data ?? []);
+      }
+
+      setLoading(false);
+    }
+
+    loadEvents();
+
+    return () => {
+      alive = false;
+    };
+  }, [cursorDate]);
 
   const filteredEvents = useMemo(() => {
     let list = [...events];
 
-    // type filter
-    if (typeFilter.size > 0) {
-      list = list.filter((e) => typeFilter.has(e.type));
-    }
+    if (typeFilter.size > 0) list = list.filter((e) => typeFilter.has(e.type));
 
-    // month filter (YYYY-MM)
+    // Month filter (YYYY-MM)
     if (monthFilter) {
       list = list.filter((e) => {
         const s = e.start_date.slice(0, 7);
@@ -312,26 +252,19 @@ export default function CalendarView() {
       });
     }
 
-    // audience filter
-    if (audienceFilter) {
-      list = list.filter((e) => (e.audiences || []).includes(audienceFilter));
-    }
-
-    // sort by start date then time
     list.sort((a, b) => {
       if (a.start_date !== b.start_date) return a.start_date.localeCompare(b.start_date);
       return String(a.start_time || "").localeCompare(String(b.start_time || ""));
     });
 
     return list;
-  }, [events, typeFilter, monthFilter, audienceFilter]);
+  }, [events, typeFilter, monthFilter]);
 
-  const dayEvents = useMemo(() => {
-    const iso = selectedDay;
-    return filteredEvents.filter((e) => occursOnDay(e, iso));
-  }, [filteredEvents, selectedDay]);
+  const dayEvents = useMemo(
+    () => filteredEvents.filter((e) => occursOnDay(e, selectedDay)),
+    [filteredEvents, selectedDay]
+  );
 
-  // Stats (optional quick glance)
   const stats = useMemo(() => {
     const total = filteredEvents.length;
     const thisMonthKey = `${cursorDate.getFullYear()}-${pad2(cursorDate.getMonth() + 1)}`;
@@ -348,12 +281,9 @@ export default function CalendarView() {
     const first = startOfMonth(cursorDate);
     const last = endOfMonth(cursorDate);
     const gridStart = startOfWeekSunday(first);
-    const gridEnd = addDays(startOfWeekSunday(addDays(last, 7)), -1); // last day of last row
-
+    const gridEnd = addDays(startOfWeekSunday(addDays(last, 7)), -1);
     const days = [];
-    for (let d = new Date(gridStart); d <= gridEnd; d = addDays(d, 1)) {
-      days.push(new Date(d));
-    }
+    for (let d = new Date(gridStart); d <= gridEnd; d = addDays(d, 1)) days.push(new Date(d));
     return days;
   }, [cursorDate]);
 
@@ -383,53 +313,19 @@ export default function CalendarView() {
     setOpenDelete(true);
   };
 
-  const onSaveEvent = (payload) => {
-    if (editing) {
-      setEvents((prev) =>
-        prev.map((e) =>
-          e.id === editing.id
-            ? { ...e, ...payload, updated_at: new Date().toISOString() }
-            : e
-        )
-      );
-    } else {
-      setEvents((prev) => [
-        {
-          id: `ev_${crypto.randomUUID()}`,
-          ...payload,
-          created_by: "Admin",
-          created_at: new Date().toISOString(),
-          updated_at: new Date().toISOString(),
-        },
-        ...prev,
-      ]);
-    }
-  };
-
-  const clearFilters = () => {
+  function clearFilters() {
     setTypeFilter(new Set());
-    setAudienceFilter("");
     setMonthFilter("");
-  };
+  }
 
   const navPrev = () => {
-    if (view === VIEW.MONTH) {
-      setCursorDate((d) => new Date(d.getFullYear(), d.getMonth() - 1, 1));
-    } else if (view === VIEW.WEEK) {
-      setCursorDate((d) => addDays(d, -7));
-    } else {
-      setCursorDate((d) => new Date(d.getFullYear(), d.getMonth() - 1, 1));
-    }
+    if (view === VIEW.WEEK) setCursorDate((d) => addDays(d, -7));
+    else setCursorDate((d) => new Date(d.getFullYear(), d.getMonth() - 1, 1));
   };
 
   const navNext = () => {
-    if (view === VIEW.MONTH) {
-      setCursorDate((d) => new Date(d.getFullYear(), d.getMonth() + 1, 1));
-    } else if (view === VIEW.WEEK) {
-      setCursorDate((d) => addDays(d, 7));
-    } else {
-      setCursorDate((d) => new Date(d.getFullYear(), d.getMonth() + 1, 1));
-    }
+    if (view === VIEW.WEEK) setCursorDate((d) => addDays(d, 7));
+    else setCursorDate((d) => new Date(d.getFullYear(), d.getMonth() + 1, 1));
   };
 
   const navToday = () => {
@@ -437,82 +333,123 @@ export default function CalendarView() {
     setSelectedDay(toISODate(today));
   };
 
+  // ✅ CREATE/UPDATE/DELETE with Supabase
+  async function createEvent(payload) {
+    const { data, error } = await supabase.from("calendar_events").insert([payload]).select("*").single();
+    if (error) throw error;
+    setEvents((prev) => [data, ...prev]);
+    return data;
+  }
+
+  async function updateEvent(id, payload) {
+    const { data, error } = await supabase.from("calendar_events").update(payload).eq("id", id).select("*").single();
+    if (error) throw error;
+    setEvents((prev) => prev.map((e) => (e.id === id ? data : e)));
+    return data;
+  }
+
+  async function deleteEvent(id) {
+    const { error } = await supabase.from("calendar_events").delete().eq("id", id);
+    if (error) throw error;
+    setEvents((prev) => prev.filter((e) => e.id !== id));
+  }
+
+  const onSaveEvent = async (payload) => {
+    try {
+      if (editing) {
+        await updateEvent(editing.id, payload);
+      } else {
+        await createEvent(payload);
+      }
+      setOpenForm(false);
+    } catch (e) {
+      alert(e?.message || "Failed to save event");
+    }
+  };
+
   return (
-    <div>
+    <div className={`space-y-4 ${TOKENS.text} font-[Nunito]`}>
       {/* Header */}
-      <div style={styles.headerRow}>
+      <div className="flex flex-col gap-3 md:flex-row md:items-end md:justify-between">
         <div>
-          <h1 style={styles.title}>School Calendar</h1>
-          <div style={styles.sub}>Manage school events, activities, and important dates</div>
+          <div className="text-lg font-extrabold">School Calendar</div>
+          <div className="text-sm text-black/55">Official yearly schedule • Admin can edit</div>
+          {errorMsg ? (
+            <div className="mt-2 rounded-2xl border border-rose-200 bg-rose-50 px-3 py-2 text-sm font-semibold text-rose-700">
+              {errorMsg}
+            </div>
+          ) : null}
         </div>
 
-        <button style={styles.primaryBtn} onClick={() => openAdd(selectedDay)}>
-          <Plus size={18} /> Add Event
+        <button
+          onClick={() => openAdd(selectedDay)}
+          className={`inline-flex items-center gap-2 rounded-2xl px-4 py-2 text-sm font-extrabold ${TOKENS.goldBg} text-black shadow-sm hover:opacity-95`}
+        >
+          <Plus className="h-4 w-4" /> Add Event
         </button>
       </div>
 
-      {/* Top stats + controls */}
-      <div style={styles.topBar}>
-        <div style={styles.statsRow}>
+      {/* Top bar: stats + view + nav */}
+      <div className={`rounded-2xl border ${TOKENS.border} ${TOKENS.panel} p-4 shadow-sm space-y-3`}>
+        <div className="grid gap-3 md:grid-cols-3">
           <MiniStat label="Total Events" value={stats.total} tone="brown" />
-          <MiniStat label="This Period" value={stats.inMonth} tone="gold" />
+          <MiniStat label="This Month" value={stats.inMonth} tone="gold" />
           <MiniStat label="Upcoming" value={stats.upcoming} tone="blue" />
         </div>
 
-        <div style={styles.controlsRow}>
-          <div style={styles.viewToggle}>
-            <ToggleBtn active={view === VIEW.MONTH} onClick={() => setView(VIEW.MONTH)} icon={<LayoutGrid size={16} />}>
+        <div className="flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
+          <div className="flex flex-wrap gap-2">
+            <ToggleBtn active={view === VIEW.MONTH} onClick={() => setView(VIEW.MONTH)} icon={<LayoutGrid className="h-4 w-4" />}>
               Month
             </ToggleBtn>
-            <ToggleBtn active={view === VIEW.WEEK} onClick={() => setView(VIEW.WEEK)} icon={<Columns size={16} />}>
+            <ToggleBtn active={view === VIEW.WEEK} onClick={() => setView(VIEW.WEEK)} icon={<Columns className="h-4 w-4" />}>
               Week
             </ToggleBtn>
-            <ToggleBtn active={view === VIEW.LIST} onClick={() => setView(VIEW.LIST)} icon={<ListIcon size={16} />}>
+            <ToggleBtn active={view === VIEW.LIST} onClick={() => setView(VIEW.LIST)} icon={<ListIcon className="h-4 w-4" />}>
               List
             </ToggleBtn>
           </div>
 
-          <div style={styles.navRow}>
-            <button style={styles.iconBtn} onClick={navPrev} title="Previous">
-              <ChevronLeft size={18} />
+          <div className="flex items-center gap-2">
+            <button onClick={navPrev} className="grid h-10 w-10 place-items-center rounded-2xl border border-black/10 bg-white/70 hover:bg-white">
+              <ChevronLeft className="h-5 w-5 text-black/60" />
             </button>
-            <button style={styles.ghostBtn} onClick={navToday}>
+            <button onClick={navToday} className="rounded-2xl border border-black/10 bg-white/70 px-4 py-2 text-sm font-extrabold hover:bg-white">
               Today
             </button>
-            <button style={styles.iconBtn} onClick={navNext} title="Next">
-              <ChevronRight size={18} />
+            <button onClick={navNext} className="grid h-10 w-10 place-items-center rounded-2xl border border-black/10 bg-white/70 hover:bg-white">
+              <ChevronRight className="h-5 w-5 text-black/60" />
             </button>
-          </div>
 
-          <div style={styles.monthLabel}>
-            <CalendarIcon size={18} /> {formatMonthYear(cursorDate)}
+            <div className="ml-1 inline-flex items-center gap-2 rounded-2xl border border-black/10 bg-white/70 px-4 py-2 text-sm font-extrabold">
+              <CalendarIcon className="h-4 w-4 text-black/60" />
+              {formatMonthYear(cursorDate)}
+            </div>
           </div>
         </div>
       </div>
 
       {/* Filters */}
-      <div style={styles.filterCard}>
-        <div style={styles.filterHeader}>
-          <div style={{ display: "flex", alignItems: "center", gap: 8, fontWeight: 950 }}>
-            <Filter size={16} /> Filters
+      <div className={`rounded-2xl border ${TOKENS.border} ${TOKENS.panel} p-4 shadow-sm`}>
+        <div className="flex items-center justify-between">
+          <div className="inline-flex items-center gap-2 text-sm font-extrabold">
+            <Filter className="h-4 w-4 text-black/60" /> Filters
           </div>
-          <button style={styles.ghostBtn} onClick={clearFilters}>Clear</button>
+          <button onClick={clearFilters} className="text-sm font-extrabold text-black/60 hover:underline">
+            Clear
+          </button>
         </div>
 
-        <div style={styles.filterGrid}>
-          <div style={{ display: "grid", gap: 8 }}>
-            <div style={styles.label}>Event Type</div>
-            <div style={styles.typeChips}>
+        <div className="mt-3 grid gap-3 lg:grid-cols-[1.8fr_1fr]">
+          <div>
+            <div className="text-xs font-semibold text-black/55">Event Type</div>
+            <div className="mt-2 flex flex-wrap gap-2">
               {EVENT_TYPES.map((t) => {
                 const active = typeFilter.has(t.key);
                 return (
                   <button
                     key={t.key}
-                    style={{
-                      ...styles.typeChip,
-                      borderColor: active ? t.color : "#E5E7EB",
-                      background: active ? "#FFFBEB" : "#fff",
-                    }}
+                    type="button"
                     onClick={() => {
                       setTypeFilter((prev) => {
                         const next = new Set(prev);
@@ -521,10 +458,13 @@ export default function CalendarView() {
                         return next;
                       });
                     }}
-                    type="button"
+                    className={
+                      "inline-flex items-center gap-2 rounded-2xl border px-3 py-2 text-xs font-extrabold transition " +
+                      (active ? "bg-[#C9A227]/10 border-[#C9A227]/30" : "bg-white/70 border-black/10 hover:bg-white")
+                    }
                     title={t.key}
                   >
-                    <span style={{ width: 10, height: 10, borderRadius: 999, background: t.color }} />
+                    <span className="h-2.5 w-2.5 rounded-full" style={{ background: t.color }} />
                     {t.emoji} {t.key}
                   </button>
                 );
@@ -532,157 +472,98 @@ export default function CalendarView() {
             </div>
           </div>
 
-          <div style={{ display: "grid", gap: 6 }}>
-            <div style={styles.label}>Month</div>
+          <div>
+            <div className="text-xs font-semibold text-black/55">Month</div>
             <input
               type="month"
               value={monthFilter}
               onChange={(e) => setMonthFilter(e.target.value)}
-              style={styles.input}
+              className="mt-2 w-full rounded-2xl border border-black/10 bg-white/70 px-3 py-2 text-sm outline-none focus:bg-white focus:ring-2 focus:ring-[#C9A227]/30"
             />
-          </div>
-
-          <div style={{ display: "grid", gap: 6 }}>
-            <div style={styles.label}>Target Audience</div>
-            <select value={audienceFilter} onChange={(e) => setAudienceFilter(e.target.value)} style={styles.input}>
-              <option value="">All</option>
-              {AUDIENCES.map((a) => (
-                <option key={a} value={a}>{a}</option>
-              ))}
-            </select>
           </div>
         </div>
       </div>
 
-      {/* Main content */}
-      <div style={styles.mainGrid}>
-        <div style={styles.mainPanel}>
-          {view === VIEW.MONTH && (
-            <MonthView
-              cursorDate={cursorDate}
-              todayISO={toISODate(today)}
-              selectedDay={selectedDay}
-              onSelectDay={setSelectedDay}
-              gridDays={monthGrid}
-              events={filteredEvents}
-              onQuickAdd={openAdd}
-              onOpenEvent={(ev) => openDetails(ev)}
-            />
-          )}
+      {/* Main layout */}
+      <div className="grid gap-4 lg:grid-cols-[1.8fr_1fr]">
+        <div className={`rounded-2xl border ${TOKENS.border} ${TOKENS.panel} p-4 shadow-sm`}>
+          {loading ? (
+            <div className="rounded-2xl border border-black/10 bg-white/70 p-4 text-sm text-black/60">Loading calendar events…</div>
+          ) : (
+            <>
+              {view === VIEW.MONTH && (
+                <MonthView
+                  cursorDate={cursorDate}
+                  todayISO={toISODate(today)}
+                  selectedDay={selectedDay}
+                  onSelectDay={setSelectedDay}
+                  gridDays={monthGrid}
+                  events={filteredEvents}
+                  onQuickAdd={openAdd}
+                  onOpenEvent={openDetails}
+                />
+              )}
 
-          {view === VIEW.WEEK && (
-            <WeekView
-              weekDays={weekDays}
-              todayISO={toISODate(today)}
-              selectedDay={selectedDay}
-              onSelectDay={setSelectedDay}
-              events={filteredEvents}
-              onQuickAdd={openAdd}
-              onOpenEvent={(ev) => openDetails(ev)}
-            />
-          )}
+              {view === VIEW.WEEK && (
+                <WeekView
+                  weekDays={weekDays}
+                  todayISO={toISODate(today)}
+                  selectedDay={selectedDay}
+                  onSelectDay={setSelectedDay}
+                  events={filteredEvents}
+                  onQuickAdd={openAdd}
+                  onOpenEvent={openDetails}
+                />
+              )}
 
-          {view === VIEW.LIST && (
-            <ListView
-              cursorDate={cursorDate}
-              events={filteredEvents}
-              onOpenEvent={(ev) => openDetails(ev)}
-              onEdit={openEdit}
-              onDelete={openDeleteConfirm}
-            />
+              {view === VIEW.LIST && (
+                <ListView events={filteredEvents} onOpenEvent={openDetails} onEdit={openEdit} onDelete={openDeleteConfirm} />
+              )}
+            </>
           )}
         </div>
 
-        {/* Sidebar: selected day details */}
-        <div style={styles.sidePanel}>
-          <div style={styles.sideHeader}>
-            <div style={{ fontWeight: 950 }}>Events on {formatNiceDate(selectedDay)}</div>
-            <button style={styles.ghostBtn} onClick={() => openAdd(selectedDay)}>
-              <Plus size={16} /> Add
+        {/* Day panel */}
+        <div className={`rounded-2xl border ${TOKENS.border} ${TOKENS.panel} p-4 shadow-sm lg:sticky lg:top-4 h-fit`}>
+          <div className="flex items-center justify-between">
+            <div className="text-sm font-extrabold">Events on {formatNiceDate(selectedDay)}</div>
+            <button
+              onClick={() => openAdd(selectedDay)}
+              className="inline-flex items-center gap-2 rounded-2xl border border-black/10 bg-white/70 px-3 py-2 text-xs font-extrabold hover:bg-white"
+            >
+              <Plus className="h-4 w-4 text-black/60" /> Add
             </button>
           </div>
 
-          {dayEvents.length === 0 ? (
-            <div style={{ color: "#6B7280", fontSize: 13 }}>
-              No events for this day. Click <b>Add</b> to create one.
-            </div>
-          ) : (
-            <div style={styles.sideList}>
-              {dayEvents.map((ev) => {
-                const meta = typeMeta(ev.type);
-                const color = ev.custom_color || meta.color;
-                return (
-                  <div key={ev.id} style={styles.sideItem}>
-                    <div style={{ display: "flex", justifyContent: "space-between", gap: 10 }}>
-                      <div>
-                        <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-                          <span style={{ width: 10, height: 10, borderRadius: 999, background: color }} />
-                          <div style={{ fontWeight: 950 }}>{ev.title}</div>
-                        </div>
-                        <div style={{ marginTop: 6, display: "flex", gap: 8, flexWrap: "wrap" }}>
-                          <Badge color={color}>{meta.emoji} {ev.type}</Badge>
-                          <Badge color="#6B7280">{formatTimeRange(ev)}</Badge>
-                          {ev.location ? <Badge color="#A0826D">📍 {ev.location}</Badge> : null}
-                        </div>
-                        {ev.description ? (
-                          <div style={{ marginTop: 8, color: "#6B7280", fontSize: 13 }}>
-                            {ev.description.slice(0, 100)}{ev.description.length > 100 ? "…" : ""}
-                          </div>
-                        ) : null}
-                        <div style={{ marginTop: 8, display: "flex", gap: 6, flexWrap: "wrap" }}>
-                          {(ev.audiences || []).slice(0, 4).map((a) => (
-                            <Pill key={a}>{a}</Pill>
-                          ))}
-                          {(ev.audiences || []).length > 4 ? <Pill>+{(ev.audiences || []).length - 4}</Pill> : null}
-                        </div>
-                      </div>
-
-                      <div style={{ display: "inline-flex", gap: 8, height: 36 }}>
-                        <button style={styles.iconBtn} onClick={() => openDetails(ev)} title="View">
-                          <Eye size={16} />
-                        </button>
-                        <button style={styles.iconBtn} onClick={() => openEdit(ev)} title="Edit">
-                          <Pencil size={16} />
-                        </button>
-                        <button style={{ ...styles.iconBtn, color: "#EF4444" }} onClick={() => openDeleteConfirm(ev)} title="Delete">
-                          <Trash2 size={16} />
-                        </button>
-                      </div>
-                    </div>
-                  </div>
-                );
-              })}
-            </div>
-          )}
+          <div className="mt-3 space-y-3 max-h-[70vh] overflow-auto pr-1">
+            {loading ? (
+              <div className="rounded-2xl border border-black/10 bg-white/70 p-4 text-sm text-black/60">Loading…</div>
+            ) : dayEvents.length === 0 ? (
+              <div className="rounded-2xl border border-black/10 bg-white/70 p-4 text-sm text-black/60">
+                No events for this day. Click <b>Add</b> to create one.
+              </div>
+            ) : (
+              dayEvents.map((ev) => (
+                <DayCard key={ev.id} ev={ev} onView={openDetails} onEdit={openEdit} onDelete={openDeleteConfirm} />
+              ))
+            )}
+          </div>
         </div>
       </div>
 
       {/* Add/Edit Modal */}
-      <Modal
-        open={openForm}
-        title={editing ? `Edit Event — ${editing.title}` : "Add New Event"}
-        onClose={() => setOpenForm(false)}
-        wide
-      >
+      <Modal open={openForm} title={editing ? `Edit Event — ${editing.title}` : "Add New Event"} onClose={() => setOpenForm(false)} wide>
         <EventForm
           initial={editing}
           defaultDay={selectedDay}
           onCancel={() => setOpenForm(false)}
-          onSave={(payload) => {
-            onSaveEvent(payload);
-            setOpenForm(false);
-          }}
+          onSave={onSaveEvent}
         />
       </Modal>
 
-      {/* View Details Modal */}
-      <Modal
-        open={openView}
-        title={viewing ? viewing.title : "Event"}
-        onClose={() => setOpenView(false)}
-        wide
-      >
-        {viewing && (
+      {/* View Details */}
+      <Modal open={openView} title={viewing ? viewing.title : "Event"} onClose={() => setOpenView(false)} wide>
+        {viewing ? (
           <EventDetails
             event={viewing}
             onEdit={() => {
@@ -695,29 +576,127 @@ export default function CalendarView() {
             }}
             onClose={() => setOpenView(false)}
           />
-        )}
+        ) : null}
       </Modal>
 
-      {/* Delete Confirmation */}
-      <Modal
-        open={openDelete}
-        title={deleting ? `Delete Event — ${deleting.title}` : "Delete Event"}
-        onClose={() => setOpenDelete(false)}
-      >
-        {deleting && (
+      {/* Delete */}
+      <Modal open={openDelete} title={deleting ? `Delete Event — ${deleting.title}` : "Delete Event"} onClose={() => setOpenDelete(false)}>
+        {deleting ? (
           <DeleteEventDialog
             event={deleting}
             onCancel={() => setOpenDelete(false)}
-            onDelete={(mode) => {
-              // UI-only: just delete one record.
-              // Later with recurrence-series table, use mode.
-              setEvents((prev) => prev.filter((e) => e.id !== deleting.id));
-              setOpenDelete(false);
+            onDelete={async () => {
+              try {
+                await deleteEvent(deleting.id);
+                setOpenDelete(false);
+              } catch (e) {
+                alert(e?.message || "Failed to delete event");
+              }
             }}
           />
-        )}
+        ) : null}
       </Modal>
     </div>
+  );
+}
+
+/* =====================
+   SUB COMPONENTS
+===================== */
+
+function ToggleBtn({ active, onClick, icon, children }) {
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      className={
+        "inline-flex items-center gap-2 rounded-2xl border px-3 py-2 text-sm font-extrabold transition " +
+        (active ? "bg-[#C9A227]/10 border-[#C9A227]/30" : "bg-white/70 border-black/10 hover:bg-white")
+      }
+    >
+      {icon}
+      {children}
+    </button>
+  );
+}
+
+function MiniStat({ label, value, tone }) {
+  const top = tone === "gold" ? "#C9A227" : tone === "blue" ? "#3B82F6" : "#6B4E2E";
+  return (
+    <div className="rounded-2xl border border-black/10 bg-white/70 p-4" style={{ borderTop: `4px solid ${top}` }}>
+      <div className="text-xl font-extrabold">{value}</div>
+      <div className="text-xs font-semibold text-black/55">{label}</div>
+    </div>
+  );
+}
+
+function Badge({ color, children }) {
+  return (
+    <span className="inline-flex items-center gap-2 rounded-full border bg-white px-3 py-1 text-xs font-extrabold" style={{ borderColor: color }}>
+      {children}
+    </span>
+  );
+}
+
+function Pill({ children }) {
+  return <span className="rounded-full border border-black/10 bg-white/70 px-3 py-1 text-xs font-extrabold">{children}</span>;
+}
+
+function DayCard({ ev, onView, onEdit, onDelete }) {
+  const meta = typeMeta(ev.type);
+  const color = ev.custom_color || meta.color;
+
+  return (
+    <div className="rounded-2xl border border-black/10 bg-white/70 p-4">
+      <div className="flex items-start justify-between gap-3">
+        <div className="min-w-0">
+          <div className="flex items-center gap-2">
+            <span className="h-2.5 w-2.5 rounded-full" style={{ background: color }} />
+            <div className="truncate text-sm font-extrabold">{ev.title}</div>
+          </div>
+
+          <div className="mt-2 flex flex-wrap gap-2">
+            <Badge color={color}>
+              {meta.emoji} {ev.type}
+            </Badge>
+            <Badge color="#6B7280">{formatTimeRange(ev)}</Badge>
+            {ev.location ? <Badge color="#6B4E2E">📍 {ev.location}</Badge> : null}
+          </div>
+
+          {ev.description ? (
+            <div className="mt-2 text-sm text-black/60">
+              {ev.description.slice(0, 120)}
+              {ev.description.length > 120 ? "…" : ""}
+            </div>
+          ) : null}
+        </div>
+
+        <div className="flex gap-2">
+          <IconBtn title="View" onClick={() => onView(ev)}>
+            <Eye className="h-4 w-4" />
+          </IconBtn>
+          <IconBtn title="Edit" onClick={() => onEdit(ev)}>
+            <Pencil className="h-4 w-4" />
+          </IconBtn>
+          <IconBtn danger title="Delete" onClick={() => onDelete(ev)}>
+            <Trash2 className="h-4 w-4" />
+          </IconBtn>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function IconBtn({ title, onClick, danger, children }) {
+  return (
+    <button
+      title={title}
+      onClick={onClick}
+      className={"grid h-9 w-9 place-items-center rounded-2xl border border-black/10 bg-white/70 hover:bg-white " + (danger ? "text-rose-700" : "text-black/70")}
+      type="button"
+    >
+      {children}
+    </button>
   );
 }
 
@@ -740,14 +719,16 @@ function MonthView({ cursorDate, todayISO, selectedDay, onSelectDay, gridDays, e
   }, [gridDays, events]);
 
   return (
-    <div>
-      <div style={styles.calendarHeaderRow}>
+    <div className="space-y-3">
+      <div className="grid grid-cols-7 gap-3">
         {["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"].map((d) => (
-          <div key={d} style={styles.dow}>{d}</div>
+          <div key={d} className="rounded-2xl border border-black/10 bg-white/70 py-2 text-center text-xs font-extrabold text-black/55">
+            {d}
+          </div>
         ))}
       </div>
 
-      <div style={styles.monthGrid}>
+      <div className="grid grid-cols-7 gap-3">
         {gridDays.map((d) => {
           const iso = toISODate(d);
           const inMonth = d.getMonth() === month && d.getFullYear() === year;
@@ -758,37 +739,33 @@ function MonthView({ cursorDate, todayISO, selectedDay, onSelectDay, gridDays, e
           return (
             <div
               key={iso}
-              style={{
-                ...styles.dayCell,
-                background: isSelected ? "#FFFBEB" : "#fff",
-                borderColor: isToday ? "#DAA520" : "#E5E7EB",
-                opacity: inMonth ? 1 : 0.55,
-              }}
+              className={
+                "min-h-[120px] rounded-2xl border p-3 transition cursor-pointer " +
+                (isSelected ? "bg-[#C9A227]/10 border-[#C9A227]/30" : "bg-white/70 border-black/10 hover:bg-white") +
+                (!inMonth ? " opacity-50" : "") +
+                (isToday ? " ring-2 ring-[#C9A227]/40" : "")
+              }
               onClick={() => onSelectDay(iso)}
               role="button"
               tabIndex={0}
-              onKeyDown={(e) => {
-                if (e.key === "Enter") onSelectDay(iso);
-              }}
-              title="Click to view day"
+              onKeyDown={(e) => e.key === "Enter" && onSelectDay(iso)}
             >
-              <div style={styles.dayTop}>
-                <div style={styles.dayNum}>{d.getDate()}</div>
+              <div className="flex items-center justify-between">
+                <div className="text-sm font-extrabold">{d.getDate()}</div>
                 <button
                   type="button"
-                  style={styles.quickAdd}
+                  className="grid h-8 w-8 place-items-center rounded-2xl border border-black/10 bg-white/70 hover:bg-white"
                   onClick={(e) => {
                     e.stopPropagation();
                     onQuickAdd(iso);
                   }}
                   title="Quick add"
                 >
-                  <Plus size={14} />
+                  <Plus className="h-4 w-4 text-black/60" />
                 </button>
               </div>
 
-              {/* Event indicators */}
-              <div style={styles.indicators}>
+              <div className="mt-2 space-y-2">
                 {list.slice(0, 3).map((ev) => {
                   const meta = typeMeta(ev.type);
                   const color = ev.custom_color || meta.color;
@@ -796,22 +773,21 @@ function MonthView({ cursorDate, todayISO, selectedDay, onSelectDay, gridDays, e
                     <button
                       key={ev.id}
                       type="button"
-                      style={{ ...styles.indicatorBadge, borderColor: color }}
                       onClick={(e) => {
                         e.stopPropagation();
                         onOpenEvent(ev);
                       }}
+                      className="w-full rounded-xl border border-black/10 bg-white px-2 py-1 text-left text-xs font-extrabold hover:bg-black/[0.02]"
                       title={ev.title}
                     >
-                      <span style={{ width: 8, height: 8, borderRadius: 999, background: color }} />
-                      <span style={styles.indicatorText}>{ev.title}</span>
+                      <span className="inline-flex items-center gap-2">
+                        <span className="h-2 w-2 rounded-full" style={{ background: color }} />
+                        <span className="truncate">{ev.title}</span>
+                      </span>
                     </button>
                   );
                 })}
-
-                {list.length > 3 ? (
-                  <div style={styles.moreEvents}>+{list.length - 3} more</div>
-                ) : null}
+                {list.length > 3 ? <div className="text-xs font-extrabold text-black/50">+{list.length - 3} more</div> : null}
               </div>
             </div>
           );
@@ -823,79 +799,75 @@ function MonthView({ cursorDate, todayISO, selectedDay, onSelectDay, gridDays, e
 
 function WeekView({ weekDays, todayISO, selectedDay, onSelectDay, events, onQuickAdd, onOpenEvent }) {
   return (
-    <div style={{ display: "grid", gap: 12 }}>
-      <div style={styles.weekGrid}>
-        {weekDays.map((d) => {
-          const iso = toISODate(d);
-          const isToday = iso === todayISO;
-          const isSelected = iso === selectedDay;
-          const list = events.filter((ev) => occursOnDay(ev, iso));
+    <div className="grid gap-3 lg:grid-cols-7">
+      {weekDays.map((d) => {
+        const iso = toISODate(d);
+        const isToday = iso === todayISO;
+        const isSelected = iso === selectedDay;
+        const list = events.filter((ev) => occursOnDay(ev, iso));
 
-          return (
-            <div
-              key={iso}
-              style={{
-                ...styles.weekCol,
-                borderColor: isToday ? "#DAA520" : "#E5E7EB",
-                background: isSelected ? "#FFFBEB" : "#fff",
-              }}
-              onClick={() => onSelectDay(iso)}
-              role="button"
-              tabIndex={0}
-              onKeyDown={(e) => e.key === "Enter" && onSelectDay(iso)}
-            >
-              <div style={styles.weekColHeader}>
-                <div style={{ fontWeight: 950 }}>
-                  {d.toLocaleDateString(undefined, { weekday: "short" })}
-                </div>
-                <div style={{ color: "#6B7280", fontWeight: 900 }}>
-                  {d.getDate()}
-                </div>
-                <button
-                  type="button"
-                  style={styles.quickAdd}
-                  onClick={(e) => {
-                    e.stopPropagation();
-                    onQuickAdd(iso);
-                  }}
-                  title="Quick add"
-                >
-                  <Plus size={14} />
-                </button>
+        return (
+          <div
+            key={iso}
+            className={
+              "min-h-[260px] rounded-2xl border p-3 cursor-pointer transition " +
+              (isSelected ? "bg-[#C9A227]/10 border-[#C9A227]/30" : "bg-white/70 border-black/10 hover:bg-white") +
+              (isToday ? " ring-2 ring-[#C9A227]/40" : "")
+            }
+            onClick={() => onSelectDay(iso)}
+            role="button"
+            tabIndex={0}
+            onKeyDown={(e) => e.key === "Enter" && onSelectDay(iso)}
+          >
+            <div className="flex items-center justify-between">
+              <div>
+                <div className="text-sm font-extrabold">{d.toLocaleDateString(undefined, { weekday: "short" })}</div>
+                <div className="text-xs font-extrabold text-black/55">{d.getDate()}</div>
               </div>
 
-              <div style={styles.weekEvents}>
-                {list.length === 0 ? (
-                  <div style={{ color: "#9CA3AF", fontSize: 12 }}>No events</div>
-                ) : (
-                  list.slice(0, 6).map((ev) => {
-                    const meta = typeMeta(ev.type);
-                    const color = ev.custom_color || meta.color;
-                    return (
-                      <button
-                        key={ev.id}
-                        type="button"
-                        style={{ ...styles.weekEventPill, borderColor: color }}
-                        onClick={(e) => {
-                          e.stopPropagation();
-                          onOpenEvent(ev);
-                        }}
-                        title={ev.title}
-                      >
-                        <span style={{ width: 10, height: 10, borderRadius: 999, background: color }} />
-                        <span style={{ fontWeight: 900, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
-                          {ev.title}
-                        </span>
-                      </button>
-                    );
-                  })
-                )}
-                {list.length > 6 ? <div style={styles.moreEvents}>+{list.length - 6} more</div> : null}
-              </div>
+              <button
+                type="button"
+                className="grid h-8 w-8 place-items-center rounded-2xl border border-black/10 bg-white/70 hover:bg-white"
+                onClick={(e) => {
+                  e.stopPropagation();
+                  onQuickAdd(iso);
+                }}
+              >
+                <Plus className="h-4 w-4 text-black/60" />
+              </button>
             </div>
-          );
-        })}
-      </div>
+
+            <div className="mt-3 space-y-2">
+              {list.length === 0 ? (
+                <div className="text-xs font-semibold text-black/40">No events</div>
+              ) : (
+                list.slice(0, 6).map((ev) => {
+                  const meta = typeMeta(ev.type);
+                  const color = ev.custom_color || meta.color;
+                  return (
+                    <button
+                      key={ev.id}
+                      type="button"
+                      className="w-full rounded-xl border border-black/10 bg-white px-2 py-2 text-left text-xs font-extrabold hover:bg-black/[0.02]"
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        onOpenEvent(ev);
+                      }}
+                      title={ev.title}
+                    >
+                      <span className="inline-flex items-center gap-2">
+                        <span className="h-2.5 w-2.5 rounded-full" style={{ background: color }} />
+                        <span className="truncate">{ev.title}</span>
+                      </span>
+                    </button>
+                  );
+                })
+              )}
+              {list.length > 6 ? <div className="text-xs font-extrabold text-black/50">+{list.length - 6} more</div> : null}
+            </div>
+          </div>
+        );
+      })}
     </div>
   );
 }
@@ -908,63 +880,65 @@ function ListView({ events, onOpenEvent, onEdit, onDelete }) {
       if (!map.has(key)) map.set(key, []);
       map.get(key).push(e);
     }
-    // sort keys
-    const keys = Array.from(map.keys()).sort();
-    return keys.map((k) => ({ key: k, items: map.get(k) }));
+    return Array.from(map.keys())
+      .sort()
+      .map((k) => ({ key: k, items: map.get(k) }));
   }, [events]);
 
   return (
-    <div style={{ display: "grid", gap: 14 }}>
+    <div className="space-y-3">
       {grouped.length === 0 ? (
-        <div style={{ color: "#6B7280" }}>No events match your filters.</div>
+        <div className="rounded-2xl border border-black/10 bg-white/70 p-4 text-sm text-black/60">No events match your filters.</div>
       ) : (
         grouped.map((g) => {
           const [yy, mm] = g.key.split("-");
           const d = new Date(Number(yy), Number(mm) - 1, 1);
+
           return (
-            <div key={g.key} style={styles.listGroup}>
-              <div style={styles.listGroupHeader}>{formatMonthYear(d)}</div>
-              <div style={{ display: "grid", gap: 10 }}>
+            <div key={g.key} className="overflow-hidden rounded-2xl border border-black/10 bg-white/70">
+              <div className="border-b border-black/10 bg-white/70 px-4 py-3 text-sm font-extrabold">{formatMonthYear(d)}</div>
+
+              <div className="divide-y divide-black/10">
                 {g.items.map((ev) => {
                   const meta = typeMeta(ev.type);
                   const color = ev.custom_color || meta.color;
-                  const dateLabel = ev.end_date && ev.end_date !== ev.start_date
-                    ? `${formatNiceDate(ev.start_date)} – ${formatNiceDate(ev.end_date)}`
-                    : formatNiceDate(ev.start_date);
+                  const dateLabel =
+                    ev.end_date && ev.end_date !== ev.start_date
+                      ? `${formatNiceDate(ev.start_date)} – ${formatNiceDate(ev.end_date)}`
+                      : formatNiceDate(ev.start_date);
+
                   return (
-                    <div key={ev.id} style={styles.listItem}>
-                      <div style={styles.listDateBox}>
-                        <div style={{ fontWeight: 950, fontSize: 14 }}>{ev.start_date.slice(8, 10)}</div>
-                        <div style={{ color: "#6B7280", fontSize: 12 }}>{d.toLocaleDateString(undefined, { month: "short" })}</div>
-                      </div>
-                      <div style={{ flex: 1 }}>
-                        <div style={{ display: "flex", justifyContent: "space-between", gap: 10 }}>
-                          <div>
-                            <div style={{ fontWeight: 950 }}>{ev.title}</div>
-                            <div style={{ marginTop: 6, display: "flex", gap: 8, flexWrap: "wrap" }}>
-                              <Badge color={color}>{meta.emoji} {ev.type}</Badge>
-                              <Badge color="#6B7280">{dateLabel}</Badge>
-                              <Badge color="#6B7280">{formatTimeRange(ev)}</Badge>
-                              {ev.location ? <Badge color="#A0826D">📍 {ev.location}</Badge> : null}
+                    <div key={ev.id} className="p-4">
+                      <div className="flex items-start justify-between gap-3">
+                        <div className="min-w-0">
+                          <div className="text-sm font-extrabold">{ev.title}</div>
+                          <div className="mt-2 flex flex-wrap gap-2">
+                            <Badge color={color}>
+                              {meta.emoji} {ev.type}
+                            </Badge>
+                            <Badge color="#6B7280">{dateLabel}</Badge>
+                            <Badge color="#6B7280">{formatTimeRange(ev)}</Badge>
+                            {ev.location ? <Badge color="#6B4E2E">📍 {ev.location}</Badge> : null}
+                          </div>
+                          {ev.description ? (
+                            <div className="mt-2 text-sm text-black/60">
+                              {ev.description.slice(0, 140)}
+                              {ev.description.length > 140 ? "…" : ""}
                             </div>
-                          </div>
-                          <div style={{ display: "inline-flex", gap: 8 }}>
-                            <button style={styles.iconBtn} onClick={() => onOpenEvent(ev)} title="View">
-                              <Eye size={16} />
-                            </button>
-                            <button style={styles.iconBtn} onClick={() => onEdit(ev)} title="Edit">
-                              <Pencil size={16} />
-                            </button>
-                            <button style={{ ...styles.iconBtn, color: "#EF4444" }} onClick={() => onDelete(ev)} title="Delete">
-                              <Trash2 size={16} />
-                            </button>
-                          </div>
+                          ) : null}
                         </div>
-                        {ev.description ? (
-                          <div style={{ marginTop: 8, color: "#6B7280", fontSize: 13 }}>
-                            {ev.description.slice(0, 120)}{ev.description.length > 120 ? "…" : ""}
-                          </div>
-                        ) : null}
+
+                        <div className="flex gap-2">
+                          <IconBtn title="View" onClick={() => onOpenEvent(ev)}>
+                            <Eye className="h-4 w-4" />
+                          </IconBtn>
+                          <IconBtn title="Edit" onClick={() => onEdit(ev)}>
+                            <Pencil className="h-4 w-4" />
+                          </IconBtn>
+                          <IconBtn danger title="Delete" onClick={() => onDelete(ev)}>
+                            <Trash2 className="h-4 w-4" />
+                          </IconBtn>
+                        </div>
                       </div>
                     </div>
                   );
@@ -979,7 +953,7 @@ function ListView({ events, onOpenEvent, onEdit, onDelete }) {
 }
 
 /* =====================
-   FORMS & MODALS
+   FORMS & DETAILS
 ===================== */
 
 function EventForm({ initial, defaultDay, onCancel, onSave }) {
@@ -996,7 +970,6 @@ function EventForm({ initial, defaultDay, onCancel, onSave }) {
     end_time: initial?.end_time ?? "",
 
     location: initial?.location ?? "",
-    audiences: initial?.audiences ?? ["All Students"],
 
     recurring: initial?.recurring ?? false,
     repeat_pattern: initial?.repeat_pattern ?? "",
@@ -1013,112 +986,103 @@ function EventForm({ initial, defaultDay, onCancel, onSave }) {
 
   const allDay = form.watch("all_day");
   const recurring = form.watch("recurring");
-  const audiences = form.watch("audiences");
-
   const selectedType = form.watch("type");
   const meta = typeMeta(selectedType);
 
   return (
     <form
       onSubmit={form.handleSubmit((values) => {
-        // If all-day, wipe times
+        // ✅ Normalize payload for DB
         const payload = {
-          ...values,
-          start_time: values.all_day ? "" : values.start_time,
-          end_time: values.all_day ? "" : values.end_time,
+          title: values.title,
+          description: values.description || null,
+          type: values.type,
+
+          start_date: values.start_date,
+          end_date: values.end_date || null,
+
+          all_day: values.all_day,
+          start_time: values.all_day ? null : values.start_time || null,
+          end_time: values.all_day ? null : values.end_time || null,
+
+          location: values.location || null,
+
+          recurring: values.recurring,
+          repeat_pattern: values.recurring ? values.repeat_pattern || null : null,
+          repeat_until: values.recurring ? values.repeat_until || null : null,
+
+          custom_color: values.custom_color || null,
+
+          // audiences kept in DB but defaulted to All (and hidden from UI)
+          audiences: ["All"],
         };
+
         onSave(payload);
       })}
-      style={{ display: "grid", gap: 12 }}
+      className="space-y-4"
     >
-      <div style={styles.formGrid}>
+      <div className="grid gap-3 md:grid-cols-2">
         <RHFText form={form} name="title" label="Event Title *" placeholder="e.g., Foundation Day Celebration" />
-        <div style={{ display: "grid", gap: 6 }}>
-          <div style={styles.label}>Event Type *</div>
-          <select {...form.register("type")} style={styles.input}>
+
+        <div>
+          <div className="text-xs font-semibold text-black/55">Event Type *</div>
+          <select {...form.register("type")} className={inputCls}>
             {EVENT_TYPES.map((t) => (
               <option key={t.key} value={t.key}>
                 {t.emoji} {t.key}
               </option>
             ))}
           </select>
-          {form.formState.errors.type?.message ? <div style={styles.err}>{String(form.formState.errors.type.message)}</div> : null}
+          {form.formState.errors.type?.message ? <ErrMsg msg={String(form.formState.errors.type.message)} /> : null}
         </div>
 
-        <div style={{ display: "grid", gap: 6 }}>
-          <div style={styles.label}>Start Date *</div>
-          <input type="date" {...form.register("start_date")} style={styles.input} />
-          {form.formState.errors.start_date?.message ? <div style={styles.err}>{String(form.formState.errors.start_date.message)}</div> : null}
+        <div>
+          <div className="text-xs font-semibold text-black/55">Start Date *</div>
+          <input type="date" {...form.register("start_date")} className={inputCls} />
+          {form.formState.errors.start_date?.message ? <ErrMsg msg={String(form.formState.errors.start_date.message)} /> : null}
         </div>
 
-        <div style={{ display: "grid", gap: 6 }}>
-          <div style={styles.label}>End Date (Optional)</div>
-          <input type="date" {...form.register("end_date")} style={styles.input} />
-          {form.formState.errors.end_date?.message ? <div style={styles.err}>{String(form.formState.errors.end_date.message)}</div> : null}
+        <div>
+          <div className="text-xs font-semibold text-black/55">End Date (Optional)</div>
+          <input type="date" {...form.register("end_date")} className={inputCls} />
+          {form.formState.errors.end_date?.message ? <ErrMsg msg={String(form.formState.errors.end_date.message)} /> : null}
         </div>
 
-        <div style={{ display: "grid", gap: 6 }}>
-          <div style={styles.label}>All-Day Event</div>
-          <label style={styles.checkboxRow}>
-            <input type="checkbox" {...form.register("all_day")} />
-            All day
+        <div className="rounded-2xl border border-black/10 bg-white/70 p-3">
+          <label className="inline-flex items-center gap-2 text-sm font-extrabold text-black/70">
+            <input type="checkbox" {...form.register("all_day")} className="h-4 w-4 rounded border-black/20" />
+            All-day event
           </label>
         </div>
 
-        {!allDay && (
-          <>
-            <div style={{ display: "grid", gap: 6 }}>
-              <div style={styles.label}>Start Time</div>
-              <input type="time" {...form.register("start_time")} style={styles.input} />
+        {!allDay ? (
+          <div className="grid gap-3 md:grid-cols-2 md:col-span-2">
+            <div>
+              <div className="text-xs font-semibold text-black/55">Start Time</div>
+              <input type="time" {...form.register("start_time")} className={inputCls} />
             </div>
-            <div style={{ display: "grid", gap: 6 }}>
-              <div style={styles.label}>End Time</div>
-              <input type="time" {...form.register("end_time")} style={styles.input} />
-              {form.formState.errors.end_time?.message ? <div style={styles.err}>{String(form.formState.errors.end_time.message)}</div> : null}
+            <div>
+              <div className="text-xs font-semibold text-black/55">End Time</div>
+              <input type="time" {...form.register("end_time")} className={inputCls} />
+              {form.formState.errors.end_time?.message ? <ErrMsg msg={String(form.formState.errors.end_time.message)} /> : null}
             </div>
-          </>
-        )}
+          </div>
+        ) : null}
 
         <RHFText form={form} name="location" label="Location / Venue" placeholder="e.g., School Gymnasium" />
 
-        <div style={{ display: "grid", gap: 6 }}>
-          <div style={styles.label}>Target Audience *</div>
-          <div style={styles.audienceBox}>
-            {AUDIENCES.map((a) => {
-              const checked = audiences.includes(a);
-              return (
-                <label key={a} style={styles.audienceItem}>
-                  <input
-                    type="checkbox"
-                    checked={checked}
-                    onChange={() => {
-                      const next = new Set(audiences);
-                      if (next.has(a)) next.delete(a);
-                      else next.add(a);
-                      form.setValue("audiences", Array.from(next), { shouldValidate: true });
-                    }}
-                  />
-                  {a}
-                </label>
-              );
-            })}
-          </div>
-          {form.formState.errors.audiences?.message ? <div style={styles.err}>{String(form.formState.errors.audiences.message)}</div> : null}
-        </div>
-
-        <div style={{ display: "grid", gap: 6 }}>
-          <div style={styles.label}>Recurring Event</div>
-          <label style={styles.checkboxRow}>
-            <input type="checkbox" {...form.register("recurring")} />
-            This event repeats
+        <div className="rounded-2xl border border-black/10 bg-white/70 p-3">
+          <label className="inline-flex items-center gap-2 text-sm font-extrabold text-black/70">
+            <input type="checkbox" {...form.register("recurring")} className="h-4 w-4 rounded border-black/20" />
+            Recurring event
           </label>
         </div>
 
-        {recurring && (
-          <>
-            <div style={{ display: "grid", gap: 6 }}>
-              <div style={styles.label}>Repeat Pattern *</div>
-              <select {...form.register("repeat_pattern")} style={styles.input}>
+        {recurring ? (
+          <div className="grid gap-3 md:grid-cols-2 md:col-span-2">
+            <div>
+              <div className="text-xs font-semibold text-black/55">Repeat Pattern *</div>
+              <select {...form.register("repeat_pattern")} className={inputCls}>
                 <option value="">Select…</option>
                 <option value="Daily">Daily</option>
                 <option value="Weekly">Weekly</option>
@@ -1126,41 +1090,44 @@ function EventForm({ initial, defaultDay, onCancel, onSave }) {
                 <option value="Yearly">Yearly</option>
               </select>
             </div>
-
-            <div style={{ display: "grid", gap: 6 }}>
-              <div style={styles.label}>Repeat Until *</div>
-              <input type="date" {...form.register("repeat_until")} style={styles.input} />
-              {form.formState.errors.repeat_until?.message ? <div style={styles.err}>{String(form.formState.errors.repeat_until.message)}</div> : null}
+            <div>
+              <div className="text-xs font-semibold text-black/55">Repeat Until *</div>
+              <input type="date" {...form.register("repeat_until")} className={inputCls} />
+              {form.formState.errors.repeat_until?.message ? <ErrMsg msg={String(form.formState.errors.repeat_until.message)} /> : null}
             </div>
-          </>
-        )}
+          </div>
+        ) : null}
 
-        <div style={{ display: "grid", gap: 6 }}>
-          <div style={styles.label}>Color (Optional)</div>
-          <div style={{ display: "flex", gap: 10, alignItems: "center" }}>
+        <div className="md:col-span-2">
+          <div className="text-xs font-semibold text-black/55">Color (Optional)</div>
+          <div className="mt-2 flex items-center gap-3 rounded-2xl border border-black/10 bg-white/70 p-3">
             <input type="color" {...form.register("custom_color")} defaultValue={defaults.custom_color || meta.color} />
-            <div style={{ color: "#6B7280", fontSize: 13 }}>
+            <div className="text-sm font-semibold text-black/55">
               Leave empty to use default color for <b>{meta.emoji} {selectedType}</b>
             </div>
           </div>
         </div>
       </div>
 
-      <div style={{ display: "grid", gap: 6 }}>
-        <div style={styles.label}>Event Description</div>
+      <div>
+        <div className="text-xs font-semibold text-black/55">Event Description</div>
         <textarea
           {...form.register("description")}
           rows={3}
           maxLength={500}
           placeholder="Optional description (max 500 chars)"
-          style={styles.textarea}
+          className="mt-2 w-full rounded-2xl border border-black/10 bg-white/70 px-3 py-2 text-sm outline-none focus:bg-white focus:ring-2 focus:ring-[#C9A227]/30"
         />
-        {form.formState.errors.description?.message ? <div style={styles.err}>{String(form.formState.errors.description.message)}</div> : null}
+        {form.formState.errors.description?.message ? <ErrMsg msg={String(form.formState.errors.description.message)} /> : null}
       </div>
 
-      <div style={styles.modalActions}>
-        <button type="button" style={styles.ghostBtn} onClick={onCancel}>Cancel</button>
-        <button type="submit" style={styles.primaryBtn}>{initial ? "Save Changes" : "Save Event"}</button>
+      <div className="flex items-center justify-end gap-2">
+        <button type="button" className="rounded-2xl border border-black/10 bg-white/70 px-4 py-2 text-sm font-extrabold hover:bg-white" onClick={onCancel}>
+          Cancel
+        </button>
+        <button type="submit" className={`rounded-2xl ${TOKENS.goldBg} px-4 py-2 text-sm font-extrabold text-black hover:opacity-95`}>
+          {initial ? "Save Changes" : "Save Event"}
+        </button>
       </div>
     </form>
   );
@@ -1170,671 +1137,129 @@ function EventDetails({ event, onEdit, onDelete, onClose }) {
   const meta = typeMeta(event.type);
   const color = event.custom_color || meta.color;
 
-  const dateLabel = event.end_date && event.end_date !== event.start_date
-    ? `${formatNiceDate(event.start_date)} – ${formatNiceDate(event.end_date)}`
-    : formatNiceDate(event.start_date);
+  const dateLabel =
+    event.end_date && event.end_date !== event.start_date
+      ? `${formatNiceDate(event.start_date)} – ${formatNiceDate(event.end_date)}`
+      : formatNiceDate(event.start_date);
 
   return (
-    <div style={{ display: "grid", gap: 12 }}>
-      <div style={styles.detailsHeader}>
-        <div style={{ display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap" }}>
-          <Badge color={color} big>{meta.emoji} {event.type}</Badge>
-          <Badge color="#6B7280" big>{dateLabel}</Badge>
-          <Badge color="#6B7280" big>{formatTimeRange(event)}</Badge>
-          {event.location ? <Badge color="#A0826D" big>📍 {event.location}</Badge> : null}
+    <div className="space-y-4">
+      <div className="rounded-2xl border border-black/10 bg-white/70 p-4">
+        <div className="flex flex-wrap gap-2">
+          <Badge color={color}>
+            {meta.emoji} {event.type}
+          </Badge>
+          <Badge color="#6B7280">{dateLabel}</Badge>
+          <Badge color="#6B7280">{formatTimeRange(event)}</Badge>
+          {event.location ? <Badge color="#6B4E2E">📍 {event.location}</Badge> : null}
         </div>
       </div>
 
       {event.description ? (
-        <div style={styles.detailsSection}>
-          <div style={styles.sectionTitle}>Description</div>
-          <div style={{ color: "#2C2C2C", whiteSpace: "pre-wrap" }}>{event.description}</div>
+        <div className="rounded-2xl border border-black/10 bg-white/70 p-4">
+          <div className="text-sm font-extrabold text-[#6B4E2E]">Description</div>
+          <div className="mt-2 text-sm text-black/70 whitespace-pre-wrap">{event.description}</div>
         </div>
       ) : null}
 
-      <div style={styles.detailsSection}>
-        <div style={styles.sectionTitle}>Target Audience</div>
-        <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
-          {(event.audiences || []).map((a) => (
-            <Pill key={a}>{a}</Pill>
-          ))}
-        </div>
-      </div>
-
       {event.recurring ? (
-        <div style={styles.detailsSection}>
-          <div style={styles.sectionTitle}>Recurrence</div>
-          <div style={{ color: "#2C2C2C" }}>
+        <div className="rounded-2xl border border-black/10 bg-white/70 p-4">
+          <div className="text-sm font-extrabold text-[#6B4E2E]">Recurrence</div>
+          <div className="mt-2 text-sm text-black/70">
             Repeats <b>{event.repeat_pattern}</b> until <b>{event.repeat_until}</b>
           </div>
         </div>
       ) : null}
 
-      <div style={styles.detailsSection}>
-        <div style={styles.sectionTitle}>Metadata</div>
-        <div style={{ color: "#6B7280", fontSize: 13 }}>
-          Created by <b>{event.created_by || "Admin"}</b> • Created: {new Date(event.created_at).toLocaleString()} • Updated: {new Date(event.updated_at).toLocaleString()}
+      <div className="rounded-2xl border border-black/10 bg-white/70 p-4">
+        <div className="text-sm font-extrabold text-[#6B4E2E]">Metadata</div>
+        <div className="mt-2 text-sm text-black/55">
+          Created: {event.created_at ? new Date(event.created_at).toLocaleString() : "—"} • Updated:{" "}
+          {event.updated_at ? new Date(event.updated_at).toLocaleString() : "—"}
         </div>
       </div>
 
-      <div style={styles.modalActions}>
-        <button style={styles.ghostBtn} onClick={onClose}><X size={16} /> Close</button>
-        <button style={styles.primaryBtn} onClick={onEdit}><Pencil size={16} /> Edit Event</button>
-        <button style={styles.dangerBtn} onClick={onDelete}><Trash2 size={16} /> Delete</button>
+      <div className="flex flex-wrap justify-end gap-2">
+        <button className="rounded-2xl border border-black/10 bg-white/70 px-4 py-2 text-sm font-extrabold hover:bg-white" onClick={onClose}>
+          <span className="inline-flex items-center gap-2">
+            <X className="h-4 w-4" /> Close
+          </span>
+        </button>
+        <button className={`rounded-2xl ${TOKENS.goldBg} px-4 py-2 text-sm font-extrabold text-black hover:opacity-95`} onClick={onEdit}>
+          <span className="inline-flex items-center gap-2">
+            <Pencil className="h-4 w-4" /> Edit
+          </span>
+        </button>
+        <button className="rounded-2xl bg-rose-600 px-4 py-2 text-sm font-extrabold text-white hover:opacity-95" onClick={onDelete}>
+          <span className="inline-flex items-center gap-2">
+            <Trash2 className="h-4 w-4" /> Delete
+          </span>
+        </button>
       </div>
     </div>
   );
 }
 
 function DeleteEventDialog({ event, onCancel, onDelete }) {
-  const [mode, setMode] = useState("this");
-
   return (
-    <div style={{ display: "grid", gap: 12 }}>
-      <div style={styles.deleteBox}>
-        <div style={{ fontWeight: 950 }}>⚠️ Delete Event?</div>
-        <div style={{ color: "#6B7280", fontSize: 13, marginTop: 6 }}>
-          Are you sure you want to delete:
-          <div style={{ marginTop: 6, fontWeight: 950, color: "#2C2C2C" }}>
-            {event.title}
-          </div>
-          <div style={{ marginTop: 4 }}>
-            Date: <b>{formatNiceDate(event.start_date)}</b>
-            {event.end_date ? ` – ${formatNiceDate(event.end_date)}` : ""}
-          </div>
+    <div className="space-y-4">
+      <div className="rounded-2xl border border-rose-200 bg-rose-50 p-4">
+        <div className="text-sm font-extrabold text-rose-700">⚠️ Delete Event?</div>
+        <div className="mt-2 text-sm text-rose-700/80">
+          Are you sure you want to delete <b>{event.title}</b>?
         </div>
       </div>
 
-      {event.recurring ? (
-        <div style={styles.detailsSection}>
-          <div style={styles.sectionTitle}>Recurring Event</div>
-          <div style={{ display: "grid", gap: 8 }}>
-            <label style={styles.radioRow}>
-              <input type="radio" checked={mode === "this"} onChange={() => setMode("this")} />
-              This event only
-            </label>
-            <label style={styles.radioRow}>
-              <input type="radio" checked={mode === "future"} onChange={() => setMode("future")} />
-              This and future events
-            </label>
-            <label style={styles.radioRow}>
-              <input type="radio" checked={mode === "all"} onChange={() => setMode("all")} />
-              All events in the series
-            </label>
-            <div style={{ color: "#6B7280", fontSize: 12 }}>
-              (UI note) Series deletion will be implemented when recurrence is stored as a series.
-            </div>
-          </div>
-        </div>
-      ) : null}
-
-      <div style={styles.modalActions}>
-        <button style={styles.ghostBtn} onClick={onCancel}>Cancel</button>
-        <button style={styles.dangerBtn} onClick={() => onDelete(mode)}>Delete Event</button>
+      <div className="flex justify-end gap-2">
+        <button className="rounded-2xl border border-black/10 bg-white/70 px-4 py-2 text-sm font-extrabold hover:bg-white" onClick={onCancel}>
+          Cancel
+        </button>
+        <button className="rounded-2xl bg-rose-600 px-4 py-2 text-sm font-extrabold text-white hover:opacity-95" onClick={onDelete}>
+          Delete
+        </button>
       </div>
     </div>
-  );
-}
-
-/* =====================
-   UI PRIMITIVES
-===================== */
-
-function ToggleBtn({ active, onClick, icon, children }) {
-  return (
-    <button
-      type="button"
-      onClick={onClick}
-      style={{
-        ...styles.toggleBtn,
-        borderColor: active ? "#DAA520" : "#E5E7EB",
-        background: active ? "#FFFBEB" : "#fff",
-      }}
-    >
-      {icon} {children}
-    </button>
-  );
-}
-
-function MiniStat({ label, value, tone }) {
-  const map = {
-    brown: { top: "#A0826D" },
-    gold: { top: "#DAA520" },
-    blue: { top: "#3B82F6" },
-  };
-  const c = map[tone] || map.brown;
-  return (
-    <div style={{ ...styles.miniStat, borderTopColor: c.top }}>
-      <div style={{ fontWeight: 950, fontSize: 18 }}>{value}</div>
-      <div style={{ color: "#6B7280", fontSize: 12 }}>{label}</div>
-    </div>
-  );
-}
-
-function Badge({ color, children, big }) {
-  return (
-    <span
-      style={{
-        display: "inline-flex",
-        alignItems: "center",
-        gap: 8,
-        padding: big ? "8px 12px" : "6px 10px",
-        borderRadius: 999,
-        border: `1px solid ${color}`,
-        background: "#fff",
-        color: "#2C2C2C",
-        fontWeight: 950,
-        fontSize: big ? 13 : 12,
-        whiteSpace: "nowrap",
-      }}
-    >
-      {children}
-    </span>
-  );
-}
-
-function Pill({ children }) {
-  return (
-    <span
-      style={{
-        fontSize: 12,
-        fontWeight: 900,
-        color: "#2C2C2C",
-        background: "#FAF9F6",
-        border: "1px solid #E5E7EB",
-        borderRadius: 999,
-        padding: "4px 10px",
-      }}
-    >
-      {children}
-    </span>
   );
 }
 
 function RHFText({ form, name, label, placeholder }) {
   const err = form.formState.errors?.[name]?.message;
   return (
-    <div style={{ display: "grid", gap: 6 }}>
-      <div style={styles.label}>{label}</div>
-      <input {...form.register(name)} placeholder={placeholder} style={styles.input} />
-      {err ? <div style={styles.err}>{String(err)}</div> : null}
+    <div>
+      <div className="text-xs font-semibold text-black/55">{label}</div>
+      <input {...form.register(name)} placeholder={placeholder} className={inputCls} />
+      {err ? <ErrMsg msg={String(err)} /> : null}
     </div>
   );
 }
+
+function ErrMsg({ msg }) {
+  return <div className="mt-1 text-xs font-extrabold text-rose-600">{msg}</div>;
+}
+
+const inputCls =
+  "mt-2 w-full rounded-2xl border border-black/10 bg-white/70 px-3 py-2 text-sm outline-none focus:bg-white focus:ring-2 focus:ring-[#C9A227]/30";
+
+/* =====================
+   MODAL
+===================== */
 
 function Modal({ open, title, onClose, wide, children }) {
   if (!open) return null;
   return (
-    <div style={styles.modalOverlay} onClick={onClose} role="dialog" aria-modal="true">
-      <div
-        style={{
-          ...styles.modal,
-          width: wide ? "min(1080px, 100%)" : "min(820px, 100%)",
-        }}
-        onClick={(e) => e.stopPropagation()}
-      >
-        <div style={styles.modalHeader}>
-          <div style={{ fontWeight: 950 }}>{title}</div>
-          <button style={styles.iconBtn} onClick={onClose} title="Close">
-            <X size={16} />
-          </button>
+    <>
+      <div className="fixed inset-0 z-40 bg-black/20 backdrop-blur-sm" onClick={onClose} />
+      <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
+        <div className={`w-full ${wide ? "max-w-5xl" : "max-w-3xl"} rounded-2xl border border-black/10 bg-white shadow-xl`}>
+          <div className="flex items-center justify-between border-b border-black/10 p-4">
+            <div className="text-sm font-extrabold">{title}</div>
+            <button onClick={onClose} className="grid h-9 w-9 place-items-center rounded-2xl hover:bg-black/5">
+              <X className="h-5 w-5 text-black/60" />
+            </button>
+          </div>
+          <div className="p-4">{children}</div>
         </div>
-        <div style={styles.modalBody}>{children}</div>
       </div>
-    </div>
+    </>
   );
 }
-
-/* =====================
-   STYLES
-===================== */
-
-const styles = {
-  title: { margin: 0, fontWeight: 950, color: "#2C2C2C" },
-  sub: { marginTop: 6, color: "#6B7280" },
-
-  headerRow: {
-    display: "flex",
-    justifyContent: "space-between",
-    gap: 12,
-    flexWrap: "wrap",
-    alignItems: "flex-start",
-    marginBottom: 14,
-  },
-
-  primaryBtn: {
-    background: "#A0826D",
-    color: "#fff",
-    border: "none",
-    borderRadius: 999,
-    padding: "10px 14px",
-    cursor: "pointer",
-    fontWeight: 950,
-    display: "inline-flex",
-    alignItems: "center",
-    gap: 8,
-    boxShadow: "0 10px 20px rgba(160,130,109,0.35)",
-  },
-
-  ghostBtn: {
-    background: "transparent",
-    color: "#2C2C2C",
-    border: "1px solid #E5E7EB",
-    borderRadius: 999,
-    padding: "10px 14px",
-    cursor: "pointer",
-    fontWeight: 950,
-    display: "inline-flex",
-    alignItems: "center",
-    gap: 8,
-  },
-
-  dangerBtn: {
-    background: "#EF4444",
-    color: "#fff",
-    border: "none",
-    borderRadius: 999,
-    padding: "10px 14px",
-    cursor: "pointer",
-    fontWeight: 950,
-    display: "inline-flex",
-    alignItems: "center",
-    gap: 8,
-  },
-
-  iconBtn: {
-    background: "#FAF9F6",
-    border: "1px solid #E5E7EB",
-    borderRadius: 999,
-    padding: "8px 10px",
-    cursor: "pointer",
-    display: "inline-flex",
-    alignItems: "center",
-    justifyContent: "center",
-    color: "#2C2C2C",
-  },
-
-  topBar: {
-    background: "#fff",
-    border: "1px solid #E5E7EB",
-    borderRadius: 16,
-    padding: 12,
-    boxShadow: "0 10px 25px rgba(0,0,0,0.06)",
-    display: "grid",
-    gap: 12,
-    marginBottom: 14,
-  },
-
-  statsRow: {
-    display: "grid",
-    gridTemplateColumns: "repeat(auto-fit, minmax(180px, 1fr))",
-    gap: 10,
-  },
-
-  miniStat: {
-    background: "#FDFBF7",
-    border: "1px solid #E5E7EB",
-    borderRadius: 14,
-    padding: 12,
-    borderTop: "4px solid",
-  },
-
-  controlsRow: {
-    display: "flex",
-    gap: 12,
-    flexWrap: "wrap",
-    alignItems: "center",
-    justifyContent: "space-between",
-  },
-
-  viewToggle: { display: "flex", gap: 10, flexWrap: "wrap" },
-  toggleBtn: {
-    background: "#fff",
-    border: "1px solid #E5E7EB",
-    borderRadius: 999,
-    padding: "10px 12px",
-    cursor: "pointer",
-    fontWeight: 950,
-    display: "inline-flex",
-    alignItems: "center",
-    gap: 8,
-    color: "#2C2C2C",
-  },
-
-  navRow: { display: "flex", gap: 10, alignItems: "center" },
-
-  monthLabel: {
-    display: "inline-flex",
-    alignItems: "center",
-    gap: 8,
-    fontWeight: 950,
-    color: "#2C2C2C",
-    padding: "8px 12px",
-    borderRadius: 999,
-    border: "1px solid #E5E7EB",
-    background: "#FDFBF7",
-  },
-
-  filterCard: {
-    background: "#fff",
-    border: "1px solid #E5E7EB",
-    borderRadius: 16,
-    padding: 12,
-    boxShadow: "0 10px 25px rgba(0,0,0,0.06)",
-    marginBottom: 14,
-  },
-
-  filterHeader: {
-    display: "flex",
-    justifyContent: "space-between",
-    gap: 10,
-    alignItems: "center",
-    marginBottom: 10,
-  },
-
-  filterGrid: {
-    display: "grid",
-    gridTemplateColumns: "1.6fr 0.7fr 0.9fr",
-    gap: 12,
-    alignItems: "start",
-  },
-
-  label: { fontSize: 12, color: "#6B7280", fontWeight: 900 },
-
-  input: {
-    width: "100%",
-    padding: "10px 12px",
-    borderRadius: 12,
-    border: "1px solid #E5E7EB",
-    background: "#FAF9F6",
-    outline: "none",
-  },
-
-  typeChips: { display: "flex", flexWrap: "wrap", gap: 8 },
-  typeChip: {
-    border: "1px solid #E5E7EB",
-    background: "#fff",
-    borderRadius: 999,
-    padding: "8px 10px",
-    cursor: "pointer",
-    fontWeight: 900,
-    color: "#2C2C2C",
-    display: "inline-flex",
-    alignItems: "center",
-    gap: 8,
-  },
-
-  mainGrid: {
-    display: "grid",
-    gridTemplateColumns: "1.8fr 1fr",
-    gap: 14,
-    alignItems: "start",
-  },
-
-  mainPanel: {
-    background: "#fff",
-    border: "1px solid #E5E7EB",
-    borderRadius: 16,
-    padding: 12,
-    boxShadow: "0 10px 25px rgba(0,0,0,0.06)",
-  },
-
-  sidePanel: {
-    background: "#fff",
-    border: "1px solid #E5E7EB",
-    borderRadius: 16,
-    padding: 12,
-    boxShadow: "0 10px 25px rgba(0,0,0,0.06)",
-    position: "sticky",
-    top: 12,
-  },
-
-  sideHeader: {
-    display: "flex",
-    justifyContent: "space-between",
-    alignItems: "center",
-    gap: 10,
-    marginBottom: 10,
-  },
-
-  sideList: { display: "grid", gap: 10, maxHeight: 620, overflow: "auto", paddingRight: 4 },
-  sideItem: { border: "1px solid #E5E7EB", borderRadius: 14, padding: 12, background: "#FDFBF7" },
-
-  calendarHeaderRow: {
-    display: "grid",
-    gridTemplateColumns: "repeat(7, 1fr)",
-    gap: 10,
-    marginBottom: 10,
-  },
-
-  dow: {
-    fontSize: 12,
-    fontWeight: 950,
-    color: "#6B7280",
-    textAlign: "center",
-    padding: "8px 0",
-    borderRadius: 12,
-    background: "#FDFBF7",
-    border: "1px solid #E5E7EB",
-  },
-
-  monthGrid: { display: "grid", gridTemplateColumns: "repeat(7, 1fr)", gap: 10 },
-
-  dayCell: {
-    border: "1px solid #E5E7EB",
-    borderRadius: 14,
-    padding: 10,
-    minHeight: 120,
-    cursor: "pointer",
-    boxShadow: "0 10px 18px rgba(0,0,0,0.05)",
-    display: "flex",
-    flexDirection: "column",
-    gap: 8,
-  },
-
-  dayTop: { display: "flex", justifyContent: "space-between", alignItems: "center" },
-  dayNum: { fontWeight: 950, color: "#2C2C2C" },
-
-  quickAdd: {
-    background: "#FAF9F6",
-    border: "1px solid #E5E7EB",
-    borderRadius: 999,
-    padding: "6px 8px",
-    cursor: "pointer",
-    display: "inline-flex",
-    alignItems: "center",
-    gap: 6,
-    color: "#2C2C2C",
-  },
-
-  indicators: { display: "grid", gap: 6 },
-
-  indicatorBadge: {
-    width: "100%",
-    textAlign: "left",
-    background: "#fff",
-    border: "1px solid #E5E7EB",
-    borderRadius: 12,
-    padding: "6px 8px",
-    cursor: "pointer",
-    display: "inline-flex",
-    alignItems: "center",
-    gap: 8,
-    overflow: "hidden",
-  },
-
-  indicatorText: {
-    fontSize: 12,
-    fontWeight: 900,
-    overflow: "hidden",
-    textOverflow: "ellipsis",
-    whiteSpace: "nowrap",
-    color: "#2C2C2C",
-  },
-
-  moreEvents: { color: "#6B7280", fontSize: 12, fontWeight: 900 },
-
-  weekGrid: { display: "grid", gridTemplateColumns: "repeat(7, 1fr)", gap: 10 },
-  weekCol: {
-    border: "1px solid #E5E7EB",
-    borderRadius: 14,
-    padding: 10,
-    minHeight: 260,
-    cursor: "pointer",
-    boxShadow: "0 10px 18px rgba(0,0,0,0.05)",
-  },
-  weekColHeader: { display: "flex", justifyContent: "space-between", alignItems: "center", gap: 8, marginBottom: 10 },
-  weekEvents: { display: "grid", gap: 8 },
-  weekEventPill: {
-    border: "1px solid #E5E7EB",
-    background: "#FDFBF7",
-    borderRadius: 12,
-    padding: "8px 10px",
-    display: "inline-flex",
-    alignItems: "center",
-    gap: 8,
-    cursor: "pointer",
-    textAlign: "left",
-  },
-
-  listGroup: { border: "1px solid #E5E7EB", borderRadius: 16, background: "#fff", overflow: "hidden" },
-  listGroupHeader: {
-    padding: 12,
-    fontWeight: 950,
-    color: "#2C2C2C",
-    background: "#FDFBF7",
-    borderBottom: "1px solid #E5E7EB",
-  },
-  listItem: { display: "flex", gap: 12, padding: 12, borderBottom: "1px solid #F3F4F6" },
-  listDateBox: {
-    width: 64,
-    minWidth: 64,
-    borderRadius: 14,
-    border: "1px solid #E5E7EB",
-    background: "#FAF9F6",
-    display: "grid",
-    placeItems: "center",
-    padding: 10,
-  },
-
-  // Forms
-  formGrid: { display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(240px, 1fr))", gap: 12 },
-  textarea: {
-    width: "100%",
-    padding: "10px 12px",
-    borderRadius: 12,
-    border: "1px solid #E5E7EB",
-    background: "#FAF9F6",
-    outline: "none",
-    resize: "vertical",
-  },
-  err: { color: "#EF4444", fontSize: 12, fontWeight: 900 },
-  checkboxRow: {
-    display: "inline-flex",
-    alignItems: "center",
-    gap: 10,
-    padding: "10px 12px",
-    borderRadius: 12,
-    border: "1px solid #E5E7EB",
-    background: "#FAF9F6",
-    fontWeight: 900,
-  },
-
-  audienceBox: {
-    border: "1px solid #E5E7EB",
-    borderRadius: 14,
-    padding: 10,
-    background: "#FDFBF7",
-    display: "grid",
-    gridTemplateColumns: "repeat(auto-fit, minmax(220px, 1fr))",
-    gap: 8,
-    maxHeight: 220,
-    overflow: "auto",
-  },
-
-  audienceItem: {
-    display: "inline-flex",
-    gap: 10,
-    alignItems: "center",
-    padding: "8px 10px",
-    borderRadius: 12,
-    border: "1px solid #E5E7EB",
-    background: "#fff",
-    fontWeight: 900,
-    color: "#2C2C2C",
-  },
-
-  detailsHeader: { borderRadius: 16, border: "1px solid #E5E7EB", background: "#FDFBF7", padding: 12 },
-  detailsSection: { borderRadius: 16, border: "1px solid #E5E7EB", background: "#fff", padding: 12 },
-  sectionTitle: { fontWeight: 950, color: "#A0826D", marginBottom: 8 },
-
-  deleteBox: { borderRadius: 16, border: "1px solid #EF4444", background: "#FEF2F2", padding: 12 },
-  radioRow: {
-    display: "inline-flex",
-    alignItems: "center",
-    gap: 10,
-    padding: "10px 12px",
-    borderRadius: 12,
-    border: "1px solid #E5E7EB",
-    background: "#FAF9F6",
-    fontWeight: 900,
-  },
-
-  // Modal
-  modalOverlay: {
-    position: "fixed",
-    inset: 0,
-    background: "rgba(0,0,0,0.35)",
-    display: "flex",
-    justifyContent: "center",
-    alignItems: "center",
-    padding: 14,
-    zIndex: 50,
-  },
-  modal: {
-    background: "#fff",
-    borderRadius: 16,
-    border: "1px solid #E5E7EB",
-    boxShadow: "0 16px 40px rgba(0,0,0,0.18)",
-    overflow: "hidden",
-  },
-  modalHeader: {
-    padding: 14,
-    borderBottom: "1px solid #E5E7EB",
-    display: "flex",
-    justifyContent: "space-between",
-    alignItems: "center",
-    gap: 10,
-  },
-  modalBody: { padding: 14 },
-  modalActions: { display: "flex", justifyContent: "flex-end", gap: 10, flexWrap: "wrap", marginTop: 6 },
-};
-
-// Responsive: stack sidebar under main on small screens
-// (inline style approach; in production, move to CSS)
-if (typeof window !== "undefined") {
-  const mq = window.matchMedia("(max-width: 980px)");
-  const apply = () => {
-    const root = document.documentElement;
-    if (mq.matches) {
-      root.style.setProperty("--cal-cols", "1fr");
-    } else {
-      root.style.setProperty("--cal-cols", "1.8fr 1fr");
-    }
-  };
-  apply();
-  mq.addEventListener?.("change", apply);
-}
-
-// Patch mainGrid columns using CSS var (safe if var not set)
-styles.mainGrid.gridTemplateColumns = "var(--cal-cols, 1.8fr 1fr)";
-
-// Tiny smoke test: schema should reject empty title
-console.assert(eventSchema.safeParse({
-  title: "",
-  type: "Holiday",
-  start_date: "2025-12-01",
-  audiences: ["All Students"],
-  all_day: true,
-  recurring: false,
-}).success === false, "Event schema should reject empty title");

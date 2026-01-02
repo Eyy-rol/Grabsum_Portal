@@ -1,311 +1,272 @@
-// src/pages/teacher/TeacherAnnouncements.jsx
-import React, { useMemo, useState } from "react";
-import { motion, AnimatePresence } from "framer-motion";
-import { Search, Filter, X, Paperclip, AlertCircle, Bookmark, CheckCircle2 } from "lucide-react";
+import React, { useEffect, useMemo, useState } from "react";
+import { motion } from "framer-motion";
+import { Plus, RefreshCcw } from "lucide-react";
+import { supabase } from "../lib/supabaseClient";
+import { getMyProfile, getActiveSy } from "../lib/portalCtx";
 
-const BRAND = {
-  brown: "#2b1a12",
-  muted: "rgba(43,26,18,0.55)",
-  stroke: "rgba(43,26,18,0.16)",
-  gold: "#d4a62f",
-  goldHover: "#deb23c",
-  softGoldBg: "rgba(212,166,47,0.14)",
-  cardShadow: "0 14px 34px rgba(43,26,18,0.10)",
-};
+export default function TeacherAnnouncement() {
+  const [sy, setSy] = useState(null);
+  const [sections, setSections] = useState([]);
+  const [items, setItems] = useState([]);
+  const [loading, setLoading] = useState(true);
+  const [posting, setPosting] = useState(false);
+  const [errMsg, setErrMsg] = useState("");
 
-function Modal({ open, title, onClose, children, width = "max-w-3xl" }) {
+  const [form, setForm] = useState({
+    title: "",
+    content: "",
+    priority: "Medium",
+    target_audience: "My Students", // default
+    section_id: "",
+    status: "Published", // or Draft
+  });
+
+  function patch(k, v) {
+    setForm((s) => ({ ...s, [k]: v }));
+  }
+
+  async function load() {
+    setLoading(true);
+    setErrMsg("");
+
+    try {
+      const { user, profile } = await getMyProfile();
+      if (String(profile.role).toLowerCase() !== "teacher") {
+        throw new Error("Forbidden: teacher only");
+      }
+
+      const activeSy = await getActiveSy();
+      setSy(activeSy);
+
+      // Sections teacher handles this SY
+      const { data: ss, error: ssErr } = await supabase
+        .from("section_schedules")
+        .select("section_id, sections:section_id(section_name)")
+        .eq("sy_id", activeSy.sy_id)
+        .eq("teacher_id", user.id);
+
+      if (ssErr) throw ssErr;
+
+      const uniq = new Map();
+      (ss || []).forEach((r) => {
+        const sid = r.section_id;
+        if (!sid) return;
+        uniq.set(sid, {
+          section_id: sid,
+          section_name: r.sections?.section_name || sid,
+        });
+      });
+      setSections(Array.from(uniq.values()).sort((a, b) => a.section_name.localeCompare(b.section_name)));
+
+      // Teacher’s own announcements (current SY)
+      const { data, error } = await supabase
+        .from("announcements")
+        .select("id,title,content,priority,target_audience,status,is_archived,posted_at,section_id,sy_id")
+        .eq("posted_by", user.id)
+        .eq("sy_id", activeSy.sy_id)
+        .order("posted_at", { ascending: false });
+
+      if (error) throw error;
+      setItems(data || []);
+    } catch (e) {
+      setErrMsg(String(e?.message || e));
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  useEffect(() => {
+    load();
+  }, []);
+
+  async function createAnnouncement() {
+    setPosting(true);
+    setErrMsg("");
+
+    try {
+      const { user } = await getMyProfile();
+      if (!sy?.sy_id) throw new Error("No active school year.");
+
+      if (!form.title.trim()) throw new Error("Title is required.");
+      if (!form.content.trim()) throw new Error("Content is required.");
+
+      if (form.target_audience === "Section Students" && !form.section_id) {
+        throw new Error("Choose a section for Section Students.");
+      }
+
+      const payload = {
+        posted_by: user.id,
+        title: form.title.trim(),
+        content: form.content.trim(),
+        priority: form.priority,
+        target_audience: form.target_audience,
+        section_id: form.target_audience === "Section Students" ? form.section_id : null,
+        status: form.status,
+        is_archived: false,
+        sy_id: sy.sy_id,
+      };
+
+      const { error } = await supabase.from("announcements").insert(payload);
+      if (error) throw error;
+
+      setForm((s) => ({ ...s, title: "", content: "" }));
+      await load();
+    } catch (e) {
+      setErrMsg(String(e?.message || e));
+    } finally {
+      setPosting(false);
+    }
+  }
+
+  const canSection = useMemo(() => sections.length > 0, [sections]);
+
   return (
-    <AnimatePresence>
-      {open ? (
-        <motion.div className="fixed inset-0 z-50" initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}>
-          <div className="absolute inset-0 bg-black/20 backdrop-blur-sm" onClick={onClose} />
-          <motion.div
-            initial={{ opacity: 0, y: 16, scale: 0.98 }}
-            animate={{ opacity: 1, y: 0, scale: 1 }}
-            exit={{ opacity: 0, y: 10, scale: 0.98 }}
-            transition={{ duration: 0.18 }}
-            className={`relative mx-auto mt-10 w-[92%] ${width}`}
-          >
-            <div className="rounded-3xl border bg-white p-5" style={{ borderColor: BRAND.stroke, boxShadow: BRAND.cardShadow }}>
-              <div className="flex items-center justify-between gap-3">
-                <div className="text-sm font-extrabold" style={{ color: BRAND.brown }}>{title}</div>
-                <button
-                  onClick={onClose}
-                  className="grid h-10 w-10 place-items-center rounded-2xl border bg-white hover:bg-black/5"
-                  style={{ borderColor: BRAND.stroke }}
-                >
-                  <X className="h-5 w-5" style={{ color: BRAND.muted }} />
-                </button>
-              </div>
-              <div className="mt-4">{children}</div>
-            </div>
-          </motion.div>
-        </motion.div>
-      ) : null}
-    </AnimatePresence>
-  );
-}
-
-function badgeColor(priority) {
-  if (priority === "Urgent") return { bg: "rgba(239,68,68,0.12)", fg: "rgba(127,29,29,0.95)" };
-  if (priority === "Important") return { bg: "rgba(249,115,22,0.12)", fg: "rgba(124,45,18,0.95)" };
-  return { bg: "rgba(59,130,246,0.12)", fg: "rgba(30,64,175,0.95)" };
-}
-
-export default function TeacherAnnouncements() {
-  const [q, setQ] = useState("");
-  const [priority, setPriority] = useState("All");
-  const [unreadOnly, setUnreadOnly] = useState(false);
-  const [selected, setSelected] = useState(null);
-
-  const data = useMemo(
-    () => [
-      {
-        id: "A-001",
-        title: "Schedule Adjustment for Friday",
-        priority: "Important",
-        postedBy: "Admin Office",
-        role: "Admin",
-        date: "2025-12-19 09:14",
-        content:
-          "Please note the updated class schedule for Friday due to the school event. Teachers are requested to coordinate with their advisers.",
-        attachments: [{ name: "RevisedSchedule.pdf", size: "320 KB" }],
-        unread: true,
-      },
-      {
-        id: "A-002",
-        title: "Urgent: System Maintenance Tonight",
-        priority: "Urgent",
-        postedBy: "IT Office",
-        role: "Admin",
-        date: "2025-12-18 16:02",
-        content:
-          "The portal will be unavailable from 10:00 PM to 12:00 AM for maintenance. Please save your work before the downtime.",
-        attachments: [],
-        unread: true,
-      },
-      {
-        id: "A-003",
-        title: "General Reminder: Quarterly Meeting",
-        priority: "General",
-        postedBy: "Principal",
-        role: "Admin",
-        date: "2025-12-15 08:00",
-        content:
-          "Quarterly faculty meeting will be held in the auditorium. Attendance is required. Please bring your updated lesson plan reports.",
-        attachments: [{ name: "Agenda.docx", size: "180 KB" }],
-        unread: false,
-      },
-    ],
-    []
-  );
-
-  const filtered = useMemo(() => {
-    return data.filter((a) => {
-      const okQ = (a.title + " " + a.content).toLowerCase().includes(q.toLowerCase());
-      const okP = priority === "All" ? true : a.priority === priority;
-      const okU = unreadOnly ? a.unread : true;
-      return okQ && okP && okU;
-    });
-  }, [data, q, priority, unreadOnly]);
-
-  return (
-    <div className="space-y-5">
-      <motion.div
-        initial={{ opacity: 0, y: 8 }}
-        animate={{ opacity: 1, y: 0 }}
-        transition={{ duration: 0.18 }}
-        className="rounded-3xl border bg-white p-5"
-        style={{ borderColor: BRAND.stroke, boxShadow: BRAND.cardShadow }}
-      >
+    <div className="space-y-4">
+      <div className="rounded-2xl border border-black/10 bg-white p-4">
         <div className="flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
           <div>
-            <div className="text-sm font-extrabold" style={{ color: BRAND.brown }}>
-              Announcements
+            <div className="text-sm font-extrabold text-[#2b1a12]">Teacher Announcements</div>
+            <div className="text-xs font-semibold text-black/50">
+              Post announcements to your students. Current SY: <span className="text-black/70">{sy?.sy_code || "—"}</span>
             </div>
-            <div className="text-xs font-semibold" style={{ color: BRAND.muted }}>
-              School-wide and teacher updates
-            </div>
+            {errMsg ? (
+              <div className="mt-2 rounded-xl border border-rose-200 bg-rose-50 px-3 py-2 text-xs font-semibold text-rose-800">
+                {errMsg}
+              </div>
+            ) : null}
           </div>
-          <div className="text-xs font-semibold" style={{ color: BRAND.muted }}>
-            {filtered.length} item(s)
-          </div>
+
+          <button
+            onClick={load}
+            className="inline-flex items-center gap-2 rounded-2xl border border-black/10 bg-[#fafafa] px-4 py-2 text-xs font-semibold hover:bg-black/5"
+          >
+            <RefreshCcw className="h-4 w-4" />
+            Refresh
+          </button>
         </div>
 
-        <div className="mt-4 grid gap-3 md:grid-cols-[1fr_220px_220px]">
-          <div className="relative">
-            <Search className="pointer-events-none absolute left-4 top-1/2 h-4 w-4 -translate-y-1/2" style={{ color: BRAND.muted }} />
+        <div className="mt-4 grid gap-3 md:grid-cols-2">
+          <div>
+            <div className="text-xs font-semibold text-black/60">Title</div>
             <input
-              value={q}
-              onChange={(e) => setQ(e.target.value)}
-              placeholder="Search announcements…"
-              className="w-full rounded-2xl border bg-white/70 px-11 py-3 text-sm font-semibold outline-none transition focus:bg-white"
-              style={{ borderColor: BRAND.stroke, color: BRAND.brown }}
+              value={form.title}
+              onChange={(e) => patch("title", e.target.value)}
+              className="mt-1 w-full rounded-2xl border border-black/10 bg-[#fafafa] px-4 py-2 text-sm outline-none"
+              placeholder="e.g., Quiz tomorrow"
             />
           </div>
 
-          <div className="relative">
-            <Filter className="pointer-events-none absolute left-4 top-1/2 h-4 w-4 -translate-y-1/2" style={{ color: BRAND.muted }} />
-            <select
-              value={priority}
-              onChange={(e) => setPriority(e.target.value)}
-              className="w-full appearance-none rounded-2xl border bg-white/70 px-11 py-3 text-sm font-semibold outline-none transition focus:bg-white"
-              style={{ borderColor: BRAND.stroke, color: BRAND.brown }}
-            >
-              {["All", "Urgent", "Important", "General"].map((x) => (
-                <option key={x} value={x}>
-                  Priority: {x}
-                </option>
-              ))}
-            </select>
-          </div>
-
-          <button
-            onClick={() => setUnreadOnly((s) => !s)}
-            className="rounded-2xl border bg-white/70 px-4 py-3 text-sm font-semibold hover:bg-white"
-            style={{ borderColor: BRAND.stroke, color: BRAND.brown }}
-          >
-            {unreadOnly ? "Showing: Unread Only" : "Filter: Unread Only"}
-          </button>
-        </div>
-      </motion.div>
-
-      <motion.div
-        initial={{ opacity: 0, y: 8 }}
-        animate={{ opacity: 1, y: 0 }}
-        transition={{ duration: 0.18 }}
-        className="rounded-3xl border bg-white p-5"
-        style={{ borderColor: BRAND.stroke, boxShadow: BRAND.cardShadow }}
-      >
-        <div className="space-y-3">
-          {filtered.map((a) => {
-            const b = badgeColor(a.priority);
-            return (
-              <button
-                key={a.id}
-                onClick={() => setSelected(a)}
-                className="w-full rounded-3xl border bg-white p-5 text-left transition hover:-translate-y-[1px]"
-                style={{
-                  borderColor: BRAND.stroke,
-                  boxShadow: a.unread ? "inset 6px 0 0 rgba(212,166,47,0.75)" : "none",
-                }}
+          <div className="grid grid-cols-2 gap-2">
+            <div>
+              <div className="text-xs font-semibold text-black/60">Priority</div>
+              <select
+                value={form.priority}
+                onChange={(e) => patch("priority", e.target.value)}
+                className="mt-1 w-full rounded-2xl border border-black/10 bg-[#fafafa] px-3 py-2 text-sm outline-none"
               >
-                <div className="flex items-start justify-between gap-3">
-                  <div>
-                    <div className="text-sm font-extrabold" style={{ color: BRAND.brown }}>
-                      {a.title}
-                    </div>
-                    <div className="mt-1 text-xs font-semibold" style={{ color: BRAND.muted }}>
-                      Posted by {a.postedBy} • {a.date}
-                    </div>
-                  </div>
-
-                  <span className="rounded-full px-3 py-1 text-[11px] font-extrabold" style={{ background: b.bg, color: b.fg }}>
-                    {a.priority}
-                  </span>
-                </div>
-
-                <div className="mt-3 text-sm" style={{ color: BRAND.muted }}>
-                  {a.content.length > 160 ? a.content.slice(0, 160) + "…" : a.content}
-                </div>
-
-                <div className="mt-4 flex flex-wrap items-center gap-2">
-                  {a.unread ? (
-                    <span className="inline-flex items-center gap-2 rounded-full px-3 py-1 text-[11px] font-extrabold"
-                          style={{ background: BRAND.softGoldBg, color: BRAND.brown }}>
-                      <AlertCircle className="h-4 w-4" /> Unread
-                    </span>
-                  ) : (
-                    <span className="inline-flex items-center gap-2 rounded-full px-3 py-1 text-[11px] font-extrabold"
-                          style={{ background: "rgba(34,197,94,0.14)", color: BRAND.brown }}>
-                      <CheckCircle2 className="h-4 w-4" /> Read
-                    </span>
-                  )}
-
-                  {a.attachments?.length ? (
-                    <span className="inline-flex items-center gap-2 rounded-full px-3 py-1 text-[11px] font-extrabold"
-                          style={{ background: "rgba(43,26,18,0.06)", color: BRAND.brown }}>
-                      <Paperclip className="h-4 w-4" style={{ color: BRAND.muted }} /> {a.attachments.length} attachment(s)
-                    </span>
-                  ) : null}
-                </div>
-              </button>
-            );
-          })}
-        </div>
-      </motion.div>
-
-      <Modal open={!!selected} title={selected ? selected.title : ""} onClose={() => setSelected(null)}>
-        {selected ? <AnnouncementDetails a={selected} /> : null}
-      </Modal>
-    </div>
-  );
-}
-
-function AnnouncementDetails({ a }) {
-  const b = badgeColor(a.priority);
-  return (
-    <div className="space-y-4">
-      <div className="rounded-3xl border p-4" style={{ borderColor: BRAND.stroke }}>
-        <div className="flex flex-col gap-2 md:flex-row md:items-start md:justify-between">
-          <div>
-            <div className="text-xs font-semibold" style={{ color: BRAND.muted }}>
-              Posted by <span style={{ color: BRAND.brown }}>{a.postedBy}</span> • {a.date}
+                <option>High</option>
+                <option>Medium</option>
+                <option>Low</option>
+              </select>
             </div>
-            <div className="mt-2 text-sm" style={{ color: BRAND.muted }}>
-              {a.content}
+
+            <div>
+              <div className="text-xs font-semibold text-black/60">Status</div>
+              <select
+                value={form.status}
+                onChange={(e) => patch("status", e.target.value)}
+                className="mt-1 w-full rounded-2xl border border-black/10 bg-[#fafafa] px-3 py-2 text-sm outline-none"
+              >
+                <option value="Published">Published</option>
+                <option value="Draft">Draft</option>
+              </select>
             </div>
           </div>
-          <span className="w-fit rounded-full px-3 py-1 text-[11px] font-extrabold" style={{ background: b.bg, color: b.fg }}>
-            {a.priority}
-          </span>
+
+          <div className="md:col-span-2">
+            <div className="text-xs font-semibold text-black/60">Content</div>
+            <textarea
+              value={form.content}
+              onChange={(e) => patch("content", e.target.value)}
+              className="mt-1 h-28 w-full rounded-2xl border border-black/10 bg-[#fafafa] px-4 py-3 text-sm outline-none"
+              placeholder="Write the announcement…"
+            />
+          </div>
+
+          <div className="grid gap-2 md:grid-cols-2 md:col-span-2">
+            <div>
+              <div className="text-xs font-semibold text-black/60">Audience</div>
+              <select
+                value={form.target_audience}
+                onChange={(e) => patch("target_audience", e.target.value)}
+                className="mt-1 w-full rounded-2xl border border-black/10 bg-[#fafafa] px-3 py-2 text-sm outline-none"
+              >
+                <option value="My Students">My Students</option>
+                <option value="Section Students" disabled={!canSection}>
+                  Section Students
+                </option>
+              </select>
+              {!canSection ? (
+                <div className="mt-1 text-[11px] text-black/40">
+                  No sections found for your account in section_schedules.
+                </div>
+              ) : null}
+            </div>
+
+            <div>
+              <div className="text-xs font-semibold text-black/60">Section (required if Section Students)</div>
+              <select
+                value={form.section_id}
+                onChange={(e) => patch("section_id", e.target.value)}
+                disabled={form.target_audience !== "Section Students"}
+                className="mt-1 w-full rounded-2xl border border-black/10 bg-[#fafafa] px-3 py-2 text-sm outline-none disabled:opacity-60"
+              >
+                <option value="">Select section…</option>
+                {sections.map((s) => (
+                  <option key={s.section_id} value={s.section_id}>
+                    {s.section_name}
+                  </option>
+                ))}
+              </select>
+            </div>
+          </div>
+
+          <div className="md:col-span-2 flex justify-end">
+            <button
+              onClick={createAnnouncement}
+              disabled={posting}
+              className="inline-flex items-center gap-2 rounded-2xl bg-[#e7aa2f] px-4 py-2 text-xs font-extrabold text-black hover:opacity-90 disabled:opacity-60"
+            >
+              <Plus className="h-4 w-4" />
+              {posting ? "Posting…" : "Post Announcement"}
+            </button>
+          </div>
         </div>
       </div>
 
-      <div className="rounded-3xl border p-4" style={{ borderColor: BRAND.stroke }}>
-        <div className="flex items-center justify-between">
-          <div className="text-sm font-extrabold" style={{ color: BRAND.brown }}>
-            Attachments
-          </div>
-          <button
-            className="inline-flex items-center gap-2 rounded-2xl border bg-white/70 px-3 py-2 text-sm font-semibold hover:bg-white"
-            style={{ borderColor: BRAND.stroke, color: BRAND.brown }}
-            onClick={() => alert("Bookmark (wire later)")}
-          >
-            <Bookmark className="h-4 w-4" style={{ color: BRAND.muted }} />
-            Bookmark
-          </button>
-        </div>
-
-        <div className="mt-3 space-y-2">
-          {a.attachments?.length ? (
-            a.attachments.map((f) => (
-              <div key={f.name} className="rounded-2xl border bg-white/70 p-3" style={{ borderColor: BRAND.stroke }}>
-                <div className="flex items-center justify-between">
-                  <div>
-                    <div className="text-sm font-extrabold" style={{ color: BRAND.brown }}>
-                      {f.name}
-                    </div>
-                    <div className="text-xs font-semibold" style={{ color: BRAND.muted }}>
-                      {f.size}
-                    </div>
-                  </div>
-                  <button
-                    className="rounded-2xl px-4 py-2 text-sm font-semibold transition"
-                    style={{ background: BRAND.gold, color: BRAND.brown }}
-                    onMouseEnter={(e) => (e.currentTarget.style.background = BRAND.goldHover)}
-                    onMouseLeave={(e) => (e.currentTarget.style.background = BRAND.gold)}
-                    onClick={() => alert("Download attachment (wire later)")}
-                  >
-                    Download
-                  </button>
-                </div>
-              </div>
-            ))
+      <div className="rounded-2xl border border-black/10 bg-white p-4">
+        <div className="text-sm font-extrabold text-[#2b1a12]">My Posts</div>
+        <div className="mt-2 space-y-3">
+          {loading ? (
+            <div className="text-sm text-black/50">Loading…</div>
+          ) : items.length === 0 ? (
+            <div className="text-sm text-black/40">No posts yet.</div>
           ) : (
-            <div className="text-sm" style={{ color: BRAND.muted }}>
-              No attachments
-            </div>
+            items.map((a) => (
+              <motion.div
+                key={a.id}
+                initial={{ opacity: 0, y: 6 }}
+                animate={{ opacity: 1, y: 0 }}
+                transition={{ duration: 0.18 }}
+                className="rounded-2xl border border-black/10 bg-[#fafafa] p-4"
+              >
+                <div className="text-sm font-extrabold text-[#2b1a12]">{a.title}</div>
+                <div className="mt-1 text-xs font-semibold text-black/50">
+                  {a.status} • {a.priority} • {a.target_audience} • {a.posted_at ? new Date(a.posted_at).toLocaleString() : "—"}
+                </div>
+                <div className="mt-2 whitespace-pre-wrap text-sm text-black/70">{a.content}</div>
+              </motion.div>
+            ))
           )}
         </div>
       </div>
