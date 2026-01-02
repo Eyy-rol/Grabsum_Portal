@@ -8,6 +8,10 @@ import AdminLayout from "./layout/adminLayout";
 import AdminHome from "./Admin/Admins/AdminHome.jsx";
 import Enrollment from "./Admin/AdminStudents/Enrollment.jsx";
 import Classes from "./Admin/AdminStudents/Classes.jsx";
+import Schedule from "./Admin/AdminStudents/Schedule.jsx";
+import Section from "./Admin/AdminStudents/Section.jsx";
+import Subject from "./Admin/AdminStudents/Subject.jsx";
+import SchoolYear from "./Admin/AdminStudents/School_Year.jsx";
 import TeacherManage from "./Admin/AdminTeacher/Management.jsx";
 import TeacherSchedule from "./Admin/AdminTeacher/Schedule.jsx";
 import CalendarView from "./Admin/Calendar/CalendarView.jsx";
@@ -50,6 +54,14 @@ export default function App() {
         <Route path="/login" element={<Login />} />
         <Route path="/pre-enroll" element={<PreEnrollment />} />
 
+          <Route path="students/enrollment" element={<Enrollment />} />
+          <Route path="students/classes" element={<Classes />} />
+          <Route path="students/schedule" element={<Schedule />} />
+          <Route path="students/section" element={<Section />} />
+          <Route path="students/subject" element={<Subject />} />
+          <Route path="students/school-year" element={<SchoolYear />} />
+          <Route path="teacher/manage" element={<TeacherManage />} />
+          <Route path="teacher/schedule" element={<TeacherSchedule />} />
         {/* ===========================
             ADMIN (protected)
            =========================== */}
