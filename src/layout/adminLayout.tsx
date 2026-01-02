@@ -41,6 +41,10 @@ const NAV: NavItem[] = [
     children: [
       { key: "enrollment", label: "Enrollment", icon: ClipboardList, to: "/admin/students/enrollment" },
       { key: "classes", label: "Classes", icon: BookOpen, to: "/admin/students/classes" },
+      { key: "schedule", label: "Schedule", icon: BookOpen, to: "/admin/students/schedule" },
+      { key: "section", label: "Section", icon: BookOpen, to: "/admin/students/section" },
+      { key: "subject", label: "Subject", icon: BookOpen, to: "/admin/students/subject" },
+      { key: "school-year", label: "School Year", icon: BookOpen, to: "/admin/students/school-year" },
     ],
   },
   {
@@ -237,6 +241,10 @@ function titleFromPath(path: string) {
   if (path === "/admin") return "Home";
   if (path.includes("/students/enrollment")) return "Students • Enrollment";
   if (path.includes("/students/classes")) return "Students • Classes";
+  if (path.includes("/students/schedule")) return "Students • Schedule";
+  if (path.includes("/students/section")) return "Students • Section";
+  if (path.includes("/students/subject")) return "Students • Subject";
+  if (path.includes("/students/school-year")) return "Students • School Year";
   if (path.includes("/teacher/manage")) return "Teacher • Manage";
   if (path.includes("/teacher/schedule")) return "Teacher • Schedule";
   if (path.includes("/calendar")) return "Calendar";
