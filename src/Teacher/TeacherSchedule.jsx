@@ -1,7 +1,14 @@
 // src/pages/teacher/TeacherSchedule.jsx
 import React, { useEffect, useMemo, useState } from "react";
 import { motion } from "framer-motion";
-import { CalendarDays, Clock, MapPin, Users, ChevronLeft, ChevronRight } from "lucide-react";
+import {
+  CalendarDays,
+  Clock,
+  MapPin,
+  Users,
+  ChevronLeft,
+  ChevronRight,
+} from "lucide-react";
 import { supabase } from "../lib/supabaseClient";
 
 const BRAND = {
@@ -9,7 +16,6 @@ const BRAND = {
   muted: "rgba(43,26,18,0.55)",
   stroke: "rgba(43,26,18,0.16)",
   gold: "#d4a62f",
-  goldHover: "#deb23c",
   softGoldBg: "rgba(212,166,47,0.14)",
   cardShadow: "0 14px 34px rgba(43,26,18,0.10)",
 };
@@ -17,7 +23,9 @@ const BRAND = {
 const TERM_CODES = ["1st Sem", "2nd Sem"];
 const DEFAULT_TERM = "1st Sem";
 
-function pad2(n) { return String(n).padStart(2, "0"); }
+function pad2(n) {
+  return String(n).padStart(2, "0");
+}
 function formatTime(date) {
   const h = date.getHours();
   const m = date.getMinutes();
@@ -26,25 +34,50 @@ function formatTime(date) {
   return `${hh}:${pad2(m)} ${ampm}`;
 }
 function sameDay(a, b) {
-  return a.getFullYear() === b.getFullYear() && a.getMonth() === b.getMonth() && a.getDate() === b.getDate();
+  return (
+    a.getFullYear() === b.getFullYear() &&
+    a.getMonth() === b.getMonth() &&
+    a.getDate() === b.getDate()
+  );
 }
-function addDays(d, n) { const x = new Date(d); x.setDate(x.getDate() + n); return x; }
+function addDays(d, n) {
+  const x = new Date(d);
+  x.setDate(x.getDate() + n);
+  return x;
+}
 function formatDateLong(d) {
-  return d.toLocaleDateString(undefined, { weekday: "long", year: "numeric", month: "long", day: "numeric" });
+  return d.toLocaleDateString(undefined, {
+    weekday: "long",
+    year: "numeric",
+    month: "long",
+    day: "numeric",
+  });
 }
 
-function startOfDay(d) { return new Date(d.getFullYear(), d.getMonth(), d.getDate()); }
-function endOfDay(d) { return new Date(d.getFullYear(), d.getMonth(), d.getDate(), 23, 59, 59, 999); }
+function startOfDay(d) {
+  return new Date(d.getFullYear(), d.getMonth(), d.getDate());
+}
+function endOfDay(d) {
+  return new Date(d.getFullYear(), d.getMonth(), d.getDate(), 23, 59, 59, 999);
+}
 function startOfWeekMon(d) {
   const x = startOfDay(d);
   const day = x.getDay(); // Sun=0
   const diffToMon = (day + 6) % 7;
   return addDays(x, -diffToMon);
 }
-function endOfWeekSun(d) { return endOfDay(addDays(startOfWeekMon(d), 6)); }
-function startOfMonth(d) { return new Date(d.getFullYear(), d.getMonth(), 1); }
-function endOfMonth(d) { return endOfDay(new Date(d.getFullYear(), d.getMonth() + 1, 0)); }
-function dayIndexToCode(idx) { return ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"][idx]; }
+function endOfWeekSun(d) {
+  return endOfDay(addDays(startOfWeekMon(d), 6));
+}
+function startOfMonth(d) {
+  return new Date(d.getFullYear(), d.getMonth(), 1);
+}
+function endOfMonth(d) {
+  return endOfDay(new Date(d.getFullYear(), d.getMonth() + 1, 0));
+}
+function dayIndexToCode(idx) {
+  return ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"][idx];
+}
 function hhmmToParts(t) {
   const s = String(t); // "13:00:00" or "13:00"
   const hh = parseInt(s.slice(0, 2), 10);
@@ -70,7 +103,7 @@ function Select({ value, onChange, options, label }) {
 }
 
 /**
- * Materialize recurring schedules (day_of_week, start_time, end_time) into concrete events in [rangeStart..rangeEnd].
+ * Materialize recurring schedules into concrete events in [rangeStart..rangeEnd].
  */
 function materializeSchedule(scheduleRows, rangeStart, rangeEnd) {
   const days = [];
@@ -100,7 +133,8 @@ function materializeSchedule(scheduleRows, rangeStart, rangeEnd) {
         start,
         end: endDt,
         subject: r.subjects?.subject_title ?? "—",
-        className: r.sections?.section_name ?? "—",
+        code: r.subjects?.subject_code ?? "—",
+        section: r.sections?.section_name ?? "—",
         room: r.room ?? "—",
         students: r._studentCount ?? 0,
         day_of_week: r.day_of_week,
@@ -115,20 +149,22 @@ function materializeSchedule(scheduleRows, rangeStart, rangeEnd) {
 }
 
 export default function TeacherSchedule() {
-  const [tab, setTab] = useState("Today");
+  const [tab, setTab] = useState("Today"); // Today | Week | Month
   const [selectedDate, setSelectedDate] = useState(new Date());
   const [selected, setSelected] = useState(null);
 
   const [termCode, setTermCode] = useState(DEFAULT_TERM);
-  const [activeSY, setActiveSY] = useState(null); // { sy_id, sy_code }
-  const [term, setTerm] = useState(null); // { term_id, term_code }
-  const [scheduleRows, setScheduleRows] = useState([]); // recurring rows
+
   const [loading, setLoading] = useState(true);
   const [err, setErr] = useState(null);
 
+  const [activeSY, setActiveSY] = useState(null); // { sy_id, sy_code }
+  const [term, setTerm] = useState(null); // { term_id, term_code }
+  const [scheduleRows, setScheduleRows] = useState([]); // recurring rows
+
   const now = new Date();
 
-  // Week + month ranges based on selectedDate (for materialization)
+  // Ranges
   const weekRange = useMemo(() => {
     const start = startOfWeekMon(selectedDate);
     const end = endOfWeekSun(selectedDate);
@@ -141,12 +177,27 @@ export default function TeacherSchedule() {
     return { start, end };
   }, [selectedDate]);
 
-  // Load Active SY once
+  // 1) Load active SY (requires auth? not necessarily, but keep consistent)
   useEffect(() => {
     let alive = true;
+
     async function loadSY() {
       setLoading(true);
       setErr(null);
+
+      const { data: authData, error: authErr } = await supabase.auth.getUser();
+      if (!alive) return;
+
+      if (authErr) {
+        setErr(authErr.message);
+        setLoading(false);
+        return;
+      }
+      if (!authData?.user) {
+        setErr("Not authenticated.");
+        setLoading(false);
+        return;
+      }
 
       const { data: syRow, error: syErr } = await supabase
         .from("school_years")
@@ -172,13 +223,17 @@ export default function TeacherSchedule() {
       setActiveSY({ sy_id: syRow.sy_id, sy_code: syRow.sy_code });
       setLoading(false);
     }
+
     loadSY();
-    return () => { alive = false; };
+    return () => {
+      alive = false;
+    };
   }, []);
 
-  // Load Term row whenever termCode changes
+  // 2) Load term row whenever termCode changes
   useEffect(() => {
     let alive = true;
+
     async function loadTerm() {
       setLoading(true);
       setErr(null);
@@ -206,11 +261,14 @@ export default function TeacherSchedule() {
       setTerm(tRow);
       setLoading(false);
     }
+
     loadTerm();
-    return () => { alive = false; };
+    return () => {
+      alive = false;
+    };
   }, [termCode]);
 
-  // Load teacher schedule rows (recurring) whenever SY/term changes
+  // 3) Load teacher schedule rows (SY + term + teacher_id), attach student counts
   useEffect(() => {
     let alive = true;
 
@@ -228,6 +286,7 @@ export default function TeacherSchedule() {
         setLoading(false);
         return;
       }
+
       const user = authData?.user;
       if (!user) {
         setErr("Not authenticated.");
@@ -235,10 +294,11 @@ export default function TeacherSchedule() {
         return;
       }
 
-      // Fetch schedules for this teacher for active SY + selected term
+      // schedules for this teacher (Active SY + term)
       const { data, error } = await supabase
         .from("section_schedules")
-        .select(`
+        .select(
+          `
           schedule_id,
           sy_id,
           term_id,
@@ -259,7 +319,8 @@ export default function TeacherSchedule() {
             section_id,
             section_name
           )
-        `)
+        `
+        )
         .eq("sy_id", activeSY.sy_id)
         .eq("term_id", term.term_id)
         .eq("teacher_id", user.id);
@@ -274,22 +335,27 @@ export default function TeacherSchedule() {
 
       const rows = data ?? [];
 
-      // student counts per section (Enrolled only)
-      const sectionIds = Array.from(new Set(rows.map((r) => r.section_id).filter(Boolean)));
-      let countsMap = new Map();
+      // student counts per section in this SY
+      const sectionIds = Array.from(
+        new Set(rows.map((r) => r.section_id).filter(Boolean))
+      );
+
+      const countsMap = new Map();
 
       if (sectionIds.length > 0) {
-        const { data: studentsRows, error: studErr } = await supabase
+        // If your app uses status="Enrolled", keep it.
+        // If not sure, remove the .eq("status","Enrolled")
+        const { data: studentRows, error: studErr } = await supabase
           .from("students")
-          .select("section_id, status")
-          .in("section_id", sectionIds)
-          .eq("status", "Enrolled");
+          .select("section_id")
+          .eq("sy_id", activeSY.sy_id)
+          .in("section_id", sectionIds);
 
         if (studErr) {
-          // don’t fail the whole page; just show 0 counts
+          // non-fatal
           console.warn("Student count query failed:", studErr.message);
         } else {
-          for (const r of studentsRows ?? []) {
+          for (const r of studentRows ?? []) {
             const k = r.section_id;
             countsMap.set(k, (countsMap.get(k) ?? 0) + 1);
           }
@@ -307,13 +373,24 @@ export default function TeacherSchedule() {
     }
 
     loadSchedule();
-    return () => { alive = false; };
+    return () => {
+      alive = false;
+    };
   }, [activeSY?.sy_id, term?.term_id]);
 
-  // Materialize items based on view
-  const allMonthItems = useMemo(() => materializeSchedule(scheduleRows, monthRange.start, monthRange.end), [scheduleRows, monthRange]);
-  const dayItems = useMemo(() => materializeSchedule(scheduleRows, selectedDate, selectedDate), [scheduleRows, selectedDate]);
-  const weekItems = useMemo(() => materializeSchedule(scheduleRows, weekRange.start, weekRange.end), [scheduleRows, weekRange]);
+  // Materialized items
+  const allMonthItems = useMemo(
+    () => materializeSchedule(scheduleRows, monthRange.start, monthRange.end),
+    [scheduleRows, monthRange]
+  );
+  const dayItems = useMemo(
+    () => materializeSchedule(scheduleRows, selectedDate, selectedDate),
+    [scheduleRows, selectedDate]
+  );
+  const weekItems = useMemo(
+    () => materializeSchedule(scheduleRows, weekRange.start, weekRange.end),
+    [scheduleRows, weekRange]
+  );
 
   return (
     <div className="space-y-5">
@@ -331,15 +408,24 @@ export default function TeacherSchedule() {
               Schedule
             </div>
             <div className="text-xs font-semibold" style={{ color: BRAND.muted }}>
-              Today / Week / Month view with timeline and details panel
+              Teacher schedule from <code>section_schedules</code>
               {activeSY?.sy_code ? ` • SY ${activeSY.sy_code}` : ""}
               {termCode ? ` • ${termCode}` : ""}
             </div>
-            {err ? <div className="mt-2 text-xs font-semibold text-red-600">Error: {err}</div> : null}
+            {err ? (
+              <div className="mt-2 text-xs font-semibold text-red-600">
+                Error: {err}
+              </div>
+            ) : null}
           </div>
 
           <div className="flex flex-wrap items-center gap-2">
-            <Select value={termCode} onChange={setTermCode} options={TERM_CODES} label="Term" />
+            <Select
+              value={termCode}
+              onChange={setTermCode}
+              options={TERM_CODES}
+              label="Term"
+            />
             {["Today", "Week", "Month"].map((t) => (
               <button
                 key={t}
@@ -391,7 +477,8 @@ export default function TeacherSchedule() {
               <>Loading…</>
             ) : (
               <>
-                Current time: <span style={{ color: BRAND.brown }}>{formatTime(now)}</span>
+                Current time:{" "}
+                <span style={{ color: BRAND.brown }}>{formatTime(now)}</span>
               </>
             )}
           </div>
@@ -408,11 +495,26 @@ export default function TeacherSchedule() {
           style={{ borderColor: BRAND.stroke, boxShadow: BRAND.cardShadow }}
         >
           {tab === "Today" ? (
-            <TodayTimeline items={dayItems} now={now} onPick={setSelected} loading={loading} />
+            <TodayTimeline
+              items={dayItems}
+              now={now}
+              onPick={setSelected}
+              loading={loading}
+            />
           ) : tab === "Week" ? (
-            <WeekGrid items={weekItems} range={weekRange} onPick={setSelected} loading={loading} />
+            <WeekGrid
+              items={weekItems}
+              range={weekRange}
+              onPick={setSelected}
+              loading={loading}
+            />
           ) : (
-            <MonthMini items={allMonthItems} selectedDate={selectedDate} onPickDate={setSelectedDate} loading={loading} />
+            <MonthMini
+              items={allMonthItems}
+              selectedDate={selectedDate}
+              onPickDate={setSelectedDate}
+              loading={loading}
+            />
           )}
         </motion.div>
 
@@ -425,10 +527,10 @@ export default function TeacherSchedule() {
           style={{ borderColor: BRAND.stroke, boxShadow: BRAND.cardShadow }}
         >
           <div className="text-sm font-extrabold" style={{ color: BRAND.brown }}>
-            Details Panel
+            Details
           </div>
           <div className="mt-1 text-xs font-semibold" style={{ color: BRAND.muted }}>
-            Click a class block to view full details
+            Click a class block to view details.
           </div>
 
           <div className="mt-4">
@@ -438,7 +540,7 @@ export default function TeacherSchedule() {
                   {selected.subject}
                 </div>
                 <div className="mt-1 text-xs font-semibold" style={{ color: BRAND.muted }}>
-                  {selected.className}
+                  {selected.code} • {selected.section}
                 </div>
 
                 <div className="mt-4 space-y-2 text-sm" style={{ color: BRAND.muted }}>
@@ -454,42 +556,6 @@ export default function TeacherSchedule() {
                     <Users className="h-4 w-4" />
                     {selected.students} students
                   </div>
-                </div>
-
-                <div className="mt-5 grid gap-2 md:grid-cols-2">
-                  <button
-                    className="rounded-2xl px-4 py-3 text-sm font-semibold transition"
-                    style={{ background: BRAND.gold, color: BRAND.brown }}
-                    onMouseEnter={(e) => (e.currentTarget.style.background = BRAND.goldHover)}
-                    onMouseLeave={(e) => (e.currentTarget.style.background = BRAND.gold)}
-                    onClick={() => alert("Start class (optional later)")}
-                  >
-                    Start Class
-                  </button>
-                  <button
-                    className="rounded-2xl border bg-white/70 px-4 py-3 text-sm font-semibold hover:bg-white"
-                    style={{ borderColor: BRAND.stroke, color: BRAND.brown }}
-                    onClick={() => alert("Open class page (wire later)")}
-                  >
-                    View Class
-                  </button>
-                </div>
-
-                <div className="mt-2 grid gap-2 md:grid-cols-2">
-                  <button
-                    className="rounded-2xl border bg-white/70 px-4 py-3 text-sm font-semibold hover:bg-white"
-                    style={{ borderColor: BRAND.stroke, color: BRAND.brown }}
-                    onClick={() => alert("Mark attendance (optional later)")}
-                  >
-                    Mark Attendance
-                  </button>
-                  <button
-                    className="rounded-2xl border bg-white/70 px-4 py-3 text-sm font-semibold hover:bg-white"
-                    style={{ borderColor: BRAND.stroke, color: BRAND.brown }}
-                    onClick={() => alert("Add notes (optional later)")}
-                  >
-                    Notes
-                  </button>
                 </div>
               </div>
             ) : (
@@ -514,10 +580,10 @@ function TodayTimeline({ items, now, onPick, loading }) {
   return (
     <div>
       <div className="text-sm font-extrabold" style={{ color: BRAND.brown }}>
-        Today Timeline
+        Today
       </div>
       <div className="mt-1 text-xs font-semibold" style={{ color: BRAND.muted }}>
-        {loading ? "Loading…" : "Click a block to open details."}
+        {loading ? "Loading…" : "Tap an item to open details."}
       </div>
 
       <div className="mt-4 space-y-3">
@@ -553,7 +619,7 @@ function TodayTimeline({ items, now, onPick, loading }) {
                       {c.subject}
                     </div>
                     <div className="mt-1 text-xs font-semibold" style={{ color: BRAND.muted }}>
-                      {c.className} • {c.room} • {c.students} students
+                      {c.code} • {c.section} • {c.room} • {c.students} students
                     </div>
                   </div>
 
@@ -591,7 +657,7 @@ function WeekGrid({ items, range, onPick, loading }) {
   return (
     <div>
       <div className="text-sm font-extrabold" style={{ color: BRAND.brown }}>
-        Week View
+        Week
       </div>
       <div className="mt-1 text-xs font-semibold" style={{ color: BRAND.muted }}>
         {range.start.toLocaleDateString()} — {range.end.toLocaleDateString()}
@@ -601,7 +667,11 @@ function WeekGrid({ items, range, onPick, loading }) {
         {days.map((d) => {
           const dayItems = items.filter((x) => sameDay(x.date, d));
           return (
-            <div key={d.toISOString()} className="rounded-3xl border p-3" style={{ borderColor: BRAND.stroke }}>
+            <div
+              key={d.toISOString()}
+              className="rounded-3xl border p-3"
+              style={{ borderColor: BRAND.stroke }}
+            >
               <div className="text-xs font-extrabold" style={{ color: BRAND.brown }}>
                 {d.toLocaleDateString(undefined, { weekday: "short" })}
               </div>
@@ -624,7 +694,7 @@ function WeekGrid({ items, range, onPick, loading }) {
                       disabled={loading}
                     >
                       <div className="text-[11px] font-extrabold" style={{ color: BRAND.brown }}>
-                        {c.subject}
+                        {c.code}
                       </div>
                       <div className="text-[11px] font-semibold" style={{ color: BRAND.muted }}>
                         {formatTime(c.start)}
@@ -642,7 +712,14 @@ function WeekGrid({ items, range, onPick, loading }) {
 }
 
 function MonthMini({ items, selectedDate, onPickDate, loading }) {
-  const [cursor, setCursor] = useState(new Date(selectedDate.getFullYear(), selectedDate.getMonth(), 1));
+  const [cursor, setCursor] = useState(
+    new Date(selectedDate.getFullYear(), selectedDate.getMonth(), 1)
+  );
+
+  useEffect(() => {
+    // keep cursor aligned when selectedDate jumps months
+    setCursor(new Date(selectedDate.getFullYear(), selectedDate.getMonth(), 1));
+  }, [selectedDate]);
 
   const grid = useMemo(() => {
     const start = new Date(cursor.getFullYear(), cursor.getMonth(), 1);
@@ -663,12 +740,13 @@ function MonthMini({ items, selectedDate, onPickDate, loading }) {
       <div className="flex items-center justify-between gap-2">
         <div>
           <div className="text-sm font-extrabold" style={{ color: BRAND.brown }}>
-            Month View
+            Month
           </div>
           <div className="text-xs font-semibold" style={{ color: BRAND.muted }}>
             {label}
           </div>
         </div>
+
         <div className="flex items-center gap-2">
           <button
             className="grid h-10 w-10 place-items-center rounded-2xl border bg-white/70 hover:bg-white"
@@ -693,7 +771,9 @@ function MonthMini({ items, selectedDate, onPickDate, loading }) {
 
       <div className="mt-4 grid grid-cols-7 gap-2 text-xs font-semibold" style={{ color: BRAND.muted }}>
         {["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"].map((d) => (
-          <div key={d} className="text-center">{d}</div>
+          <div key={d} className="text-center">
+            {d}
+          </div>
         ))}
       </div>
 
@@ -702,6 +782,7 @@ function MonthMini({ items, selectedDate, onPickDate, loading }) {
           const inMonth = d.getMonth() === cursor.getMonth();
           const has = items.some((x) => sameDay(x.date, d));
           const sel = sameDay(d, selectedDate);
+
           return (
             <button
               key={d.toISOString()}
@@ -714,11 +795,15 @@ function MonthMini({ items, selectedDate, onPickDate, loading }) {
               }}
               disabled={loading}
             >
-              <div className="text-sm font-extrabold" style={{ color: BRAND.brown }}>{d.getDate()}</div>
+              <div className="text-sm font-extrabold" style={{ color: BRAND.brown }}>
+                {d.getDate()}
+              </div>
               {has ? (
                 <div className="mt-2 h-2 w-2 rounded-full" style={{ background: BRAND.gold }} />
               ) : (
-                <div className="mt-2 text-[11px]" style={{ color: BRAND.muted }}>—</div>
+                <div className="mt-2 text-[11px]" style={{ color: BRAND.muted }}>
+                  —
+                </div>
               )}
             </button>
           );

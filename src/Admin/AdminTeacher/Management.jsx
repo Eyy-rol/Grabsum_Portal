@@ -1,5 +1,5 @@
-// Management.jsx (UPDATED: role-aware UI; Staff/Admin = view-only, Super Admin = full control)
-import React, { useMemo, useState } from "react";
+// Management.jsx (FIXED: teachers + role-aware UI; Staff/Admin = view-only, Super Admin = full control)
+import React, { useEffect, useMemo, useState } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { supabase } from "../../lib/supabaseClient";
 import { TOKENS } from "../../styles/tokens";
@@ -21,9 +21,16 @@ import {
 } from "lucide-react";
 
 /**
- * ROLE RULES (as requested):
- * - admin (staff): can open page and VIEW ONLY
- * - super_admin (registrar): can create/edit/archive/restore/reset password
+ * ROLE RULES:
+ * - admin/staff: view-only
+ * - super_admin: create/edit/archive/restore/reset password
+ *
+ * FIXES INCLUDED:
+ * 1) Modal form now updates when switching row/mode (react-hook-form reset + key)
+ * 2) Create/Update/Archive/Reset blocked both in UI + mutation guard
+ * 3) Archived tab shows only restore (not archive/delete) + clearer buttons
+ * 4) Prevent "Archive" + "Delete (Archive)" duplication (kept ONE archive action)
+ * 5) Better "archived" icon usage (ArchiveRestore used for restore; archive uses same with label)
  */
 
 const teacherSchema = z.object({
@@ -42,7 +49,7 @@ function errMsg(e) {
   return String(e?.message || e || "Unknown error");
 }
 
-/** ✅ fetch my role once */
+/** fetch my role once */
 async function fetchMyRole() {
   const { data: sess, error: sessErr } = await supabase.auth.getSession();
   if (sessErr) throw sessErr;
@@ -73,7 +80,7 @@ export default function Management() {
 
   const [creds, setCreds] = useState(null); // { employee_number, tempPassword, user_id }
 
-  // ✅ Role query
+  // Role query
   const roleQ = useQuery({
     queryKey: ["me", "role"],
     queryFn: fetchMyRole,
@@ -83,6 +90,10 @@ export default function Management() {
   const role = roleQ.data || null;
   const isSuperAdmin = role === "super_admin";
   const canManage = isSuperAdmin;
+
+  const requireSuperAdmin = () => {
+    if (!canManage) throw new Error("View-only: Super Admin required.");
+  };
 
   const teachersQ = useQuery({
     queryKey: ["teachers"],
@@ -101,7 +112,7 @@ export default function Management() {
 
   const visibleRows = useMemo(() => {
     const wantArchived = tab === "archived";
-    return rows.filter((r) => !!r.is_archived === wantArchived);
+    return rows.filter((r) => Boolean(r.is_archived) === wantArchived);
   }, [rows, tab]);
 
   const filtered = useMemo(() => {
@@ -116,9 +127,10 @@ export default function Management() {
     });
   }, [visibleRows, q]);
 
-  // CREATE via Edge Function: create-teacher (✅ now super_admin only)
+  // CREATE via Edge Function: create-teacher
   const createM = useMutation({
     mutationFn: async (values) => {
+      requireSuperAdmin();
       setCreds(null);
 
       const { data, error } = await supabase.functions.invoke("create-teacher", {
@@ -152,6 +164,8 @@ export default function Management() {
   // UPDATE (teachers table only)
   const updateM = useMutation({
     mutationFn: async ({ user_id, values }) => {
+      requireSuperAdmin();
+
       const payload = {
         department: values.department,
         position: values.position,
@@ -160,7 +174,7 @@ export default function Management() {
         last_name: values.last_name,
         email: values.email,
         contact_number: values.contact_number ? values.contact_number : null,
-        is_archived: values.is_archived ?? false,
+        // NOTE: archive/restore is handled by archiveM, not edit form checkbox.
       };
 
       const { error } = await supabase.from("teachers").update(payload).eq("user_id", user_id);
@@ -169,21 +183,30 @@ export default function Management() {
     onSuccess: () => qc.invalidateQueries({ queryKey: ["teachers"] }),
   });
 
-  // ARCHIVE / UNARCHIVE = soft delete (teachers + profiles)
+  // ARCHIVE / RESTORE (teachers + profiles)
   const archiveM = useMutation({
     mutationFn: async ({ user_id, is_archived }) => {
-      const { error: tErr } = await supabase.from("teachers").update({ is_archived }).eq("user_id", user_id);
+      requireSuperAdmin();
+
+      const { error: tErr } = await supabase
+        .from("teachers")
+        .update({ is_archived })
+        .eq("user_id", user_id);
       if (tErr) throw tErr;
 
-      const { error: pErr } = await supabase.from("profiles").update({ is_archived }).eq("user_id", user_id);
+      const { error: pErr } = await supabase
+        .from("profiles")
+        .update({ is_archived })
+        .eq("user_id", user_id);
       if (pErr) throw pErr;
     },
     onSuccess: () => qc.invalidateQueries({ queryKey: ["teachers"] }),
   });
 
-  // Reset Password via Edge Function: admin-reset-teacher-password (✅ now super_admin only)
+  // Reset Password via Edge Function
   const resetPwdM = useMutation({
     mutationFn: async ({ user_id }) => {
+      requireSuperAdmin();
       setCreds(null);
 
       const { data, error } = await supabase.functions.invoke("admin-reset-teacher-password", {
@@ -206,35 +229,38 @@ export default function Management() {
   });
 
   function openCreate() {
-    if (!canManage) return; // ✅ staff = view-only
+    if (!canManage) return;
     setCreds(null);
     setModal({ open: true, mode: "create", row: null });
   }
+
   function openView(row) {
     setCreds(null);
     setModal({ open: true, mode: "view", row });
   }
+
   function openEdit(row) {
-    if (!canManage) return; // ✅ staff = view-only
+    if (!canManage) return;
     setCreds(null);
     setModal({ open: true, mode: "edit", row });
   }
+
   function closeModal() {
     setModal({ open: false, mode: "create", row: null });
   }
 
-  function onArchiveToggle(row) {
-    if (!canManage) return;
-    archiveM.mutate({ user_id: row.user_id, is_archived: !row.is_archived });
-  }
-
-  function onDelete(row) {
+  function onArchive(row) {
     if (!canManage) return;
     const ok = window.confirm(
       `Archive teacher ${row.employee_number}? (Hidden from UI. You can restore from Archived tab.)`
     );
     if (!ok) return;
     archiveM.mutate({ user_id: row.user_id, is_archived: true });
+  }
+
+  function onRestore(row) {
+    if (!canManage) return;
+    archiveM.mutate({ user_id: row.user_id, is_archived: false });
   }
 
   function onResetPassword(row) {
@@ -249,17 +275,27 @@ export default function Management() {
   const busy = createM.isPending || updateM.isPending || archiveM.isPending || resetPwdM.isPending;
 
   const actionTip = !canManage
-    ? "View-only (Super Admin required for create/edit/archive/reset)."
+    ? "View-only (Super Admin required for create/edit/archive/restore/reset)."
     : "You have full access.";
+
+  const roleBadge = canManage ? (
+    <span className="ml-2 rounded-full border border-[#C9A227]/30 bg-[#C9A227]/10 px-2 py-0.5 text-[11px] font-semibold text-[#6B4E2E]">
+      Can manage
+    </span>
+  ) : (
+    <span className="ml-2 rounded-full border border-black/10 bg-black/[0.02] px-2 py-0.5 text-[11px] font-semibold text-black/60">
+      Read-only
+    </span>
+  );
 
   return (
     <div className="space-y-4">
       <div className="flex flex-col gap-3 md:flex-row md:items-end md:justify-between">
         <div>
-          <div className="text-sm font-extrabold">Teacher • Management</div>
-          <div className="text-xs text-black/55">
-            {actionTip}
+          <div className="text-sm font-extrabold">
+            Teacher • Management {roleBadge}
           </div>
+          <div className="text-xs text-black/55">{actionTip}</div>
         </div>
 
         <button
@@ -282,6 +318,7 @@ export default function Management() {
               <span className="text-black/60">Username (Employee #):</span>
               <span className="font-extrabold">{creds.employee_number || "-"}</span>
               <button
+                type="button"
                 className="rounded-xl border border-black/10 bg-white px-3 py-1 text-xs font-semibold hover:bg-white/80"
                 onClick={() => navigator.clipboard.writeText(String(creds.employee_number || ""))}
               >
@@ -292,13 +329,16 @@ export default function Management() {
               <span className="text-black/60">Temp Password:</span>
               <span className="font-extrabold">{creds.tempPassword}</span>
               <button
+                type="button"
                 className="rounded-xl border border-black/10 bg-white px-3 py-1 text-xs font-semibold hover:bg-white/80"
                 onClick={() => navigator.clipboard.writeText(String(creds.tempPassword || ""))}
               >
                 Copy
               </button>
             </div>
-            <div className="text-xs text-black/55">Teacher will be forced to change password after login.</div>
+            <div className="text-xs text-black/55">
+              Teacher will be forced to change password after login.
+            </div>
           </div>
         </div>
       ) : null}
@@ -318,6 +358,7 @@ export default function Management() {
 
           <div className="flex items-center gap-2">
             <button
+              type="button"
               onClick={() => setTab("active")}
               className={`rounded-2xl px-4 py-2 text-sm font-extrabold border border-black/10 ${
                 tab === "active" ? "bg-white" : "bg-white/60"
@@ -326,6 +367,7 @@ export default function Management() {
               Active
             </button>
             <button
+              type="button"
               onClick={() => setTab("archived")}
               className={`rounded-2xl px-4 py-2 text-sm font-extrabold border border-black/10 ${
                 tab === "archived" ? "bg-white" : "bg-white/60"
@@ -361,7 +403,6 @@ export default function Management() {
                 <th className="px-4 py-3 font-semibold">Department</th>
                 <th className="px-4 py-3 font-semibold">Position</th>
                 <th className="px-4 py-3 font-semibold">Status</th>
-                <th className="px-4 py-3 font-semibold">Archived</th>
                 <th className="px-4 py-3 font-semibold text-right">Actions</th>
               </tr>
             </thead>
@@ -369,22 +410,24 @@ export default function Management() {
               {filtered.map((r) => (
                 <tr key={r.user_id} className="border-t border-black/10">
                   <td className="px-4 py-3 font-semibold">{r.employee_number}</td>
-                  <td className="px-4 py-3 font-semibold">{r.last_name}, {r.first_name}</td>
+                  <td className="px-4 py-3 font-semibold">
+                    {r.last_name}, {r.first_name}
+                  </td>
                   <td className="px-4 py-3 text-black/70">{r.email || "-"}</td>
                   <td className="px-4 py-3 text-black/70">{r.contact_number || "-"}</td>
                   <td className="px-4 py-3 text-black/70">{r.department}</td>
                   <td className="px-4 py-3 text-black/70">{r.position}</td>
-                  <td className="px-4 py-3"><StatusPill value={r.status} /></td>
-                  <td className="px-4 py-3 text-black/70">{r.is_archived ? "Yes" : "No"}</td>
+                  <td className="px-4 py-3">
+                    <StatusPill value={r.status} />
+                  </td>
                   <td className="px-4 py-3">
                     <div className="flex justify-end gap-2">
                       <IconBtn title="View" onClick={() => openView(r)} tone="neutral">
                         <Eye className="h-5 w-5" />
                       </IconBtn>
 
-                      {/* ✅ Only Super Admin sees manage actions */}
                       {canManage ? (
-                        !r.is_archived ? (
+                        tab === "active" ? (
                           <>
                             <IconBtn title="Edit" onClick={() => openEdit(r)} tone="gold">
                               <Pencil className="h-5 w-5" />
@@ -394,16 +437,12 @@ export default function Management() {
                               <KeyRound className="h-5 w-5" />
                             </IconBtn>
 
-                            <IconBtn title="Archive" onClick={() => onArchiveToggle(r)} tone="neutral">
+                            <IconBtn title="Archive" onClick={() => onArchive(r)} tone="neutral">
                               <ArchiveRestore className="h-5 w-5" />
-                            </IconBtn>
-
-                            <IconBtn title="Delete (Archive)" onClick={() => onDelete(r)} tone="danger">
-                              <Trash2 className="h-5 w-5" />
                             </IconBtn>
                           </>
                         ) : (
-                          <IconBtn title="Restore" onClick={() => onArchiveToggle(r)} tone="neutral">
+                          <IconBtn title="Restore" onClick={() => onRestore(r)} tone="neutral">
                             <ArchiveRestore className="h-5 w-5" />
                           </IconBtn>
                         )
@@ -415,7 +454,7 @@ export default function Management() {
 
               {filtered.length === 0 ? (
                 <tr>
-                  <td colSpan={9} className="px-4 py-10 text-center text-sm text-black/55">
+                  <td colSpan={8} className="px-4 py-10 text-center text-sm text-black/55">
                     No teachers found.
                   </td>
                 </tr>
@@ -427,6 +466,8 @@ export default function Management() {
 
       {modal.open ? (
         <TeacherModal
+          // KEY forces remount so RHF defaults always match current row/mode
+          key={`${modal.mode}:${modal.row?.user_id || "new"}`}
           mode={modal.mode}
           row={modal.row}
           onClose={closeModal}
@@ -448,6 +489,16 @@ export default function Management() {
           Reset password error: {errMsg(resetPwdM.error)}
         </div>
       ) : null}
+      {updateM.isError ? (
+        <div className="rounded-2xl border border-rose-200 bg-rose-50 p-4 text-sm text-rose-700">
+          Update error: {errMsg(updateM.error)}
+        </div>
+      ) : null}
+      {archiveM.isError ? (
+        <div className="rounded-2xl border border-rose-200 bg-rose-50 p-4 text-sm text-rose-700">
+          Archive/restore error: {errMsg(archiveM.error)}
+        </div>
+      ) : null}
     </div>
   );
 }
@@ -455,8 +506,9 @@ export default function Management() {
 function TeacherModal({ mode, row, onClose, onCreate, onUpdate, busy, canManage }) {
   const isView = mode === "view";
   const isEdit = mode === "edit";
+  const isCreate = mode === "create";
 
-  // ✅ hard safety: staff cannot save even if modal opened somehow
+  // hard safety: staff cannot save even if modal opened somehow
   const allowWrite = canManage && !isView;
 
   const defaults = useMemo(() => {
@@ -483,17 +535,23 @@ function TeacherModal({ mode, row, onClose, onCreate, onUpdate, busy, canManage 
       last_name: row.last_name ?? "",
       email: row.email ?? "",
       contact_number: row.contact_number ?? "",
-      is_archived: !!row.is_archived,
+      is_archived: Boolean(row.is_archived),
     };
   }, [row]);
 
   const form = useForm({
     resolver: zodResolver(teacherSchema),
     defaultValues: defaults,
+    mode: "onTouched",
   });
 
-  const { register, handleSubmit, formState } = form;
+  const { register, handleSubmit, formState, reset } = form;
   const { errors } = formState;
+
+  // ✅ Fix: update form values when row/mode changes
+  useEffect(() => {
+    reset(defaults);
+  }, [defaults, reset]);
 
   function submit(values) {
     if (!allowWrite) return;
@@ -504,7 +562,7 @@ function TeacherModal({ mode, row, onClose, onCreate, onUpdate, busy, canManage 
       return;
     }
 
-    if (!isView && !isEdit) {
+    if (isCreate) {
       onCreate(values);
       onClose();
       return;
@@ -514,16 +572,24 @@ function TeacherModal({ mode, row, onClose, onCreate, onUpdate, busy, canManage 
   return (
     <>
       <div className="fixed inset-0 z-40 bg-black/25" onClick={onClose} />
-      <div className={`fixed right-4 top-4 bottom-4 z-50 w-[92vw] max-w-xl rounded-2xl border ${TOKENS.border} ${TOKENS.panel} shadow-xl`}>
+      <div
+        className={`fixed right-4 top-4 bottom-4 z-50 w-[92vw] max-w-xl rounded-2xl border ${TOKENS.border} ${TOKENS.panel} shadow-xl`}
+      >
         <div className="flex items-center justify-between border-b border-black/10 p-4">
           <div>
             <div className="text-sm font-extrabold">
               {isView ? "View Teacher" : isEdit ? "Edit Teacher" : "Add Teacher"}
             </div>
-            <div className="text-xs text-black/55">Employee # is generated by the server (Edge Function).</div>
+            <div className="text-xs text-black/55">
+              Employee # is generated by the server (Edge Function).
+            </div>
           </div>
 
-          <button onClick={onClose} className="grid h-9 w-9 place-items-center rounded-2xl hover:bg-black/5">
+          <button
+            type="button"
+            onClick={onClose}
+            className="grid h-9 w-9 place-items-center rounded-2xl hover:bg-black/5"
+          >
             <X className="h-5 w-5 text-black/60" />
           </button>
         </div>
@@ -537,7 +603,7 @@ function TeacherModal({ mode, row, onClose, onCreate, onUpdate, busy, canManage 
                 label="Employee Number"
                 disabled={true}
                 error={errors.employee_number?.message}
-                placeholder={mode === "create" ? "Auto-generated on create" : ""}
+                placeholder={isCreate ? "Auto-generated on create" : ""}
                 {...register("employee_number")}
               />
 
@@ -555,9 +621,10 @@ function TeacherModal({ mode, row, onClose, onCreate, onUpdate, busy, canManage 
                 <option value="Inactive">Inactive</option>
               </Select>
 
+              {/* Keep checkbox for DISPLAY in view/edit, but don't rely on it for archiving (archive/restore is table action) */}
               <label className="flex items-center gap-2 rounded-2xl border border-black/10 bg-white/70 px-3 py-2 text-sm">
-                <input type="checkbox" disabled={isView || !canManage} {...register("is_archived")} />
-                Archived
+                <input type="checkbox" disabled={true} {...register("is_archived")} />
+                Archived (managed from table)
               </label>
             </div>
           </div>
@@ -571,7 +638,6 @@ function TeacherModal({ mode, row, onClose, onCreate, onUpdate, busy, canManage 
               Close
             </button>
 
-            {/* ✅ only super_admin can save/create */}
             {allowWrite ? (
               <button
                 disabled={busy}
@@ -615,6 +681,7 @@ function IconBtn({ title, onClick, tone, children }) {
 
   return (
     <button
+      type="button"
       title={title}
       onClick={onClick}
       className={`grid h-9 w-9 place-items-center rounded-2xl border border-black/10 ${cls}`}

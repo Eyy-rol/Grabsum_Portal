@@ -1,6 +1,7 @@
+// src/pages/teacher/TeacherStudents.jsx
 import React, { useEffect, useMemo, useState } from "react";
 import { motion, AnimatePresence } from "framer-motion";
-import { Search, Filter, X, User, Mail, Phone, GraduationCap, BookOpen, BarChart3 } from "lucide-react";
+import { Search, X, User, Mail, Phone, GraduationCap, ChevronRight, Pencil, Save } from "lucide-react";
 import { supabase } from "../lib/supabaseClient";
 
 const BRAND = {
@@ -13,9 +14,18 @@ const BRAND = {
   cardShadow: "0 14px 34px rgba(43,26,18,0.10)",
 };
 
-const TERM_CODES = ["1st Sem", "2nd Sem"];
+function CardShell({ children, className = "" }) {
+  return (
+    <div
+      className={`rounded-3xl border bg-white ${className}`}
+      style={{ borderColor: BRAND.stroke, boxShadow: BRAND.cardShadow }}
+    >
+      {children}
+    </div>
+  );
+}
 
-function Modal({ open, title, onClose, children, width = "max-w-4xl" }) {
+function Modal({ open, title, onClose, children, width = "max-w-5xl" }) {
   return (
     <AnimatePresence>
       {open ? (
@@ -49,76 +59,47 @@ function Modal({ open, title, onClose, children, width = "max-w-4xl" }) {
   );
 }
 
+function Pill({ children }) {
+  return (
+    <span className="rounded-full px-3 py-1 text-[11px] font-extrabold" style={{ background: BRAND.softGoldBg, color: BRAND.brown }}>
+      {children}
+    </span>
+  );
+}
+
 export default function TeacherStudents() {
-  const [q, setQ] = useState("");
-  const [cls, setCls] = useState("All");     // subject_code
-  const [grade, setGrade] = useState("All"); // "Grade 11" / "Grade 12"
-  const [termCode, setTermCode] = useState("1st Sem");
-
-  const [activeSY, setActiveSY] = useState(null); // { sy_id, sy_code }
-  const [term, setTerm] = useState(null);         // { term_id, term_code }
-
   const [loading, setLoading] = useState(true);
-  const [err, setErr] = useState(null);
+  const [err, setErr] = useState("");
 
-  const [rows, setRows] = useState([]);           // normalized students
-  const [subjectOptions, setSubjectOptions] = useState(["All"]); // from teacher schedules
-  const [gradeOptions, setGradeOptions] = useState(["All", "Grade 11", "Grade 12"]);
+  const [teacherId, setTeacherId] = useState(null);
 
-  const [selected, setSelected] = useState(null);
+  const [sections, setSections] = useState([]); // {section_id, section_name, student_count, isAdvisory}
+  const [selectedSectionId, setSelectedSectionId] = useState(null);
 
-  // ---- Load Active School Year
-  useEffect(() => {
-    let alive = true;
-    (async () => {
-      setErr(null);
-      const { data, error } = await supabase
-        .from("school_years")
-        .select("sy_id, sy_code, status, start_date")
-        .eq("status", "Active")
-        .order("start_date", { ascending: false })
-        .limit(1)
-        .maybeSingle();
+  const [students, setStudents] = useState([]);
+  const [q, setQ] = useState("");
 
-      if (!alive) return;
-      if (error) { setErr(error.message); return; }
-      if (!data?.sy_id) { setErr("No Active school year found."); return; }
+  const [selectedStudent, setSelectedStudent] = useState(null);
 
-      setActiveSY({ sy_id: data.sy_id, sy_code: data.sy_code });
-    })();
-    return () => { alive = false; };
-  }, []);
+  const advisorySectionId = useMemo(() => {
+    const adv = sections.find((s) => s.isAdvisory);
+    return adv?.section_id || null;
+  }, [sections]);
 
-  // ---- Load selected term
-  useEffect(() => {
-    let alive = true;
-    (async () => {
-      setErr(null);
-      const { data, error } = await supabase
-        .from("terms")
-        .select("term_id, term_code")
-        .eq("term_code", termCode)
-        .limit(1)
-        .maybeSingle();
+  const canEditThisSection = useMemo(() => {
+    if (!selectedSectionId) return false;
+    return advisorySectionId && selectedSectionId === advisorySectionId;
+  }, [selectedSectionId, advisorySectionId]);
 
-      if (!alive) return;
-      if (error) { setErr(error.message); return; }
-      if (!data?.term_id) { setErr(`Term not found: ${termCode}`); return; }
-
-      setTerm(data);
-    })();
-    return () => { alive = false; };
-  }, [termCode]);
-
-  // ---- Main loader: teacher schedules -> sections -> students in those sections
+  // Load sections teacher can see:
+  // - sections where teacher is adviser (advisory)
+  // - sections where teacher teaches (section_schedules.teacher_id)
   useEffect(() => {
     let alive = true;
 
     (async () => {
-      if (!activeSY?.sy_id || !term?.term_id) return;
-
       setLoading(true);
-      setErr(null);
+      setErr("");
 
       const { data: authData, error: authErr } = await supabase.auth.getUser();
       const uid = authData?.user?.id;
@@ -126,387 +107,513 @@ export default function TeacherStudents() {
       if (authErr) { setErr(authErr.message); setLoading(false); return; }
       if (!uid) { setErr("Not authenticated."); setLoading(false); return; }
 
-      // 1) Fetch teacher's schedules for this SY+term
-      const { data: sched, error: schedErr } = await supabase
+      setTeacherId(uid);
+
+      // advisory section
+      const { data: advisorySec, error: advErr } = await supabase
+        .from("sections")
+        .select("section_id, section_name, is_archived")
+        .eq("adviser_id", uid)
+        .eq("is_archived", false)
+        .maybeSingle();
+
+      if (!alive) return;
+      if (advErr) { setErr(advErr.message); setLoading(false); return; }
+
+      const advisoryId = advisorySec?.section_id || null;
+
+      // taught sections via schedules
+      const { data: taughtRows, error: taughtErr } = await supabase
         .from("section_schedules")
-        .select(`
-          schedule_id,
-          section_id,
-          subject_id,
-          sections:section_id(section_id, section_name, grade_id, strand_id),
-          subjects:subject_id(subject_id, subject_code)
-        `)
-        .eq("sy_id", activeSY.sy_id)
-        .eq("term_id", term.term_id)
+        .select("section_id")
         .eq("teacher_id", uid);
 
       if (!alive) return;
-      if (schedErr) { setErr(schedErr.message); setLoading(false); return; }
+      if (taughtErr) { setErr(taughtErr.message); setLoading(false); return; }
 
-      const schedules = sched ?? [];
+      const taughtSectionIds = Array.from(new Set((taughtRows || []).map((r) => r.section_id).filter(Boolean)));
+      const allSectionIds = Array.from(new Set([...(taughtSectionIds || []), ...(advisoryId ? [advisoryId] : [])]));
 
-      // Teacher may have no schedules
-      const sectionIds = Array.from(new Set(schedules.map((r) => r.section_id).filter(Boolean)));
-      const taughtSubjects = Array.from(
-        new Set(schedules.map((r) => r.subjects?.subject_code).filter(Boolean))
-      ).sort((a, b) => a.localeCompare(b));
-
-      setSubjectOptions(["All", ...taughtSubjects]);
-
-      if (sectionIds.length === 0) {
-        setRows([]);
+      if (!allSectionIds.length) {
+        setSections([]);
+        setSelectedSectionId(null);
+        setStudents([]);
         setLoading(false);
         return;
       }
 
-      // 2) Students in those sections
-      // NOTE: your students table uses "status" (Enrolled/Pending/Approved/Rejected)
-      // You said: enrolled depending on strand and grade level — so we default to Enrolled only.
-      const { data: studs, error: studsErr } = await supabase
+      const { data: sectionRows, error: secErr } = await supabase
+        .from("sections")
+        .select("section_id, section_name, is_archived")
+        .in("section_id", allSectionIds)
+        .eq("is_archived", false)
+        .order("section_name", { ascending: true });
+
+      if (!alive) return;
+      if (secErr) { setErr(secErr.message); setLoading(false); return; }
+
+      // count students per section (Enrolled)
+      const { data: countRows, error: cntErr } = await supabase
+        .from("students")
+        .select("section_id, id")
+        .in("section_id", allSectionIds)
+        .eq("status", "Enrolled");
+
+      if (!alive) return;
+      if (cntErr) { setErr(cntErr.message); setLoading(false); return; }
+
+      const counts = new Map();
+      for (const r of countRows || []) {
+        counts.set(r.section_id, (counts.get(r.section_id) || 0) + 1);
+      }
+
+      const normalizedSections = (sectionRows || []).map((s) => ({
+        section_id: s.section_id,
+        section_name: s.section_name,
+        student_count: counts.get(s.section_id) || 0,
+        isAdvisory: advisoryId ? s.section_id === advisoryId : false,
+      }));
+
+      setSections(normalizedSections);
+
+      // default pick: advisory else first
+      setSelectedSectionId((prev) => prev || advisoryId || normalizedSections[0]?.section_id || null);
+
+      setLoading(false);
+    })();
+
+    return () => { alive = false; };
+  }, []);
+
+  // Load students for selected section
+  useEffect(() => {
+    let alive = true;
+    (async () => {
+      if (!selectedSectionId) return;
+
+      setLoading(true);
+      setErr("");
+
+      const { data, error } = await supabase
         .from("students")
         .select(`
           id,
           student_number,
           first_name,
           last_name,
+          middle_initial,
+          extension,
+          gender,
+          birthdate,
           email,
           status,
           section_id,
-          grade_id,
-          strand_id,
-          sections:section_id(section_id, section_name),
-          grade_levels:grade_id(grade_level)
+          grade_levels:grade_id(grade_level),
+          sections:section_id(section_id, section_name)
         `)
-        .in("section_id", sectionIds)
-        .eq("status", "Enrolled");
+        .eq("section_id", selectedSectionId)
+        .eq("status", "Enrolled")
+        .order("last_name", { ascending: true });
 
       if (!alive) return;
-      if (studsErr) { setErr(studsErr.message); setLoading(false); return; }
+      if (error) { setErr(error.message); setLoading(false); return; }
 
-      const students = studs ?? [];
-
-      // Build: per student -> which subject codes does this teacher teach in that student’s section?
-      const sectionToSubjectCodes = new Map(); // section_id -> Set(subject_code)
-      for (const r of schedules) {
-        const sid = r.section_id;
-        const code = r.subjects?.subject_code;
-        if (!sid || !code) continue;
-        if (!sectionToSubjectCodes.has(sid)) sectionToSubjectCodes.set(sid, new Set());
-        sectionToSubjectCodes.get(sid).add(code);
-      }
-
-      const normalized = students.map((s) => {
+      const normalized = (data || []).map((s) => {
         const fullName = `${s.last_name ?? ""}, ${s.first_name ?? ""}`.replace(/^,\s*/, "").trim();
         const g = s.grade_levels?.grade_level ? `Grade ${s.grade_levels.grade_level}` : "—";
         const secName = s.sections?.section_name ?? "—";
-        const classes = Array.from(sectionToSubjectCodes.get(s.section_id) ?? []).sort((a, b) => a.localeCompare(b));
-
-        // avg is not in DB; keep UI field but null
         return {
-          id: s.student_number ?? String(s.id),
           rowId: s.id,
+          student_number: s.student_number ?? "",
           name: fullName || "Unnamed Student",
-          email: s.email ?? "—",
+          first_name: s.first_name ?? "",
+          last_name: s.last_name ?? "",
+          middle_initial: s.middle_initial ?? "",
+          extension: s.extension ?? "",
+          gender: s.gender ?? "",
+          birthdate: s.birthdate ?? "",
+          email: s.email ?? "",
+       
           grade: g,
           section: secName,
-          classes,
-          avg: null,
+          section_id: s.section_id,
         };
       });
 
-      // grade dropdown values from data (optional dynamic)
-      const gradeSet = new Set(normalized.map((x) => x.grade).filter((x) => x !== "—"));
-      const gradeOpts = ["All", ...Array.from(gradeSet).sort((a, b) => a.localeCompare(b))];
-      setGradeOptions(gradeOpts.length ? gradeOpts : ["All", "Grade 11", "Grade 12"]);
-
-      setRows(normalized);
+      setStudents(normalized);
       setLoading(false);
     })();
 
     return () => { alive = false; };
-  }, [activeSY?.sy_id, term?.term_id]);
+  }, [selectedSectionId]);
 
   const filtered = useMemo(() => {
-    return rows.filter((s) => {
-      const okQ = (s.name + " " + s.id + " " + s.section).toLowerCase().includes(q.toLowerCase());
-      const okC = cls === "All" ? true : s.classes.includes(cls);
-      const okG = grade === "All" ? true : s.grade === grade;
-      return okQ && okC && okG;
-    });
-  }, [rows, q, cls, grade]);
+    const qq = q.trim().toLowerCase();
+    if (!qq) return students;
+    return students.filter((s) => (s.name + " " + s.student_number).toLowerCase().includes(qq));
+  }, [students, q]);
+
+  const selectedSection = useMemo(
+    () => sections.find((s) => s.section_id === selectedSectionId) || null,
+    [sections, selectedSectionId]
+  );
 
   return (
     <div className="space-y-5">
-      <motion.div
-        initial={{ opacity: 0, y: 8 }}
-        animate={{ opacity: 1, y: 0 }}
-        transition={{ duration: 0.18 }}
-        className="rounded-3xl border bg-white p-5"
-        style={{ borderColor: BRAND.stroke, boxShadow: BRAND.cardShadow }}
-      >
-        <div className="flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
-          <div>
+      {/* Top header */}
+      <CardShell>
+        <div className="p-5">
+          <div className="flex flex-col gap-2 lg:flex-row lg:items-center lg:justify-between">
+            <div>
+              <div className="text-sm font-extrabold" style={{ color: BRAND.brown }}>
+                Students
+              </div>
+              <div className="text-xs font-semibold" style={{ color: BRAND.muted }}>
+                Select a section to view students • Edit only for advisory section
+              </div>
+
+              {selectedSection?.isAdvisory ? (
+                <div className="mt-2 text-xs font-semibold" style={{ color: BRAND.muted }}>
+                  This is your <span style={{ color: BRAND.brown, fontWeight: 800 }}>Advisory</span> section. Editing is enabled.
+                </div>
+              ) : (
+                <div className="mt-2 text-xs font-semibold" style={{ color: BRAND.muted }}>
+                  {sections.some((s) => s.isAdvisory)
+                    ? "Read-only (not your advisory section)."
+                    : "You have no advisory section assigned. Read-only."}
+                </div>
+              )}
+
+              {err ? <div className="mt-2 text-xs font-semibold text-red-600">Error: {err}</div> : null}
+            </div>
+
+            <div className="flex items-center gap-2">
+              <div className="relative w-full lg:w-[360px]">
+                <Search className="pointer-events-none absolute left-4 top-1/2 h-4 w-4 -translate-y-1/2" style={{ color: BRAND.muted }} />
+                <input
+                  value={q}
+                  onChange={(e) => setQ(e.target.value)}
+                  placeholder="Search student name / student no…"
+                  className="w-full rounded-2xl border bg-white/70 px-11 py-3 text-sm font-semibold outline-none transition focus:bg-white"
+                  style={{ borderColor: BRAND.stroke, color: BRAND.brown }}
+                />
+              </div>
+              <div className="text-xs font-semibold whitespace-nowrap" style={{ color: BRAND.muted }}>
+                {loading ? "Loading…" : `${filtered.length} student(s)`}
+              </div>
+            </div>
+          </div>
+        </div>
+      </CardShell>
+
+      {/* Main layout: Section list + Students */}
+      <div className="grid gap-5 xl:grid-cols-[0.42fr_0.58fr]">
+        {/* Section list */}
+        <CardShell>
+          <div className="p-5">
             <div className="text-sm font-extrabold" style={{ color: BRAND.brown }}>
-              Students
+              Sections
             </div>
-            <div className="text-xs font-semibold" style={{ color: BRAND.muted }}>
-              Directory across your assigned sections
-              {activeSY?.sy_code ? ` • SY ${activeSY.sy_code}` : ""}
-              {termCode ? ` • ${termCode}` : ""}
+            <div className="mt-1 text-xs font-semibold" style={{ color: BRAND.muted }}>
+              Your advisory + the sections you teach
             </div>
-            {err ? <div className="mt-2 text-xs font-semibold text-red-600">Error: {err}</div> : null}
-          </div>
 
-          <div className="flex items-center gap-2">
-            <select
-              value={termCode}
-              onChange={(e) => setTermCode(e.target.value)}
-              className="rounded-2xl border bg-white/70 px-4 py-2 text-sm font-semibold outline-none transition focus:bg-white"
-              style={{ borderColor: BRAND.stroke, color: BRAND.brown }}
-            >
-              {TERM_CODES.map((t) => <option key={t} value={t}>{t}</option>)}
-            </select>
-
-            <div className="text-xs font-semibold" style={{ color: BRAND.muted }}>
-              {loading ? "Loading…" : `${filtered.length} student(s)`}
+            <div className="mt-4 space-y-3">
+              {!sections.length && !loading ? (
+                <div className="rounded-3xl border p-4 text-sm font-semibold" style={{ borderColor: BRAND.stroke, color: BRAND.muted }}>
+                  No sections assigned.
+                </div>
+              ) : (
+                sections.map((sec) => {
+                  const active = sec.section_id === selectedSectionId;
+                  return (
+                    <button
+                      key={sec.section_id}
+                      onClick={() => setSelectedSectionId(sec.section_id)}
+                      className="w-full rounded-3xl border bg-white p-4 text-left transition hover:bg-black/5"
+                      style={{
+                        borderColor: active ? "rgba(212,166,47,0.55)" : BRAND.stroke,
+                        background: active ? "rgba(212,166,47,0.10)" : "white",
+                      }}
+                      disabled={loading}
+                    >
+                      <div className="flex items-start justify-between gap-3">
+                        <div className="min-w-0">
+                          <div className="text-sm font-extrabold truncate" style={{ color: BRAND.brown }}>
+                            {sec.section_name}
+                          </div>
+                          <div className="mt-1 text-xs font-semibold" style={{ color: BRAND.muted }}>
+                            {sec.student_count} student(s)
+                          </div>
+                        </div>
+                        <div className="flex items-center gap-2">
+                          {sec.isAdvisory ? <Pill>Advisory</Pill> : <Pill>Read</Pill>}
+                          <ChevronRight className="h-4 w-4" style={{ color: BRAND.muted }} />
+                        </div>
+                      </div>
+                    </button>
+                  );
+                })
+              )}
             </div>
           </div>
-        </div>
+        </CardShell>
 
-        <div className="mt-4 grid gap-3 md:grid-cols-[1fr_240px_220px]">
-          <div className="relative">
-            <Search className="pointer-events-none absolute left-4 top-1/2 h-4 w-4 -translate-y-1/2" style={{ color: BRAND.muted }} />
-            <input
-              value={q}
-              onChange={(e) => setQ(e.target.value)}
-              placeholder="Search student name / ID / section…"
-              className="w-full rounded-2xl border bg-white/70 px-11 py-3 text-sm font-semibold outline-none transition focus:bg-white"
-              style={{ borderColor: BRAND.stroke, color: BRAND.brown }}
-            />
+        {/* Students list */}
+        <CardShell>
+          <div className="p-5">
+            <div className="flex items-start justify-between gap-3">
+              <div className="min-w-0">
+                <div className="text-sm font-extrabold truncate" style={{ color: BRAND.brown }}>
+                  {selectedSection ? selectedSection.section_name : "Students"}
+                </div>
+                <div className="mt-1 text-xs font-semibold" style={{ color: BRAND.muted }}>
+                  {selectedSection ? `${selectedSection.student_count} enrolled student(s)` : "Select a section"}
+                </div>
+              </div>
+              <div className="flex items-center gap-2">
+                {canEditThisSection ? <Pill>Editable</Pill> : <Pill>Read-only</Pill>}
+              </div>
+            </div>
+
+            <div className="mt-4">
+              {!loading && filtered.length === 0 ? (
+                <div className="rounded-3xl border p-6 text-center" style={{ borderColor: BRAND.stroke }}>
+                  <div className="text-sm font-extrabold" style={{ color: BRAND.brown }}>No students found</div>
+                  <div className="mt-1 text-sm" style={{ color: BRAND.muted }}>
+                    Try a different section or search.
+                  </div>
+                </div>
+              ) : (
+                <div className="grid gap-4 md:grid-cols-2">
+                  {filtered.map((s) => (
+                    <button
+                      key={s.rowId}
+                      onClick={() => setSelectedStudent(s)}
+                      className="rounded-3xl border bg-white p-4 text-left transition hover:-translate-y-[1px]"
+                      style={{ borderColor: BRAND.stroke }}
+                      disabled={loading}
+                    >
+                      <div className="flex items-start justify-between gap-3">
+                        <div className="flex items-start gap-3 min-w-0">
+                          <div className="grid h-12 w-12 place-items-center rounded-2xl" style={{ background: BRAND.softGoldBg }}>
+                            <User className="h-6 w-6" style={{ color: BRAND.muted }} />
+                          </div>
+                          <div className="min-w-0">
+                            <div className="text-sm font-extrabold truncate" style={{ color: BRAND.brown }}>
+                              {s.name}
+                            </div>
+                            <div className="mt-1 text-xs font-semibold truncate" style={{ color: BRAND.muted }}>
+                              {s.student_number || "—"} • {s.grade}
+                            </div>
+                          </div>
+                        </div>
+                        {canEditThisSection ? <Pill>Edit</Pill> : <Pill>View</Pill>}
+                      </div>
+
+                      <div className="mt-3 space-y-2 text-xs font-semibold" style={{ color: BRAND.muted }}>
+                        <div className="flex items-center gap-2">
+                          <Mail className="h-4 w-4" /> {s.email || "—"}
+                        </div>
+                       
+                        <div className="flex items-center gap-2">
+                          <GraduationCap className="h-4 w-4" /> {s.section}
+                        </div>
+                      </div>
+                    </button>
+                  ))}
+                </div>
+              )}
+            </div>
           </div>
+        </CardShell>
+      </div>
 
-          <div className="relative">
-            <Filter className="pointer-events-none absolute left-4 top-1/2 h-4 w-4 -translate-y-1/2" style={{ color: BRAND.muted }} />
-            <select
-              value={cls}
-              onChange={(e) => setCls(e.target.value)}
-              className="w-full appearance-none rounded-2xl border bg-white/70 px-11 py-3 text-sm font-semibold outline-none transition focus:bg-white"
-              style={{ borderColor: BRAND.stroke, color: BRAND.brown }}
-            >
-              {subjectOptions.map((x) => (
-                <option key={x} value={x}>
-                  Class: {x}
-                </option>
-              ))}
-            </select>
-          </div>
-
-          <div className="relative">
-            <Filter className="pointer-events-none absolute left-4 top-1/2 h-4 w-4 -translate-y-1/2" style={{ color: BRAND.muted }} />
-            <select
-              value={grade}
-              onChange={(e) => setGrade(e.target.value)}
-              className="w-full appearance-none rounded-2xl border bg-white/70 px-11 py-3 text-sm font-semibold outline-none transition focus:bg-white"
-              style={{ borderColor: BRAND.stroke, color: BRAND.brown }}
-            >
-              {gradeOptions.map((x) => (
-                <option key={x} value={x}>
-                  Grade: {x}
-                </option>
-              ))}
-            </select>
-          </div>
-        </div>
-      </motion.div>
-
-      <motion.div
-        initial={{ opacity: 0, y: 8 }}
-        animate={{ opacity: 1, y: 0 }}
-        transition={{ duration: 0.18 }}
-        className="rounded-3xl border bg-white p-5"
-        style={{ borderColor: BRAND.stroke, boxShadow: BRAND.cardShadow }}
+      <Modal
+        open={!!selectedStudent}
+        title={selectedStudent ? selectedStudent.name : ""}
+        onClose={() => setSelectedStudent(null)}
       >
-        {!loading && filtered.length === 0 ? (
-          <div className="rounded-3xl border p-6 text-center" style={{ borderColor: BRAND.stroke }}>
-            <div className="text-sm font-extrabold" style={{ color: BRAND.brown }}>No students found</div>
-            <div className="mt-1 text-sm" style={{ color: BRAND.muted }}>
-              (Check if you have section_schedules for this SY/term, and students are Enrolled in those sections.)
-            </div>
-          </div>
-        ) : (
-          <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-3">
-            {filtered.map((s) => (
-              <button
-                key={s.rowId}
-                onClick={() => setSelected(s)}
-                className="rounded-3xl border bg-white p-5 text-left transition hover:-translate-y-[1px]"
-                style={{ borderColor: BRAND.stroke }}
-                disabled={loading}
-              >
-                <div className="flex items-start justify-between gap-3">
-                  <div className="flex items-start gap-3">
-                    <div className="grid h-12 w-12 place-items-center rounded-2xl" style={{ background: BRAND.softGoldBg }}>
-                      <User className="h-6 w-6" style={{ color: BRAND.muted }} />
-                    </div>
-                    <div>
-                      <div className="text-sm font-extrabold" style={{ color: BRAND.brown }}>
-                        {s.name}
-                      </div>
-                      <div className="mt-1 text-xs font-semibold" style={{ color: BRAND.muted }}>
-                        {s.id} • {s.section}
-                      </div>
-                    </div>
-                  </div>
-
-                  <span
-                    className="rounded-full px-3 py-1 text-[11px] font-extrabold"
-                    style={{ background: BRAND.softGoldBg, color: BRAND.brown }}
-                  >
-                    {s.avg == null ? "Avg —" : `Avg ${s.avg}`}
-                  </span>
-                </div>
-
-                <div className="mt-4 space-y-2 text-xs font-semibold" style={{ color: BRAND.muted }}>
-                  <div className="flex items-center gap-2">
-                    <Mail className="h-4 w-4" /> {s.email}
-                  </div>
-                  <div className="flex items-center gap-2">
-                    <Phone className="h-4 w-4" /> {s.phone}
-                  </div>
-                  <div className="flex items-center gap-2">
-                    <GraduationCap className="h-4 w-4" /> {s.grade}
-                  </div>
-                </div>
-
-                <div className="mt-4 flex flex-wrap gap-2">
-                  {(s.classes ?? []).length ? (
-                    s.classes.map((c) => (
-                      <span
-                        key={c}
-                        className="rounded-full border px-3 py-1 text-[11px] font-extrabold"
-                        style={{ borderColor: BRAND.stroke, color: BRAND.muted }}
-                      >
-                        {c}
-                      </span>
-                    ))
-                  ) : (
-                    <span className="text-[11px] font-semibold" style={{ color: BRAND.muted }}>
-                      No subject codes (check section_schedules joins)
-                    </span>
-                  )}
-                </div>
-              </button>
-            ))}
-          </div>
-        )}
-      </motion.div>
-
-      <Modal open={!!selected} title={selected ? selected.name : ""} onClose={() => setSelected(null)} width="max-w-5xl">
-        {selected ? <StudentProfileView s={selected} /> : null}
+        {selectedStudent ? (
+          <StudentProfileView
+            student={selectedStudent}
+            canEdit={!!canEditThisSection}
+            onSaved={(updated) => {
+              setStudents((prev) => prev.map((p) => (p.rowId === updated.rowId ? updated : p)));
+              setSelectedStudent(updated);
+            }}
+          />
+        ) : null}
       </Modal>
     </div>
   );
 }
 
-function StudentProfileView({ s }) {
+function StudentProfileView({ student, canEdit, onSaved }) {
+  const [edit, setEdit] = useState(false);
+  const [saving, setSaving] = useState(false);
+  const [msg, setMsg] = useState("");
+
+  const [form, setForm] = useState(() => ({
+    first_name: student.first_name || "",
+    last_name: student.last_name || "",
+    middle_initial: student.middle_initial || "",
+    extension: student.extension || "",
+    gender: student.gender || "",
+    birthdate: student.birthdate || "",
+    email: student.email || "",
+  
+  }));
+
+  useEffect(() => {
+    setEdit(false);
+    setMsg("");
+    setForm({
+      first_name: student.first_name || "",
+      last_name: student.last_name || "",
+      middle_initial: student.middle_initial || "",
+      extension: student.extension || "",
+      gender: student.gender || "",
+      birthdate: student.birthdate || "",
+      email: student.email || "",
+
+    });
+  }, [student.rowId]);
+
+  const fullName = `${form.last_name}, ${form.first_name}`.replace(/^,\s*/, "").trim() || "Unnamed Student";
+
+  async function save() {
+    setSaving(true);
+    setMsg("");
+
+    const { error } = await supabase
+      .from("students")
+      .update({
+        first_name: form.first_name,
+        last_name: form.last_name,
+        middle_initial: form.middle_initial || null,
+        extension: form.extension || null,
+        gender: form.gender || null,
+        birthdate: form.birthdate || null,
+        email: form.email || null,
+       
+      })
+      .eq("id", student.rowId);
+
+    if (error) {
+      setMsg(error.message);
+      setSaving(false);
+      return;
+    }
+
+    setSaving(false);
+    setEdit(false);
+    setMsg("Saved.");
+    setTimeout(() => setMsg(""), 1200);
+
+    onSaved?.({
+      ...student,
+      name: fullName,
+      ...form,
+    });
+  }
+
   return (
     <div className="grid gap-4 lg:grid-cols-[1fr_1fr]">
       <div className="rounded-3xl border p-4" style={{ borderColor: BRAND.stroke }}>
-        <div className="flex items-center gap-3">
-          <div className="grid h-14 w-14 place-items-center rounded-2xl" style={{ background: BRAND.softGoldBg }}>
-            <User className="h-7 w-7" style={{ color: BRAND.muted }} />
+        <div className="flex items-center justify-between gap-3">
+          <div className="flex items-center gap-3 min-w-0">
+            <div className="grid h-14 w-14 place-items-center rounded-2xl" style={{ background: BRAND.softGoldBg }}>
+              <User className="h-7 w-7" style={{ color: BRAND.muted }} />
+            </div>
+            <div className="min-w-0">
+              <div className="text-sm font-extrabold truncate" style={{ color: BRAND.brown }}>
+                {fullName}
+              </div>
+              <div className="text-xs font-semibold" style={{ color: BRAND.muted }}>
+                {student.student_number || "—"} • {student.grade} • {student.section}
+              </div>
+            </div>
           </div>
-          <div>
-            <div className="text-sm font-extrabold" style={{ color: BRAND.brown }}>
-              {s.name}
-            </div>
-            <div className="text-xs font-semibold" style={{ color: BRAND.muted }}>
-              {s.id} • {s.grade} • {s.section}
-            </div>
+
+          <div className="flex items-center gap-2">
+            {!canEdit ? <Pill>Read-only</Pill> : null}
+            {canEdit ? (
+              <button
+                className="inline-flex items-center gap-2 rounded-2xl border bg-white px-3 py-2 text-xs font-extrabold hover:bg-black/5"
+                style={{ borderColor: BRAND.stroke, color: BRAND.brown }}
+                onClick={() => setEdit((v) => !v)}
+              >
+                <Pencil className="h-4 w-4" />
+                {edit ? "Stop Editing" : "Edit"}
+              </button>
+            ) : null}
           </div>
         </div>
 
-        <div className="mt-4 space-y-2 text-sm" style={{ color: BRAND.muted }}>
-          <div className="flex items-center gap-2"><Mail className="h-4 w-4" /> {s.email}</div>
-          <div className="flex items-center gap-2"><Phone className="h-4 w-4" /> {s.phone}</div>
-        </div>
+        <div className="mt-4 grid gap-3">
+          <Field label="First name" value={form.first_name} onChange={(v) => setForm((p) => ({ ...p, first_name: v }))} disabled={!canEdit || !edit} />
+          <Field label="Last name" value={form.last_name} onChange={(v) => setForm((p) => ({ ...p, last_name: v }))} disabled={!canEdit || !edit} />
+          <div className="grid gap-3 md:grid-cols-2">
+            <Field label="Middle initial" value={form.middle_initial} onChange={(v) => setForm((p) => ({ ...p, middle_initial: v }))} disabled={!canEdit || !edit} />
+            <Field label="Extension" value={form.extension} onChange={(v) => setForm((p) => ({ ...p, extension: v }))} disabled={!canEdit || !edit} />
+          </div>
+          <div className="grid gap-3 md:grid-cols-2">
+            <Field label="Gender" value={form.gender} onChange={(v) => setForm((p) => ({ ...p, gender: v }))} disabled={!canEdit || !edit} placeholder="Male/Female/..." />
+            <Field label="Birthdate" type="date" value={form.birthdate} onChange={(v) => setForm((p) => ({ ...p, birthdate: v }))} disabled={!canEdit || !edit} />
+          </div>
+          <Field label="Email" value={form.email} onChange={(v) => setForm((p) => ({ ...p, email: v }))} disabled={!canEdit || !edit} />
+        
 
-        <div className="mt-5 grid gap-2 md:grid-cols-2">
-          <button
-            className="rounded-2xl px-4 py-3 text-sm font-semibold transition"
-            style={{ background: BRAND.gold, color: BRAND.brown }}
-            onMouseEnter={(e) => (e.currentTarget.style.background = BRAND.goldHover)}
-            onMouseLeave={(e) => (e.currentTarget.style.background = BRAND.gold)}
-            onClick={() => alert("Message student (optional later)")}
-          >
-            Message
-          </button>
-          <button
-            className="rounded-2xl border bg-white/70 px-4 py-3 text-sm font-semibold hover:bg-white"
-            style={{ borderColor: BRAND.stroke, color: BRAND.brown }}
-            onClick={() => alert("View submissions (optional later)")}
-          >
-            View Submissions
-          </button>
+          {canEdit && edit ? (
+            <button
+              className="mt-2 inline-flex items-center justify-center gap-2 rounded-2xl px-4 py-3 text-sm font-extrabold transition"
+              style={{ background: BRAND.gold, color: BRAND.brown, opacity: saving ? 0.7 : 1 }}
+              onMouseEnter={(e) => (e.currentTarget.style.background = BRAND.goldHover)}
+              onMouseLeave={(e) => (e.currentTarget.style.background = BRAND.gold)}
+              onClick={save}
+              disabled={saving}
+            >
+              <Save className="h-4 w-4" />
+              {saving ? "Saving…" : "Save Changes"}
+            </button>
+          ) : null}
+
+          {msg ? (
+            <div className="mt-2 text-xs font-semibold" style={{ color: msg === "Saved." ? "green" : "red" }}>
+              {msg}
+            </div>
+          ) : null}
         </div>
       </div>
 
       <div className="rounded-3xl border p-4" style={{ borderColor: BRAND.stroke }}>
         <div className="text-sm font-extrabold" style={{ color: BRAND.brown }}>
-          Academic Overview
+          Notes / Extras (later)
         </div>
-
-        <div className="mt-4 grid gap-3 md:grid-cols-2">
-          <Stat icon={BookOpen} label="Classes" value={(s.classes ?? []).length} />
-          <Stat icon={BarChart3} label="Average" value={s.avg ?? "—"} />
-        </div>
-
-        <div className="mt-4 rounded-3xl border p-4" style={{ borderColor: BRAND.stroke }}>
-          <div className="text-sm font-extrabold" style={{ color: BRAND.brown }}>
-            Enrolled Classes (teacher-taught subjects)
-          </div>
-          <div className="mt-2 flex flex-wrap gap-2">
-            {(s.classes ?? []).length ? (
-              s.classes.map((c) => (
-                <span key={c} className="rounded-full px-3 py-1 text-[11px] font-extrabold"
-                      style={{ background: BRAND.softGoldBg, color: BRAND.brown }}>
-                  {c}
-                </span>
-              ))
-            ) : (
-              <span className="text-sm" style={{ color: BRAND.muted }}>—</span>
-            )}
-          </div>
-        </div>
-
-        <div className="mt-4 rounded-3xl border p-4" style={{ borderColor: BRAND.stroke }}>
-          <div className="text-sm font-extrabold" style={{ color: BRAND.brown }}>
-            Notes (UI)
-          </div>
-          <textarea
-            className="mt-2 w-full rounded-2xl border bg-white/70 px-4 py-3 text-sm font-semibold outline-none transition focus:bg-white"
-            style={{ borderColor: BRAND.stroke, color: BRAND.brown }}
-            rows={4}
-            placeholder="Private notes about this student (optional later)…"
-          />
+        <div className="mt-2 text-sm font-semibold" style={{ color: BRAND.muted }}>
+          You can add submissions, grades, etc. once there’s a table that links students to class/subject.
         </div>
       </div>
     </div>
   );
 }
 
-function Stat({ icon: Icon, label, value }) {
+function Field({ label, value, onChange, disabled, placeholder, type = "text" }) {
   return (
-    <div className="rounded-3xl border p-4" style={{ borderColor: BRAND.stroke }}>
-      <div className="flex items-center gap-2">
-        <div className="grid h-10 w-10 place-items-center rounded-2xl" style={{ background: BRAND.softGoldBg }}>
-          <Icon className="h-5 w-5" style={{ color: BRAND.muted }} />
-        </div>
-        <div>
-          <div className="text-xs font-semibold" style={{ color: BRAND.muted }}>{label}</div>
-          <div className="text-sm font-extrabold" style={{ color: BRAND.brown }}>{value}</div>
-        </div>
+    <label className="block">
+      <div className="mb-1 text-xs font-semibold" style={{ color: BRAND.muted }}>
+        {label}
       </div>
-    </div>
+      <input
+        type={type}
+        value={value}
+        onChange={(e) => onChange(e.target.value)}
+        disabled={disabled}
+        placeholder={placeholder}
+        className="w-full rounded-2xl border bg-white/70 px-4 py-3 text-sm font-semibold outline-none transition focus:bg-white disabled:opacity-70"
+        style={{ borderColor: BRAND.stroke, color: BRAND.brown }}
+      />
+    </label>
   );
 }

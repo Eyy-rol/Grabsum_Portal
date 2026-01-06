@@ -1,31 +1,22 @@
-import React, { useEffect, useMemo, useState } from "react";
+// src/layouts/DevLayout.jsx
+import { useEffect, useMemo, useState } from "react";
 import { NavLink, Outlet, useLocation, useNavigate } from "react-router-dom";
 import { AnimatePresence, motion } from "framer-motion";
-import {
-  LayoutDashboard,
-  Users,
-  Activity,
-  Shield,
-  FileText,
-  Search,
-  Bell,
-  LogOut,
-} from "lucide-react";
+import { LayoutDashboard, Users, Activity, FileText, Search, Bell, LogOut } from "lucide-react";
 import { TOKENS } from "../styles/tokens.js";
-import { supabase } from "../lib/supabaseClient"; // ✅ adjust path if needed
+import { supabase } from "../lib/supabaseClient.js";
 
 // Base dev-safe navigation
 const DEV_NAV_BASE = [
   { key: "dash", label: "Dashboard", icon: LayoutDashboard, to: "/dev" },
   { key: "activity", label: "Activity Logs", icon: Activity, to: "/dev/activity" },
   { key: "audit", label: "Audit & Reports", icon: FileText, to: "/dev/audit" },
-  { key: "Admin", label: "Admin", icon: Users, to: "/dev/admins" },
-
+  { key: "admins_base", label: "Admin", icon: Users, to: "/dev/admins" },
 ];
 
-// Admin Management entry (kept as requested)
+// Admin Management entry (visible only for super_admin)
 const ADMIN_MGMT_ITEM = {
-  key: "admins",
+  key: "admins_mgmt",
   label: "Admin Management",
   icon: Users,
   to: "/dev/admins",
@@ -33,51 +24,89 @@ const ADMIN_MGMT_ITEM = {
 
 export default function DevLayout() {
   const location = useLocation();
+  const nav = useNavigate();
   const title = useMemo(() => titleFromPath(location.pathname), [location.pathname]);
 
-  const [me, setMe] = useState({ email: "", role: "", full_name: "" });
+  const [me, setMe] = useState({
+    loading: true,
+    err: "",
+    email: "",
+    role: "",
+    full_name: "",
+  });
 
+  // Fetch current user + profile
   useEffect(() => {
-    let mounted = true;
+    let alive = true;
 
     async function loadMe() {
-      const { data: auth } = await supabase.auth.getUser();
-      const userId = auth?.user?.id;
+      try {
+        const { data: authData, error: authErr } = await supabase.auth.getUser();
+        if (authErr) throw authErr;
 
-      if (!userId) {
-        // not logged in → redirect to login
-        return;
+        const user = authData?.user;
+        if (!user?.id) {
+          nav("/login", { replace: true });
+          return;
+        }
+
+        // NOTE:
+        // If your profiles table doesn't have full_name, remove it from select.
+        const { data: prof, error: profErr } = await supabase
+          .from("profiles")
+          .select("email, role, full_name")
+          .eq("user_id", user.id)
+          .maybeSingle();
+
+        // If profiles query fails due to missing columns, keep app alive using auth email
+        if (profErr) {
+          // You can console.warn here if you want
+        }
+
+        if (!alive) return;
+
+        const role = String(prof?.role || "").toLowerCase();
+
+        setMe({
+          loading: false,
+          err: "",
+          email: String(prof?.email || user.email || ""),
+          role,
+          full_name: String(prof?.full_name || ""),
+        });
+      } catch (e) {
+        if (!alive) return;
+        setMe((prev) => ({
+          ...prev,
+          loading: false,
+          err: String(e?.message || e),
+        }));
       }
-
-      const { data: prof } = await supabase
-        .from("profiles")
-        .select("email, role, full_name")
-        .eq("user_id", userId)
-        .maybeSingle();
-
-      if (!mounted) return;
-
-      setMe({
-        email: prof?.email || auth?.user?.email || "",
-        role: String(prof?.role || "").toLowerCase(),
-        full_name: prof?.full_name || "",
-      });
     }
 
     loadMe();
 
-    return () => {
-      mounted = false;
-    };
-  }, []);
+    const { data } = supabase.auth.onAuthStateChange((event) => {
+      if (event === "SIGNED_IN" || event === "SIGNED_OUT" || event === "TOKEN_REFRESHED") {
+        loadMe();
+      }
+    });
 
-  // ✅ Only show Admin Management if user is allowed
-  // Recommended: super_admin only
+    return () => {
+      alive = false;
+      data?.subscription?.unsubscribe?.();
+    };
+  }, [nav]);
+
+  // Only show Admin Management if allowed (super_admin only)
   const canSeeAdminManagement = me.role === "super_admin";
 
   const navItems = useMemo(() => {
     const items = [...DEV_NAV_BASE];
-    if (canSeeAdminManagement) items.splice(1, 0, ADMIN_MGMT_ITEM); // insert after dashboard
+    if (canSeeAdminManagement) {
+      // insert after dashboard
+      items.splice(1, 0, ADMIN_MGMT_ITEM);
+    }
     return items;
   }, [canSeeAdminManagement]);
 
@@ -116,8 +145,12 @@ function Sidebar({ me, navItems }) {
   const nav = useNavigate();
 
   async function logout() {
-    await supabase.auth.signOut();
-    nav("/login"); // change to your login route
+    try {
+      const { error } = await supabase.auth.signOut();
+      if (error) console.error("signOut error:", error);
+    } finally {
+      nav("/login", { replace: true });
+    }
   }
 
   const displayName = me.full_name || "Developer";
@@ -134,6 +167,15 @@ function Sidebar({ me, navItems }) {
         <div className={`h-10 w-10 rounded-2xl ${TOKENS.goldSoft} grid place-items-center`}>
           <span className={`text-sm font-black ${TOKENS.gold}`}>D</span>
         </div>
+      </div>
+
+      <div className="mt-4 rounded-2xl border border-black/10 bg-white/60 p-3">
+        <div className="text-sm font-bold">{me.loading ? "Loading…" : displayName}</div>
+        <div className="mt-1 text-xs text-black/55">{displayEmail}</div>
+        <div className="mt-1 text-[11px] text-black/45">
+          role: <span className="font-semibold">{displayRole}</span>
+        </div>
+        {me.err ? <div className="mt-2 text-[11px] font-semibold text-rose-600">{me.err}</div> : null}
       </div>
 
       <div className="mt-4">
@@ -158,31 +200,23 @@ function Sidebar({ me, navItems }) {
         </nav>
       </div>
 
-      <div className="mt-4 rounded-2xl border border-black/10 bg-white/60 p-3">
-        <div className="text-sm font-bold">{displayName}</div>
-        <div className="mt-1 text-xs text-black/55">{displayEmail}</div>
-        <div className="mt-1 text-[11px] text-black/45">
-          role: <span className="font-semibold">{displayRole}</span>
-        </div>
+      <div className="mt-4 grid grid-cols-2 gap-2">
+        <button
+          onClick={() => nav("/admin")}
+          className="rounded-2xl border border-black/10 bg-white/70 px-3 py-2 text-sm font-semibold hover:bg-white"
+          type="button"
+        >
+          Admin UI
+        </button>
 
-        <div className="mt-3 grid grid-cols-2 gap-2">
-          <button
-            onClick={() => nav("/admin")}
-            className="rounded-2xl border border-black/10 bg-white/70 px-3 py-2 text-sm font-semibold hover:bg-white"
-            type="button"
-          >
-            Admin UI
-          </button>
-
-          <button
-            onClick={logout}
-            className="inline-flex items-center justify-center gap-2 rounded-2xl border border-black/10 bg-white/70 px-3 py-2 text-sm font-semibold hover:bg-white"
-            type="button"
-          >
-            <LogOut className="h-4 w-4 text-black/60" />
-            Logout
-          </button>
-        </div>
+        <button
+          onClick={logout}
+          className="inline-flex items-center justify-center gap-2 rounded-2xl border border-black/10 bg-white/70 px-3 py-2 text-sm font-semibold hover:bg-white"
+          type="button"
+        >
+          <LogOut className="h-4 w-4 text-black/60" />
+          Logout
+        </button>
       </div>
     </aside>
   );
@@ -206,7 +240,11 @@ function Topbar({ title }) {
             />
           </div>
 
-          <button className="relative grid h-10 w-10 place-items-center rounded-2xl border border-black/10 bg-white/60 hover:bg-white/80" type="button">
+          <button
+            className="relative grid h-10 w-10 place-items-center rounded-2xl border border-black/10 bg-white/60 hover:bg-white/80"
+            type="button"
+            onClick={() => alert("Notifications UI (wire later)")}
+          >
             <Bell className="h-5 w-5 text-black/60" />
             <span
               className={`absolute -right-1 -top-1 grid h-5 w-5 place-items-center rounded-full ${TOKENS.goldBg} text-[10px] font-black text-black`}
