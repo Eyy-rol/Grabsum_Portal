@@ -14,6 +14,7 @@ import {
   Inbox,
   GraduationCap,
   CheckCircle2,
+  Archive,
 } from "lucide-react";
 import { z } from "zod";
 import { useForm } from "react-hook-form";
@@ -34,32 +35,49 @@ const UI = {
 
 const STATUS = ["Pending", "Approved", "Rejected"];
 
-/** ✅ Updated to include LRN (12 digits) */
+/**
+ * ✅ Updated schema to match public.enrollment fields you want in pre-enroll:
+ * - st_bplace
+ * - st_previous_school
+ * - st_father_name
+ * - st_mother_name
+ * - st_guardian_relationship
+ * (and existing fields like grade_id/track_id/strand_id, sy_id optional)
+ */
 const enrollmentSchema = z.object({
   application_id: z.string().min(1, "Application ID is required").max(50),
-
-  // ✅ NEW
   st_lrn: z.string().regex(/^\d{12}$/, "LRN must be exactly 12 digits (numbers only)."),
 
   st_fname: z.string().min(1, "First name is required").max(150),
   st_lname: z.string().min(1, "Last name is required").max(150),
   st_mi: z.string().max(10).optional().or(z.literal("")),
   st_ext: z.string().max(20).optional().or(z.literal("")),
+
   st_email: z.string().email("Valid email required"),
   st_gender: z.enum(["Male", "Female"], { message: "Gender is required" }),
   st_civil_status: z.enum(["Single", "Married", "Widowed", "Separated", "Divorced"], {
     message: "Civil status is required",
   }),
+
   st_bdate: z.string().min(1, "Date of birth is required"),
+  st_bplace: z.string().optional().or(z.literal("")),
+
   st_current_address: z.string().min(1, "Address is required").max(255),
 
-  // keep optional (ok if your table has these cols)
+  st_previous_school: z.string().optional().or(z.literal("")),
+  st_father_name: z.string().optional().or(z.literal("")),
+  st_mother_name: z.string().optional().or(z.literal("")),
+
   st_guardian_name: z.string().optional().or(z.literal("")),
   st_guardian_contact: z.string().optional().or(z.literal("")),
+  st_guardian_relationship: z.string().optional().or(z.literal("")),
 
   grade_id: z.string().optional().or(z.literal("")),
   track_id: z.string().optional().or(z.literal("")),
   strand_id: z.string().optional().or(z.literal("")),
+
+  sy_id: z.string().optional().or(z.literal("")),
+
   st_application_status: z.enum(["Pending", "Approved", "Rejected"]).optional(),
 });
 
@@ -124,7 +142,7 @@ async function copyCredentialsToClipboard({ student_number, temp_password }, toa
 }
 
 /* ===================== Toast ===================== */
-/** ✅ Top-right now */
+
 function ToastHost({ toasts, onDismiss }) {
   return (
     <div className="fixed top-4 right-4 z-[9999] flex w-[360px] max-w-[92vw] flex-col gap-2">
@@ -142,9 +160,7 @@ function ToastHost({ toasts, onDismiss }) {
           <div className="flex items-start justify-between gap-3">
             <div className="min-w-0">
               <div className="text-sm font-extrabold text-[#1F1A14]">{t.title}</div>
-              {t.message ? (
-                <div className="mt-1 text-xs font-semibold text-black/60">{t.message}</div>
-              ) : null}
+              {t.message ? <div className="mt-1 text-xs font-semibold text-black/60">{t.message}</div> : null}
 
               {t.actions?.length ? (
                 <div className="mt-3 flex flex-wrap gap-2">
@@ -201,13 +217,7 @@ function useToasts() {
 
   const dismiss = (id) => setToasts((p) => p.filter((x) => x.id !== id));
 
-  const confirm = ({
-    title,
-    message,
-    confirmText = "Confirm",
-    cancelText = "Cancel",
-    tone = "danger",
-  }) =>
+  const confirm = ({ title, message, confirmText = "Confirm", cancelText = "Cancel", tone = "danger" }) =>
     new Promise((resolve) => {
       const id = push({
         title,
@@ -303,14 +313,32 @@ export default function Enrollment() {
     },
   });
 
-  // Students table
+  // ✅ Students (Enrolled tab) + profiles flags for Active/Archived scope
   const studentsQ = useQuery({
-    queryKey: ["students"],
+    queryKey: ["students_with_profile"],
     enabled: tab === "Enrolled",
     queryFn: async () => {
-      const { data, error } = await supabase.from("students").select("*").order("updated_at", { ascending: false });
+      const { data, error } = await supabase
+        .from("students")
+        .select(
+          `
+          *,
+          profiles (
+            user_id,
+            is_active,
+            is_archived
+          )
+        `
+        )
+        .order("updated_at", { ascending: false });
+
       if (error) throw error;
-      return data ?? [];
+
+      return (data ?? []).map((s) => ({
+        ...s,
+        profile_is_active: s.profiles?.is_active ?? true,
+        profile_is_archived: s.profiles?.is_archived ?? false,
+      }));
     },
   });
 
@@ -341,25 +369,31 @@ export default function Enrollment() {
       .filter((r) => (fGrade === "All" ? true : String(r.grade_id || "") === String(fGrade)));
   }, [enrollmentRows, qName, fTrack, fGrade, scope]);
 
-  const pendingRows = useMemo(() => {
-    return baseFilteredEnrollment.filter((r) => norm(r.st_application_status) === "pending");
-  }, [baseFilteredEnrollment]);
+  const pendingRows = useMemo(
+    () => baseFilteredEnrollment.filter((r) => norm(r.st_application_status) === "pending"),
+    [baseFilteredEnrollment]
+  );
 
-  const approvedRows = useMemo(() => {
-    return baseFilteredEnrollment.filter(
-      (r) => norm(r.st_application_status) === "approved" && !r.user_id
-    );
-  }, [baseFilteredEnrollment]);
+  const approvedRows = useMemo(
+    () => baseFilteredEnrollment.filter((r) => norm(r.st_application_status) === "approved" && !r.user_id),
+    [baseFilteredEnrollment]
+  );
 
   const filteredStudents = useMemo(() => {
     const needle = qName.trim().toLowerCase();
 
-    return studentsRows.filter((r) => {
-      if (!needle) return true;
-      const hay = `${r.student_number || ""} ${r.first_name || ""} ${r.last_name || ""} ${r.email || ""}`.toLowerCase();
-      return hay.includes(needle);
-    });
-  }, [studentsRows, qName]);
+    return (studentsRows ?? [])
+      .filter((s) => {
+        // Active scope = NOT archived, Archived scope = archived OR inactive
+        const archived = Boolean(s.profile_is_archived) || !Boolean(s.profile_is_active);
+        return archived === (scope === "Archived");
+      })
+      .filter((r) => {
+        if (!needle) return true;
+        const hay = `${r.student_number || ""} ${r.first_name || ""} ${r.last_name || ""} ${r.email || ""}`.toLowerCase();
+        return hay.includes(needle);
+      });
+  }, [studentsRows, qName, scope]);
 
   /* ===================== Mutations ===================== */
 
@@ -380,8 +414,7 @@ export default function Enrollment() {
       await qc.invalidateQueries({ queryKey: ["enrollment"] });
       toast.push({ tone: "success", title: "Created", message: "Enrollment record added." });
     },
-    onError: (e) =>
-      toast.push({ tone: "danger", title: "Create failed", message: String(e?.message || e) }),
+    onError: (e) => toast.push({ tone: "danger", title: "Create failed", message: String(e?.message || e) }),
   });
 
   const updateM = useMutation({
@@ -395,8 +428,7 @@ export default function Enrollment() {
       await qc.invalidateQueries({ queryKey: ["enrollment"] });
       toast.push({ tone: "success", title: "Saved", message: "Changes updated." });
     },
-    onError: (e) =>
-      toast.push({ tone: "danger", title: "Update failed", message: String(e?.message || e) }),
+    onError: (e) => toast.push({ tone: "danger", title: "Update failed", message: String(e?.message || e) }),
   });
 
   // Pending -> Approved
@@ -415,8 +447,7 @@ export default function Enrollment() {
       await qc.invalidateQueries({ queryKey: ["enrollment"] });
       toast.push({ tone: "success", title: "Approved", message: "Moved to Approved tab." });
     },
-    onError: (e) =>
-      toast.push({ tone: "danger", title: "Approve failed", message: String(e?.message || e) }),
+    onError: (e) => toast.push({ tone: "danger", title: "Approve failed", message: String(e?.message || e) }),
   });
 
   const enrollEdgeM = useMutation({
@@ -439,18 +470,13 @@ export default function Enrollment() {
       setAccessModalOpen(true);
 
       await qc.invalidateQueries({ queryKey: ["enrollment"] });
-      await qc.invalidateQueries({ queryKey: ["students"] });
+      await qc.invalidateQueries({ queryKey: ["students_with_profile"] });
 
       toast.push({ tone: "success", title: "Enrolled", message: "Student # generated successfully." });
 
-      // ✅ simple copy + simple toast
-      await copyCredentialsToClipboard(
-        { student_number: data.student_number, temp_password: data.temp_password },
-        toast
-      );
+      await copyCredentialsToClipboard({ student_number: data.student_number, temp_password: data.temp_password }, toast);
     },
-    onError: (e) =>
-      toast.push({ tone: "danger", title: "Enroll failed", message: String(e?.message || e) }),
+    onError: (e) => toast.push({ tone: "danger", title: "Enroll failed", message: String(e?.message || e) }),
   });
 
   const archiveEnrollmentM = useMutation({
@@ -466,22 +492,27 @@ export default function Enrollment() {
 
       if (e1) throw e1;
 
+      // if enrolled user exists, lock profile
       if (row.user_id) {
-        const { error } = await supabase.functions.invoke(EDGE_FN_NAME, {
-          body: { action: "archive_student", user_id: row.user_id },
-        });
-        if (error) throw new Error(error.message || "Failed to lock student");
+        const { error: e2 } = await supabase
+          .from("profiles")
+          .update({
+            is_active: false,
+            is_archived: true,
+            updated_at: new Date().toISOString(),
+          })
+          .eq("user_id", row.user_id);
+        if (e2) throw e2;
       }
 
       return true;
     },
     onSuccess: async () => {
       await qc.invalidateQueries({ queryKey: ["enrollment"] });
-      await qc.invalidateQueries({ queryKey: ["students"] });
+      await qc.invalidateQueries({ queryKey: ["students_with_profile"] });
       toast.push({ tone: "success", title: "Archived", message: "Moved to Archived and access disabled." });
     },
-    onError: (e) =>
-      toast.push({ tone: "danger", title: "Archive failed", message: String(e?.message || e) }),
+    onError: (e) => toast.push({ tone: "danger", title: "Archive failed", message: String(e?.message || e) }),
   });
 
   const restoreEnrollmentM = useMutation({
@@ -497,20 +528,120 @@ export default function Enrollment() {
       if (e1) throw e1;
 
       if (row.user_id) {
-        const { error } = await supabase.functions.invoke(EDGE_FN_NAME, {
-          body: { action: "restore_student", user_id: row.user_id },
-        });
-        if (error) throw new Error(error.message || "Failed to restore student access");
+        const { error: e2 } = await supabase
+          .from("profiles")
+          .update({
+            is_active: true,
+            is_archived: false,
+            updated_at: new Date().toISOString(),
+          })
+          .eq("user_id", row.user_id);
+        if (e2) throw e2;
       }
       return true;
     },
     onSuccess: async () => {
       await qc.invalidateQueries({ queryKey: ["enrollment"] });
-      await qc.invalidateQueries({ queryKey: ["students"] });
+      await qc.invalidateQueries({ queryKey: ["students_with_profile"] });
       toast.push({ tone: "success", title: "Restored", message: "Student restored." });
     },
-    onError: (e) =>
-      toast.push({ tone: "danger", title: "Restore failed", message: String(e?.message || e) }),
+    onError: (e) => toast.push({ tone: "danger", title: "Restore failed", message: String(e?.message || e) }),
+  });
+
+  // ✅ archive enrolled student directly (Enrolled tab)
+  const archiveStudentM = useMutation({
+    mutationFn: async (stuRow) => {
+      if (!stuRow.user_id) throw new Error("Missing user_id");
+
+      // 1) lock profile => RequireRole will force logout
+      const { error: e1 } = await supabase
+        .from("profiles")
+        .update({
+          is_active: false,
+          is_archived: true,
+          updated_at: new Date().toISOString(),
+        })
+        .eq("user_id", stuRow.user_id);
+      if (e1) throw e1;
+
+      // 2) archive enrollment row too (if linked)
+      if (stuRow.enrollment_id) {
+        const { error: e2 } = await supabase
+          .from("enrollment")
+          .update({
+            is_archived: true,
+            updated_at: new Date().toISOString(),
+            st_updated_at: new Date().toISOString(),
+          })
+          .eq("id", stuRow.enrollment_id);
+        if (e2) throw e2;
+      } else {
+        // fallback by user_id (your schema supports enrollment.user_id)
+        const { error: e3 } = await supabase
+          .from("enrollment")
+          .update({
+            is_archived: true,
+            updated_at: new Date().toISOString(),
+            st_updated_at: new Date().toISOString(),
+          })
+          .eq("user_id", stuRow.user_id);
+        if (e3) throw e3;
+      }
+
+      return true;
+    },
+    onSuccess: async () => {
+      await qc.invalidateQueries({ queryKey: ["students_with_profile"] });
+      await qc.invalidateQueries({ queryKey: ["enrollment"] });
+      toast.push({ tone: "success", title: "Archived", message: "Student account disabled." });
+    },
+    onError: (e) => toast.push({ tone: "danger", title: "Archive failed", message: String(e?.message || e) }),
+  });
+
+  const restoreStudentM = useMutation({
+    mutationFn: async (stuRow) => {
+      if (!stuRow.user_id) throw new Error("Missing user_id");
+
+      const { error: e1 } = await supabase
+        .from("profiles")
+        .update({
+          is_active: true,
+          is_archived: false,
+          updated_at: new Date().toISOString(),
+        })
+        .eq("user_id", stuRow.user_id);
+      if (e1) throw e1;
+
+      if (stuRow.enrollment_id) {
+        const { error: e2 } = await supabase
+          .from("enrollment")
+          .update({
+            is_archived: false,
+            updated_at: new Date().toISOString(),
+            st_updated_at: new Date().toISOString(),
+          })
+          .eq("id", stuRow.enrollment_id);
+        if (e2) throw e2;
+      } else {
+        const { error: e3 } = await supabase
+          .from("enrollment")
+          .update({
+            is_archived: false,
+            updated_at: new Date().toISOString(),
+            st_updated_at: new Date().toISOString(),
+          })
+          .eq("user_id", stuRow.user_id);
+        if (e3) throw e3;
+      }
+
+      return true;
+    },
+    onSuccess: async () => {
+      await qc.invalidateQueries({ queryKey: ["students_with_profile"] });
+      await qc.invalidateQueries({ queryKey: ["enrollment"] });
+      toast.push({ tone: "success", title: "Restored", message: "Student access enabled." });
+    },
+    onError: (e) => toast.push({ tone: "danger", title: "Restore failed", message: String(e?.message || e) }),
   });
 
   const resetPwdM = useMutation({
@@ -536,14 +667,9 @@ export default function Enrollment() {
 
       toast.push({ tone: "success", title: "Password reset", message: "Temporary password generated." });
 
-      // ✅ simple copy + simple toast
-      await copyCredentialsToClipboard(
-        { student_number: data.student_number, temp_password: data.temp_password },
-        toast
-      );
+      await copyCredentialsToClipboard({ student_number: data.student_number, temp_password: data.temp_password }, toast);
     },
-    onError: (e) =>
-      toast.push({ tone: "danger", title: "Reset failed", message: String(e?.message || e) }),
+    onError: (e) => toast.push({ tone: "danger", title: "Reset failed", message: String(e?.message || e) }),
   });
 
   /* ===================== Actions ===================== */
@@ -555,10 +681,7 @@ export default function Enrollment() {
       mode: "create",
       row: {
         application_id: appId,
-
-        // ✅ NEW
         st_lrn: "",
-
         st_fname: "",
         st_lname: "",
         st_mi: "",
@@ -567,12 +690,18 @@ export default function Enrollment() {
         st_gender: "Male",
         st_civil_status: "Single",
         st_bdate: "",
+        st_bplace: "",
         st_current_address: "",
+        st_previous_school: "",
+        st_father_name: "",
+        st_mother_name: "",
         st_guardian_name: "",
         st_guardian_contact: "",
+        st_guardian_relationship: "",
         grade_id: "",
         track_id: "",
         strand_id: "",
+        sy_id: "",
         st_application_status: "Pending",
       },
     });
@@ -589,7 +718,9 @@ export default function Enrollment() {
     enrollEdgeM.isPending ||
     archiveEnrollmentM.isPending ||
     restoreEnrollmentM.isPending ||
-    resetPwdM.isPending;
+    resetPwdM.isPending ||
+    archiveStudentM.isPending ||
+    restoreStudentM.isPending;
 
   async function onArchiveEnrollment(row) {
     const ok = await toast.confirm({
@@ -639,6 +770,30 @@ export default function Enrollment() {
     enrollEdgeM.mutate(row);
   }
 
+  async function onArchiveStudent(stuRow) {
+    const ok = await toast.confirm({
+      title: "Archive enrolled student?",
+      message: "This will DISABLE their portal access immediately.",
+      confirmText: "Archive",
+      cancelText: "Cancel",
+      tone: "danger",
+    });
+    if (!ok) return;
+    archiveStudentM.mutate(stuRow);
+  }
+
+  async function onRestoreStudent(stuRow) {
+    const ok = await toast.confirm({
+      title: "Restore student?",
+      message: "This will re-enable portal access.",
+      confirmText: "Restore",
+      cancelText: "Cancel",
+      tone: "info",
+    });
+    if (!ok) return;
+    restoreStudentM.mutate(stuRow);
+  }
+
   /* ===================== UI ===================== */
 
   const shownEnrollmentRows = tab === "Pending" ? pendingRows : approvedRows;
@@ -673,9 +828,7 @@ export default function Enrollment() {
           <button
             onClick={() => setTab("Pending")}
             className={`inline-flex items-center gap-2 rounded-xl border px-4 py-2 text-sm font-extrabold transition ${
-              tab === "Pending"
-                ? "bg-[#C9A227]/15 border-[#C9A227]/40"
-                : "bg-white border-black/10 hover:bg-black/[0.02]"
+              tab === "Pending" ? "bg-[#C9A227]/15 border-[#C9A227]/40" : "bg-white border-black/10 hover:bg-black/[0.02]"
             }`}
             type="button"
           >
@@ -686,9 +839,7 @@ export default function Enrollment() {
           <button
             onClick={() => setTab("Approved")}
             className={`inline-flex items-center gap-2 rounded-xl border px-4 py-2 text-sm font-extrabold transition ${
-              tab === "Approved"
-                ? "bg-[#C9A227]/15 border-[#C9A227]/40"
-                : "bg-white border-black/10 hover:bg-black/[0.02]"
+              tab === "Approved" ? "bg-[#C9A227]/15 border-[#C9A227]/40" : "bg-white border-black/10 hover:bg-black/[0.02]"
             }`}
             type="button"
           >
@@ -699,9 +850,7 @@ export default function Enrollment() {
           <button
             onClick={() => setTab("Enrolled")}
             className={`inline-flex items-center gap-2 rounded-xl border px-4 py-2 text-sm font-extrabold transition ${
-              tab === "Enrolled"
-                ? "bg-[#C9A227]/15 border-[#C9A227]/40"
-                : "bg-white border-black/10 hover:bg-black/[0.02]"
+              tab === "Enrolled" ? "bg-[#C9A227]/15 border-[#C9A227]/40" : "bg-white border-black/10 hover:bg-black/[0.02]"
             }`}
             type="button"
           >
@@ -717,9 +866,7 @@ export default function Enrollment() {
           <button
             onClick={() => setScope("Active")}
             className={`inline-flex items-center gap-2 rounded-xl border px-4 py-2 text-sm font-extrabold transition ${
-              scope === "Active"
-                ? "bg-[#C9A227]/15 border-[#C9A227]/40"
-                : "bg-white border-black/10 hover:bg-black/[0.02]"
+              scope === "Active" ? "bg-[#C9A227]/15 border-[#C9A227]/40" : "bg-white border-black/10 hover:bg-black/[0.02]"
             }`}
             type="button"
           >
@@ -728,9 +875,7 @@ export default function Enrollment() {
           <button
             onClick={() => setScope("Archived")}
             className={`inline-flex items-center gap-2 rounded-xl border px-4 py-2 text-sm font-extrabold transition ${
-              scope === "Archived"
-                ? "bg-[#C9A227]/15 border-[#C9A227]/40"
-                : "bg-white border-black/10 hover:bg-black/[0.02]"
+              scope === "Archived" ? "bg-[#C9A227]/15 border-[#C9A227]/40" : "bg-white border-black/10 hover:bg-black/[0.02]"
             }`}
             type="button"
           >
@@ -765,6 +910,7 @@ export default function Enrollment() {
               value={fTrack}
               onChange={(e) => setFTrack(e.target.value)}
               className="mt-1 w-full rounded-xl border border-black/10 bg-white px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-[#C9A227]/40"
+              disabled={tab === "Enrolled"}
             >
               <option value="All">All</option>
               {(tracksQ.data ?? []).map((t) => (
@@ -780,6 +926,7 @@ export default function Enrollment() {
               value={fGrade}
               onChange={(e) => setFGrade(e.target.value)}
               className="mt-1 w-full rounded-xl border border-black/10 bg-white px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-[#C9A227]/40"
+              disabled={tab === "Enrolled"}
             >
               <option value="All">All</option>
               {(gradesQ.data ?? []).map((g) => (
@@ -819,9 +966,7 @@ export default function Enrollment() {
           enrollQ.isLoading ? (
             <div className={`p-6 text-sm ${UI.muted}`}>Loading…</div>
           ) : enrollQ.isError ? (
-            <div className="p-6 text-sm text-rose-700">
-              Error: {String(enrollQ.error?.message || enrollQ.error)}
-            </div>
+            <div className="p-6 text-sm text-rose-700">Error: {String(enrollQ.error?.message || enrollQ.error)}</div>
           ) : (
             <table className="w-full text-left text-sm">
               <thead className="bg-black/[0.02] text-xs text-black/60">
@@ -842,12 +987,8 @@ export default function Enrollment() {
                     <td className="px-4 py-3 font-semibold">{r.application_id || "-"}</td>
                     <td className="px-4 py-3">{fullName(r)}</td>
                     <td className="px-4 py-3 text-black/70">{r.st_email || "-"}</td>
-                    <td className="px-4 py-3 text-black/70">
-                      {gradeMap.get(String(r.grade_id || "")) || "-"}
-                    </td>
-                    <td className="px-4 py-3 text-black/70">
-                      {trackMap.get(String(r.track_id || "")) || "-"}
-                    </td>
+                    <td className="px-4 py-3 text-black/70">{gradeMap.get(String(r.grade_id || "")) || "-"}</td>
+                    <td className="px-4 py-3 text-black/70">{trackMap.get(String(r.track_id || "")) || "-"}</td>
                     <td className="px-4 py-3">
                       <StatusPill value={r.st_application_status || "Pending"} />
                     </td>
@@ -860,7 +1001,6 @@ export default function Enrollment() {
                               <Pencil className="h-5 w-5" />
                             </IconBtn>
 
-                            {/* Pending tab: Approve only */}
                             {tab === "Pending" ? (
                               <button
                                 type="button"
@@ -875,7 +1015,6 @@ export default function Enrollment() {
                               </button>
                             ) : null}
 
-                            {/* Approved tab: Enroll */}
                             {tab === "Approved" ? (
                               <button
                                 type="button"
@@ -921,71 +1060,90 @@ export default function Enrollment() {
               </tbody>
             </table>
           )
+        ) : studentsQ.isLoading ? (
+          <div className={`p-6 text-sm ${UI.muted}`}>Loading…</div>
+        ) : studentsQ.isError ? (
+          <div className="p-6 text-sm text-rose-700">Error: {String(studentsQ.error?.message || studentsQ.error)}</div>
         ) : (
-          // Enrolled tab (students)
-          studentsQ.isLoading ? (
-            <div className={`p-6 text-sm ${UI.muted}`}>Loading…</div>
-          ) : studentsQ.isError ? (
-            <div className="p-6 text-sm text-rose-700">
-              Error: {String(studentsQ.error?.message || studentsQ.error)}
-            </div>
-          ) : (
-            <table className="w-full text-left text-sm">
-              <thead className="bg-black/[0.02] text-xs text-black/60">
-                <tr>
-                  <th className="px-4 py-3 font-semibold">Student #</th>
-                  <th className="px-4 py-3 font-semibold">Name</th>
-                  <th className="px-4 py-3 font-semibold">Email</th>
-                  <th className="px-4 py-3 font-semibold text-right">Actions</th>
-                </tr>
-              </thead>
-              <tbody>
-                {filteredStudents.map((s) => (
-                  <tr key={s.id} className="border-t border-black/10 hover:bg-black/[0.01]">
-                    <td className="px-4 py-3 font-semibold">{s.student_number}</td>
-                    <td className="px-4 py-3">{`${s.last_name || ""}, ${s.first_name || ""}`.trim()}</td>
-                    <td className="px-4 py-3 text-black/70">{s.email || "-"}</td>
-                    <td className="px-4 py-3">
-                      <div className="flex justify-end gap-2">
-                        <button
-                          type="button"
-                          onClick={() => {
-                            setAccessData({
-                              student_number: s.student_number,
-                              temp_password: null,
-                              class_info: { grade_level: "—", section: "—", adviser: "—", schedule: "—" },
-                            });
-                            setAccessModalOpen(true);
-                          }}
-                          className="rounded-xl px-4 py-2 text-sm font-extrabold bg-[#C9A227] text-black"
-                        >
-                          Show Access
-                        </button>
+          <table className="w-full text-left text-sm">
+            <thead className="bg-black/[0.02] text-xs text-black/60">
+              <tr>
+                <th className="px-4 py-3 font-semibold">Student #</th>
+                <th className="px-4 py-3 font-semibold">Name</th>
+                <th className="px-4 py-3 font-semibold">Email</th>
+                <th className="px-4 py-3 font-semibold text-right">Actions</th>
+              </tr>
+            </thead>
+            <tbody>
+              {filteredStudents.map((s) => (
+                <tr key={s.id} className="border-t border-black/10 hover:bg-black/[0.01]">
+                  <td className="px-4 py-3 font-semibold">{s.student_number}</td>
+                  <td className="px-4 py-3">{`${s.last_name || ""}, ${s.first_name || ""}`.trim()}</td>
+                  <td className="px-4 py-3 text-black/70">{s.email || "-"}</td>
+                  <td className="px-4 py-3">
+                    <div className="flex justify-end gap-2">
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setAccessData({
+                            student_number: s.student_number,
+                            temp_password: null,
+                            class_info: { grade_level: "—", section: "—", adviser: "—", schedule: "—" },
+                          });
+                          setAccessModalOpen(true);
+                        }}
+                        className="rounded-xl px-4 py-2 text-sm font-extrabold bg-[#C9A227] text-black"
+                      >
+                        Show Access
+                      </button>
 
+                      <button
+                        type="button"
+                        disabled={busy}
+                        onClick={() => resetPwdM.mutate(s)}
+                        className="inline-flex items-center gap-2 rounded-xl px-4 py-2 text-sm font-extrabold bg-rose-600 text-white disabled:opacity-60"
+                      >
+                        <RefreshCcw className="h-4 w-4" />
+                        Reset
+                      </button>
+
+                      {scope === "Active" ? (
                         <button
                           type="button"
                           disabled={busy}
-                          onClick={() => resetPwdM.mutate(s)}
-                          className="inline-flex items-center gap-2 rounded-xl px-4 py-2 text-sm font-extrabold bg-rose-600 text-white disabled:opacity-60"
+                          onClick={() => onArchiveStudent(s)}
+                          className="inline-flex items-center gap-2 rounded-xl px-4 py-2 text-sm font-extrabold bg-black/5 text-black hover:bg-black/10 disabled:opacity-60"
+                          title="Archive (disable portal access)"
                         >
-                          <RefreshCcw className="h-4 w-4" />
-                          Reset
+                          <Archive className="h-4 w-4" />
+                          Archive
                         </button>
-                      </div>
-                    </td>
-                  </tr>
-                ))}
+                      ) : (
+                        <button
+                          type="button"
+                          disabled={busy}
+                          onClick={() => onRestoreStudent(s)}
+                          className="inline-flex items-center gap-2 rounded-xl px-4 py-2 text-sm font-extrabold bg-[#C9A227] text-black disabled:opacity-60"
+                          title="Restore (enable portal access)"
+                        >
+                          <ArchiveRestore className="h-4 w-4" />
+                          Restore
+                        </button>
+                      )}
+                    </div>
+                  </td>
+                </tr>
+              ))}
 
-                {filteredStudents.length === 0 ? (
-                  <tr>
-                    <td colSpan={4} className={`px-4 py-10 text-center text-sm ${UI.muted}`}>
-                      No enrolled students found.
-                    </td>
-                  </tr>
-                ) : null}
-              </tbody>
-            </table>
-          )
+              {filteredStudents.length === 0 ? (
+                <tr>
+                  <td colSpan={4} className={`px-4 py-10 text-center text-sm ${UI.muted}`}>
+                    No enrolled students found.
+                  </td>
+                </tr>
+              ) : null}
+            </tbody>
+          </table>
         )}
       </div>
 
@@ -1029,15 +1187,25 @@ function StudentModal({ mode, row, tracks, grades, strands, onClose, onCreate, o
       st_email: row?.st_email || "",
       st_gender: row?.st_gender || "Male",
       st_civil_status: row?.st_civil_status || "Single",
+
       st_bdate: row?.st_bdate ? String(row.st_bdate).slice(0, 10) : "",
+      st_bplace: row?.st_bplace || "",
+
       st_current_address: row?.st_current_address || "",
+
+      st_previous_school: row?.st_previous_school || "",
+      st_father_name: row?.st_father_name || "",
+      st_mother_name: row?.st_mother_name || "",
 
       st_guardian_name: row?.st_guardian_name || "",
       st_guardian_contact: row?.st_guardian_contact || "",
+      st_guardian_relationship: row?.st_guardian_relationship || "",
 
       grade_id: row?.grade_id || "",
       track_id: row?.track_id || "",
       strand_id: row?.strand_id || "",
+      sy_id: row?.sy_id || "",
+
       st_application_status: row?.st_application_status || "Pending",
     };
   }, [row]);
@@ -1067,7 +1235,11 @@ function StudentModal({ mode, row, tracks, grades, strands, onClose, onCreate, o
     form.setValue("strand_id", "");
   }, [trackId]); // eslint-disable-line react-hooks/exhaustive-deps
 
-  // ✅ LRN checker
+  /**
+   * ✅ LRN checker (fixed):
+   * - Only checks public.enrollment (because public.students does not have lrn column in your schema)
+   * - Matches your partial unique index behavior by checking only active (is_archived=false) records
+   */
   const [lrnState, setLrnState] = useState({ checking: false, exists: false, message: "" });
   const lrn = watch("st_lrn");
   const originalLrn = row?.st_lrn || "";
@@ -1091,37 +1263,18 @@ function StudentModal({ mode, row, tracks, grades, strands, onClose, onCreate, o
       try {
         setLrnState({ checking: true, exists: false, message: "Checking LRN..." });
 
-        // check enrollment.st_lrn
         const { data: enr, error: e1 } = await supabase
           .from("enrollment")
           .select("id")
           .eq("st_lrn", cleaned)
+          .eq("is_archived", false)
           .limit(1);
 
         if (e1) throw e1;
         if (!alive) return;
 
         if (enr && enr.length > 0) {
-          setLrnState({ checking: false, exists: true, message: "LRN already exists in enrollment." });
-          return;
-        }
-
-        // check students.lrn (if column exists; ignore error)
-        const { data: stu, error: e2 } = await supabase
-          .from("students")
-          .select("id")
-          .eq("lrn", cleaned)
-          .limit(1);
-
-        if (e2) {
-          setLrnState({ checking: false, exists: false, message: "LRN looks available." });
-          return;
-        }
-
-        if (!alive) return;
-
-        if (stu && stu.length > 0) {
-          setLrnState({ checking: false, exists: true, message: "LRN already exists in students." });
+          setLrnState({ checking: false, exists: true, message: "LRN already exists (active enrollment)." });
           return;
         }
 
@@ -1239,15 +1392,40 @@ function StudentModal({ mode, row, tracks, grades, strands, onClose, onCreate, o
                 </Select>
               </div>
 
-              <div className="mt-3">
+              <div className="mt-3 grid gap-3 md:grid-cols-2">
                 <Input label="Date of Birth *" type="date" error={errors.st_bdate?.message} {...register("st_bdate")} />
+                <Input label="Birthplace" error={errors.st_bplace?.message} {...register("st_bplace")} />
               </div>
 
               <div className="mt-3">
+                <Input label="Address *" error={errors.st_current_address?.message} {...register("st_current_address")} />
+              </div>
+            </Section>
+
+            {/* ✅ Added: match pre-enroll fields from public.enrollment */}
+            <Section title="School Background (optional)">
+              <div className="grid gap-3 md:grid-cols-1">
+                <Input label="Previous School" error={errors.st_previous_school?.message} {...register("st_previous_school")} />
+              </div>
+            </Section>
+
+            <Section title="Parents / Guardian (optional)">
+              <div className="grid gap-3 md:grid-cols-2">
+                <Input label="Father's Name" error={errors.st_father_name?.message} {...register("st_father_name")} />
+                <Input label="Mother's Name" error={errors.st_mother_name?.message} {...register("st_mother_name")} />
+              </div>
+
+              <div className="mt-3 grid gap-3 md:grid-cols-3">
+                <Input label="Guardian Name" error={errors.st_guardian_name?.message} {...register("st_guardian_name")} />
                 <Input
-                  label="Address *"
-                  error={errors.st_current_address?.message}
-                  {...register("st_current_address")}
+                  label="Guardian Contact"
+                  error={errors.st_guardian_contact?.message}
+                  {...register("st_guardian_contact")}
+                />
+                <Input
+                  label="Relationship"
+                  error={errors.st_guardian_relationship?.message}
+                  {...register("st_guardian_relationship")}
                 />
               </div>
             </Section>
@@ -1295,15 +1473,7 @@ function StudentModal({ mode, row, tracks, grades, strands, onClose, onCreate, o
                 disabled={submitDisabled}
                 type="submit"
                 className="inline-flex items-center gap-2 rounded-xl px-4 py-2 text-sm font-extrabold bg-[#C9A227] text-black hover:opacity-95 disabled:opacity-60"
-                title={
-                  lrnState.exists
-                    ? "LRN already exists"
-                    : lrnState.checking
-                    ? "Checking LRN..."
-                    : !isValid
-                    ? "Fill required fields"
-                    : ""
-                }
+                title={lrnState.exists ? "LRN already exists" : lrnState.checking ? "Checking LRN..." : !isValid ? "Fill required fields" : ""}
               >
                 <Save className="h-4 w-4" />
                 {isEdit ? "Save Changes" : "Create"}
@@ -1368,9 +1538,7 @@ function Select({ label, error, children, disabled, ...rest }) {
 
 function IconBtn({ title, onClick, tone, disabled, children }) {
   const cls =
-    tone === "danger"
-      ? "bg-rose-500/10 text-rose-700 hover:bg-rose-500/15"
-      : "bg-[#C9A227]/10 text-[#C9A227] hover:opacity-90";
+    tone === "danger" ? "bg-rose-500/10 text-rose-700 hover:bg-rose-500/15" : "bg-[#C9A227]/10 text-[#C9A227] hover:opacity-90";
 
   return (
     <button
