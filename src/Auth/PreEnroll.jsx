@@ -21,6 +21,9 @@ import {
 
 import { supabase } from "../lib/supabaseClient";
 import logo from "../assets/grabsum-logo.png";
+import html2canvas from "html2canvas";
+import jsPDF from "jspdf";
+
 
 const BRAND = {
   bg: "#fbf6ef",
@@ -462,20 +465,55 @@ export default function PreEnroll() {
     printWindow.document.close();
   }
 
-  function downloadSlip() {
-    const html = buildSlipHTML();
-    const blob = new Blob([html], { type: "text/html;charset=utf-8" });
-    const url = URL.createObjectURL(blob);
+  async function downloadSlipPDF() {
+  try {
+    if (!printRef.current) return;
 
-    const a = document.createElement("a");
-    a.href = url;
-    a.download = `pre-enrollment-slip-${receipt?.application_id || "application"}.html`;
-    document.body.appendChild(a);
-    a.click();
-    a.remove();
+    // Make sure it’s visible (in case you later hide it in UI)
+    const node = printRef.current;
 
-    URL.revokeObjectURL(url);
+    // Render DOM to canvas
+    const canvas = await html2canvas(node, {
+      scale: 2,               // sharper
+      useCORS: true,
+      backgroundColor: "#ffffff",
+      logging: false,
+    });
+
+    const imgData = canvas.toDataURL("image/png");
+
+    // Create PDF (A4 portrait)
+    const pdf = new jsPDF("p", "mm", "a4");
+
+    const pageWidth = pdf.internal.pageSize.getWidth();
+    const pageHeight = pdf.internal.pageSize.getHeight();
+
+    // Convert canvas px to mm with scaling that fits width
+    const imgProps = pdf.getImageProperties(imgData);
+    const imgWidth = pageWidth;
+    const imgHeight = (imgProps.height * imgWidth) / imgProps.width;
+
+    // If content is longer than one page, split into pages
+    let heightLeft = imgHeight;
+    let position = 0;
+
+    pdf.addImage(imgData, "PNG", 0, position, imgWidth, imgHeight);
+    heightLeft -= pageHeight;
+
+    while (heightLeft > 0) {
+      position = position - pageHeight;
+      pdf.addPage();
+      pdf.addImage(imgData, "PNG", 0, position, imgWidth, imgHeight);
+      heightLeft -= pageHeight;
+    }
+
+    const appId = receipt?.application_id || "application";
+    pdf.save(`pre-enrollment-slip-${appId}.pdf`);
+  } catch (e) {
+    alert(e?.message || "Failed to download PDF.");
   }
+}
+
 
   /* =========================================================
      Returning student lookup
@@ -715,13 +753,14 @@ export default function PreEnroll() {
 
                           <div className="flex items-center gap-2">
                             <button
-                              onClick={downloadSlip}
-                              className="inline-flex items-center gap-2 rounded-2xl border border-black/10 bg-white/80 px-3 py-2 text-sm font-semibold hover:bg-white"
-                              type="button"
-                            >
-                              <Download className="h-4 w-4 text-black/60" />
-                              Download
-                            </button>
+  onClick={downloadSlipPDF}
+  className="inline-flex items-center gap-2 rounded-2xl border border-black/10 bg-white/80 px-3 py-2 text-sm font-semibold hover:bg-white"
+  type="button"
+>
+  <Download className="h-4 w-4 text-black/60" />
+  Download
+</button>
+
                             <button
                               onClick={printSlip}
                               className="inline-flex items-center gap-2 rounded-2xl border border-black/10 bg-white/80 px-3 py-2 text-sm font-semibold hover:bg-white"
