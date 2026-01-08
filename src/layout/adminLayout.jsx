@@ -1,5 +1,5 @@
-// src/layout/adminLayout.tsx
-import React, { useEffect, useMemo, useRef, useState } from "react";
+// src/layout/AdminLayout.jsx
+import { useEffect, useMemo, useRef, useState } from "react";
 import { NavLink, Outlet, useLocation, useNavigate } from "react-router-dom";
 import { AnimatePresence, motion } from "framer-motion";
 import {
@@ -23,18 +23,10 @@ import {
 import { TOKENS } from "../styles/tokens";
 import { supabase } from "../lib/supabaseClient";
 
-type IconType = React.ComponentType<{ className?: string }>;
-
-type NavItem =
-  | { key: "home" | "calendar" | "announcement"; label: string; icon: IconType; to: string }
-  | {
-      key: "students" | "teacher";
-      label: string;
-      icon: IconType;
-      children: { key: string; label: string; icon: IconType; to: string }[];
-    };
-
-const NAV: NavItem[] = [
+// -------------------------------------------
+// NAV
+// -------------------------------------------
+const NAV = [
   { key: "home", label: "Home", icon: LayoutDashboard, to: "/admin" },
   {
     key: "students",
@@ -66,7 +58,7 @@ export default function AdminLayout() {
   const location = useLocation();
   const title = useMemo(() => titleFromPath(location.pathname), [location.pathname]);
 
-  const [collapsed, setCollapsed] = useState<boolean>(() => {
+  const [collapsed, setCollapsed] = useState(() => {
     const saved = localStorage.getItem("admin_sidebar_collapsed");
     return saved ? saved === "1" : false;
   });
@@ -85,10 +77,12 @@ export default function AdminLayout() {
     <div className={`min-h-screen ${TOKENS.bg} ${TOKENS.text} font-[Nunito]`}>
       <div className="mx-auto max-w-[1400px] px-5 py-5 md:px-8 md:py-8">
         <div className="grid grid-cols-1 gap-6 md:grid-cols-[auto_1fr]">
+          {/* Desktop sidebar */}
           <div className="hidden md:block">
             <Sidebar collapsed={collapsed} setCollapsed={setCollapsed} />
           </div>
 
+          {/* Mobile sidebar overlay */}
           <AnimatePresence>
             {sidebarOpen ? (
               <motion.div
@@ -101,6 +95,7 @@ export default function AdminLayout() {
                   className="absolute inset-0 bg-black/30"
                   onClick={() => setSidebarOpen(false)}
                   aria-label="Close sidebar overlay"
+                  type="button"
                 />
                 <motion.div
                   initial={{ x: -24, opacity: 0 }}
@@ -139,27 +134,18 @@ export default function AdminLayout() {
   );
 }
 
-function Sidebar({
-  collapsed,
-  setCollapsed,
-  mobile = false,
-  onClose,
-}: {
-  collapsed: boolean;
-  setCollapsed: React.Dispatch<React.SetStateAction<boolean>> | (() => void);
-  mobile?: boolean;
-  onClose?: () => void;
-}) {
+function Sidebar({ collapsed, setCollapsed, mobile = false, onClose }) {
   const nav = useNavigate();
   const loc = useLocation();
 
-  const [open, setOpen] = useState<Record<string, boolean>>({
-    students: true,
-    teacher: true,
-  });
+  const [open, setOpen] = useState({ students: true, teacher: true });
 
-  // ✅ show logged in profile info (resilient)
-  const [me, setMe] = useState<{ email?: string; role?: string } | null>(null);
+  const [me, setMe] = useState({
+    loading: true,
+    err: "",
+    email: "",
+    role: "",
+  });
 
   useEffect(() => {
     const p = loc.pathname;
@@ -167,48 +153,60 @@ function Sidebar({
     if (p.includes("/admin/teacher/")) setOpen((s) => ({ ...s, teacher: true }));
   }, [loc.pathname]);
 
-  // ✅ robust "loadMe": uses getSession first, and NEVER signs out here
+  // Load user info (session -> profiles fallback)
   useEffect(() => {
     let alive = true;
 
     async function loadMe() {
-      // 1) session from storage (best for refresh)
-      const { data: sessData } = await supabase.auth.getSession();
-      const session = sessData?.session;
+      try {
+        const { data: sessData, error: sessErr } = await supabase.auth.getSession();
+        if (sessErr) throw sessErr;
 
-      const user = session?.user;
-      if (!user?.id) {
-        if (alive) setMe(null);
-        return;
-      }
+        const user = sessData?.session?.user;
+        if (!user?.id) {
+          if (!alive) return;
+          setMe({ loading: false, err: "", email: "", role: "" });
+          return;
+        }
 
-      // 2) try profile (may fail due to RLS, don’t kill UI)
-      const { data: prof, error: profErr } = await supabase
-        .from("profiles")
-        .select("email, role")
-        .eq("user_id", user.id)
-        .maybeSingle();
+        // If profiles select fails because of missing cols or RLS, we still show auth email.
+        const { data: prof, error: profErr } = await supabase
+          .from("profiles")
+          .select("email, role")
+          .eq("user_id", user.id)
+          .maybeSingle();
 
-      if (!alive) return;
+        if (!alive) return;
 
-      if (profErr) {
-        // fallback to auth email if profile isn't readable
+        if (profErr) {
+          setMe({
+            loading: false,
+            err: "",
+            email: user.email || "",
+            role: "admin",
+          });
+          return;
+        }
+
         setMe({
-          email: user.email || "",
-          role: "admin", // optional fallback label
+          loading: false,
+          err: "",
+          email: String(prof?.email || user.email || ""),
+          role: String(prof?.role || "admin"),
         });
-        return;
+      } catch (e) {
+        if (!alive) return;
+        setMe((prev) => ({
+          ...prev,
+          loading: false,
+          err: String(e?.message || e),
+        }));
       }
-
-      setMe({
-        email: prof?.email || user.email || "",
-        role: prof?.role || "admin",
-      });
     }
 
     loadMe();
 
-    const { data } = supabase.auth.onAuthStateChange((_event, _session) => {
+    const { data } = supabase.auth.onAuthStateChange(() => {
       loadMe();
     });
 
@@ -218,7 +216,6 @@ function Sidebar({
     };
   }, []);
 
-  // ✅ logout: do NOT delete storage keys manually
   async function handleLogout() {
     try {
       await supabase.auth.signOut();
@@ -235,6 +232,7 @@ function Sidebar({
       className={`rounded-2xl border ${TOKENS.border} ${TOKENS.panel} p-5 shadow-sm md:sticky md:top-8`}
       style={{ width, transition: "width 180ms ease" }}
     >
+      {/* Header */}
       <div className="flex items-center justify-between gap-2">
         <div className="flex items-center gap-3 overflow-hidden">
           <div className={`h-11 w-11 rounded-2xl ${TOKENS.goldSoft} grid place-items-center shrink-0`}>
@@ -255,31 +253,30 @@ function Sidebar({
             className="grid h-10 w-10 place-items-center rounded-2xl border border-black/10 bg-white/60 hover:bg-white/80"
             aria-label="Close sidebar"
             title="Close"
+            type="button"
           >
             <X className="h-5 w-5 text-black/60" />
           </button>
         ) : (
           <button
-            onClick={() => (setCollapsed as React.Dispatch<React.SetStateAction<boolean>>)((s) => !s)}
+            onClick={() => setCollapsed((s) => !s)}
             className="grid h-10 w-10 place-items-center rounded-2xl border border-black/10 bg-white/60 hover:bg-white/80"
             aria-label={collapsed ? "Expand sidebar" : "Collapse sidebar"}
             title={collapsed ? "Expand" : "Collapse"}
+            type="button"
           >
-            {collapsed ? (
-              <PanelLeftOpen className="h-5 w-5 text-black/60" />
-            ) : (
-              <PanelLeftClose className="h-5 w-5 text-black/60" />
-            )}
+            {collapsed ? <PanelLeftOpen className="h-5 w-5 text-black/60" /> : <PanelLeftClose className="h-5 w-5 text-black/60" />}
           </button>
         )}
       </div>
 
+      {/* Nav */}
       <div className="mt-5">
         {!collapsed ? <div className="text-xs font-semibold text-black/50">Navigation</div> : null}
 
         <nav className="mt-3 space-y-2">
           {NAV.map((item) =>
-            "children" in item ? (
+            item.children ? (
               <div key={item.key} className="space-y-2">
                 <button
                   onClick={() => setOpen((s) => ({ ...s, [item.key]: !s[item.key] }))}
@@ -289,12 +286,10 @@ function Sidebar({
                     "hover:bg-black/5",
                   ].join(" ")}
                   title={collapsed ? item.label : undefined}
+                  type="button"
                 >
                   <span className={`grid h-10 w-10 place-items-center rounded-2xl border ${TOKENS.border} bg-white/60`}>
-                    {(() => {
-                      const Icon = item.icon;
-                      return <Icon className="h-5 w-5 text-black/60" />;
-                    })()}
+                    <item.icon className="h-5 w-5 text-black/60" />
                   </span>
 
                   {!collapsed ? (
@@ -322,6 +317,7 @@ function Sidebar({
         </nav>
       </div>
 
+      {/* Profile */}
       <div className={`mt-5 rounded-2xl border border-black/10 bg-white/60 ${collapsed ? "p-2" : "p-4"}`}>
         <div className={`flex items-center gap-3 ${collapsed ? "justify-center" : ""}`}>
           <div className="h-10 w-10 rounded-2xl border border-black/10 bg-white grid place-items-center">
@@ -330,8 +326,9 @@ function Sidebar({
 
           {!collapsed ? (
             <div className="min-w-0">
-              <div className="text-sm font-bold">{me?.role ? `${me.role} User` : "User"}</div>
-              <div className="mt-0.5 text-xs text-black/55 truncate">{me?.email || "-"}</div>
+              <div className="text-sm font-bold">{me.loading ? "Loading…" : me.role ? `${me.role} User` : "User"}</div>
+              <div className="mt-0.5 text-xs text-black/55 truncate">{me.email || "-"}</div>
+              {me.err ? <div className="mt-1 text-[11px] font-semibold text-rose-600">{me.err}</div> : null}
             </div>
           ) : null}
         </div>
@@ -341,6 +338,7 @@ function Sidebar({
             onClick={handleLogout}
             className="inline-flex w-full items-center justify-center gap-2 rounded-2xl border border-black/10 bg-white/70 px-3 py-2.5 text-sm font-semibold hover:bg-white"
             title="Log out"
+            type="button"
           >
             <LogOut className="h-4 w-4 text-black/60" />
             {!collapsed ? "Log out" : null}
@@ -350,6 +348,7 @@ function Sidebar({
             <button
               onClick={() => nav("/admin")}
               className="inline-flex w-full items-center justify-center gap-2 rounded-2xl border border-black/10 bg-white/60 px-3 py-2.5 text-sm font-semibold hover:bg-white/80"
+              type="button"
             >
               <LayoutDashboard className="h-4 w-4 text-black/60" />
               Home
@@ -361,21 +360,7 @@ function Sidebar({
   );
 }
 
-function SideLink({
-  to,
-  icon,
-  label,
-  compact = false,
-  collapsed = false,
-}: {
-  to: string;
-  icon: IconType;
-  label: string;
-  compact?: boolean;
-  collapsed?: boolean;
-}) {
-  const Icon = icon;
-
+function SideLink({ to, icon: Icon, label, compact = false, collapsed = false }) {
   return (
     <NavLink
       to={to}
@@ -405,19 +390,7 @@ function SideLink({
   );
 }
 
-function Topbar({ title, onOpenSidebar }: { title: string; onOpenSidebar: () => void }) {
-  const [open, setOpen] = useState(false);
-  const dropdownRef = useRef<HTMLDivElement | null>(null);
-
-  useEffect(() => {
-    function onDocClick(e: MouseEvent) {
-      if (!dropdownRef.current) return;
-      if (!dropdownRef.current.contains(e.target as Node)) setOpen(false);
-    }
-    document.addEventListener("mousedown", onDocClick);
-    return () => document.removeEventListener("mousedown", onDocClick);
-  }, []);
-
+function Topbar({ title, onOpenSidebar }) {
   return (
     <header className={`rounded-2xl border ${TOKENS.border} ${TOKENS.panel} p-4 md:p-5 shadow-sm`}>
       <div className="flex flex-col gap-4 md:flex-row md:items-center md:justify-between">
@@ -432,6 +405,7 @@ function Topbar({ title, onOpenSidebar }: { title: string; onOpenSidebar: () => 
             className="md:hidden grid h-10 w-10 place-items-center rounded-2xl border border-black/10 bg-white/60 hover:bg-white/80"
             aria-label="Open sidebar"
             title="Menu"
+            type="button"
           >
             <Menu className="h-5 w-5 text-black/60" />
           </button>
@@ -446,7 +420,11 @@ function Topbar({ title, onOpenSidebar }: { title: string; onOpenSidebar: () => 
             />
           </div>
 
-          <button className="grid h-10 w-10 place-items-center rounded-2xl border border-black/10 bg-white/60 hover:bg-white/80">
+          <button
+            className="grid h-10 w-10 place-items-center rounded-2xl border border-black/10 bg-white/60 hover:bg-white/80"
+            type="button"
+            onClick={() => alert("Notifications UI (wire later)")}
+          >
             <Bell className="h-5 w-5 text-black/60" />
           </button>
         </div>
@@ -459,7 +437,7 @@ function Footer() {
   return <div className="px-2 pb-2 text-xs text-black/50">© {new Date().getFullYear()} Grabsum SHS Portal • Admin UI</div>;
 }
 
-function titleFromPath(path: string) {
+function titleFromPath(path) {
   if (path === "/admin") return "Home";
   if (path.includes("/students/enrollment")) return "Students • Enrollment";
   if (path.includes("/students/classes")) return "Students • Classes";

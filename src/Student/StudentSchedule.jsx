@@ -10,6 +10,7 @@ import {
   ChevronRight,
 } from "lucide-react";
 import { supabase } from "../lib/supabaseClient";
+import { useNavigate } from "react-router-dom";
 
 const BRAND = {
   brown: "#2b1a12",
@@ -137,10 +138,14 @@ function materializeSchedule(scheduleRows, rangeStart, rangeEnd) {
         end: endDt,
         subject: r.subjects?.subject_title ?? "—",
         code: r.subjects?.subject_code ?? "—",
-        teacher: r.teachers ? `${r.teachers.first_name ?? ""} ${r.teachers.last_name ?? ""}`.trim() : "—",
+        teacher: r.teachers
+          ? `${r.teachers.first_name ?? ""} ${r.teachers.last_name ?? ""}`.trim()
+          : "—",
         room: r.room ?? "—",
         period_no: r.period_no,
         day_of_week: r.day_of_week,
+        subject_id: r.subject_id ?? null,
+        teacher_id: r.teacher_id ?? null,
         _raw: r,
       });
     }
@@ -152,6 +157,8 @@ function materializeSchedule(scheduleRows, rangeStart, rangeEnd) {
 }
 
 export default function StudentSchedule() {
+  const navigate = useNavigate();
+
   const [tab, setTab] = useState("Today"); // Today | Week | Month
   const [selectedDate, setSelectedDate] = useState(new Date());
   const [termCode, setTermCode] = useState(DEFAULT_TERM_CODE);
@@ -341,6 +348,26 @@ export default function StudentSchedule() {
     return list.sort((a, b) => a.start - b.start);
   }, [scheduleRows, selectedDate]);
 
+  function goToCourses(course) {
+    // you can read these values on student/courses via useLocation().state
+    navigate("/student/courses", {
+      state: {
+        from: "schedule",
+        date: course?.date ? course.date.toISOString() : null,
+        start: course?.start ? course.start.toISOString() : null,
+        end: course?.end ? course.end.toISOString() : null,
+        subject_id: course?.subject_id ?? null,
+        subject_code: course?.code ?? null,
+        subject_title: course?.subject ?? null,
+        teacher_id: course?.teacher_id ?? null,
+        teacher_name: course?.teacher ?? null,
+        room: course?.room ?? null,
+        period_no: course?.period_no ?? null,
+        day_of_week: course?.day_of_week ?? null,
+      },
+    });
+  }
+
   return (
     <div className="space-y-5">
       {/* Header */}
@@ -431,7 +458,13 @@ export default function StudentSchedule() {
 
       {/* Content */}
       {tab === "Today" ? (
-        <TodayView items={todayItems} selectedDate={selectedDate} now={now} loading={loading} />
+        <TodayView
+          items={todayItems}
+          selectedDate={selectedDate}
+          now={now}
+          loading={loading}
+          onOpenCourse={goToCourses}
+        />
       ) : tab === "Week" ? (
         <WeekView
           items={weekEvents}
@@ -439,6 +472,7 @@ export default function StudentSchedule() {
           selectedDate={selectedDate}
           onJump={setSelectedDate}
           loading={loading}
+          onOpenCourse={goToCourses}
         />
       ) : (
         <MonthView
@@ -452,7 +486,7 @@ export default function StudentSchedule() {
   );
 }
 
-function TodayView({ items, selectedDate, now, loading }) {
+function TodayView({ items, now, loading, onOpenCourse }) {
   const enriched = items.map((x) => {
     let status = "Upcoming";
     if (now >= x.start && now <= x.end) status = "In Progress";
@@ -513,7 +547,11 @@ function TodayView({ items, selectedDate, now, loading }) {
                     {formatTime(c.start)} — {formatTime(c.end)}
                   </div>
                   <div className="mt-1 text-sm font-extrabold" style={{ color: BRAND.brown }}>
-                    {c.subject} <span className="font-black" style={{ color: BRAND.muted }}>•</span> {c.code}
+                    {c.subject}{" "}
+                    <span className="font-black" style={{ color: BRAND.muted }}>
+                      •
+                    </span>{" "}
+                    {c.code}
                   </div>
 
                   <div className="mt-2 grid gap-2 text-xs font-semibold" style={{ color: BRAND.muted }}>
@@ -544,16 +582,10 @@ function TodayView({ items, selectedDate, now, loading }) {
                 </span>
               </div>
 
-              <div className="mt-4 grid gap-2 md:grid-cols-2">
+              {/* ✅ Replaced both buttons with a single navigation to /student/courses */}
+              <div className="mt-4">
                 <button
-                  className="rounded-2xl border bg-white/70 px-4 py-2 text-sm font-semibold hover:bg-white"
-                  style={{ borderColor: BRAND.stroke, color: BRAND.brown }}
-                  onClick={() => alert("View details (wire later)")}
-                >
-                  View Details
-                </button>
-                <button
-                  className="rounded-2xl py-2 text-sm font-semibold transition"
+                  className="w-full rounded-2xl py-2 text-sm font-semibold transition"
                   style={{
                     background: BRAND.gold,
                     color: BRAND.brown,
@@ -561,9 +593,9 @@ function TodayView({ items, selectedDate, now, loading }) {
                   }}
                   onMouseEnter={(e) => (e.currentTarget.style.background = BRAND.goldHover)}
                   onMouseLeave={(e) => (e.currentTarget.style.background = BRAND.gold)}
-                  onClick={() => alert("Mark attendance (optional later)")}
+                  onClick={() => onOpenCourse(c)}
                 >
-                  Mark Attendance (Optional)
+                  Open Course
                 </button>
               </div>
             </div>
@@ -574,7 +606,7 @@ function TodayView({ items, selectedDate, now, loading }) {
   );
 }
 
-function WeekView({ items, range, selectedDate, onJump, loading }) {
+function WeekView({ items, range, selectedDate, onJump, loading, onOpenCourse }) {
   const days = useMemo(() => {
     const arr = [];
     const start = startOfDay(range.start);
@@ -687,12 +719,20 @@ function WeekView({ items, range, selectedDate, onJump, loading }) {
                         {c.teacher} • {c.room}
                       </div>
                     </div>
+
+                    {/* ✅ Wire to /student/courses */}
                     <button
-                      className="rounded-2xl border bg-white/70 px-4 py-2 text-sm font-semibold hover:bg-white"
-                      style={{ borderColor: BRAND.stroke, color: BRAND.brown }}
-                      onClick={() => alert("View details (wire later)")}
+                      className="rounded-2xl px-4 py-2 text-sm font-semibold transition"
+                      style={{
+                        background: BRAND.gold,
+                        color: BRAND.brown,
+                        boxShadow: "0 10px 18px rgba(212,166,47,0.24)",
+                      }}
+                      onMouseEnter={(e) => (e.currentTarget.style.background = BRAND.goldHover)}
+                      onMouseLeave={(e) => (e.currentTarget.style.background = BRAND.gold)}
+                      onClick={() => onOpenCourse(c)}
                     >
-                      View
+                      Open Course
                     </button>
                   </div>
                 </div>

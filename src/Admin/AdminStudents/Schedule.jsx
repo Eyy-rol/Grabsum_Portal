@@ -1,3 +1,4 @@
+// src/pages/admin/Schedule.jsx (or wherever your file lives)
 import React, { useEffect, useMemo, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
@@ -19,45 +20,12 @@ import {
 import { supabase } from "../../lib/supabaseClient";
 
 /**
- * Senior High – Class Schedule Admin (Supabase wired)
- * Aligned to Enrollment.jsx design: clean white + gold, minimal brown.
+ * Senior High – Section Schedule Admin (Supabase wired)
  *
- * ✅ Uses your existing tables:
- * - sections, subjects, teachers, grade_levels, strands, tracks, terms, school_years
- *
- * ✅ Recommended schedule table (run in Supabase SQL Editor):
- *
- * create table public.section_schedules (
- *   schedule_id uuid primary key default gen_random_uuid(),
- *   sy_id uuid not null references public.school_years(sy_id) on update cascade on delete restrict,
- *   term_id uuid not null references public.terms(term_id) on update cascade on delete restrict,
- *   section_id uuid not null references public.sections(section_id) on update cascade on delete cascade,
- *   day_of_week varchar(3) not null check (day_of_week in ('Mon','Tue','Wed','Thu','Fri','Sat')),
- *   period_no smallint not null check (period_no between 1 and 9),
- *   start_time time not null,
- *   end_time time not null,
- *   subject_id uuid not null references public.subjects(subject_id) on update cascade on delete restrict,
- *   teacher_id uuid null references public.teachers(user_id) on update cascade on delete set null,
- *   room varchar(50) null,
- *   notes varchar(255) null,
- *   created_at timestamptz not null default now(),
- *   updated_at timestamptz not null default now()
- * );
- *
- * create unique index section_schedules_unique_section_slot
- *   on public.section_schedules (sy_id, term_id, section_id, day_of_week, period_no);
- *
- * create unique index section_schedules_unique_teacher_slot
- *   on public.section_schedules (sy_id, term_id, day_of_week, period_no, teacher_id)
- *   where teacher_id is not null;
- *
- * create unique index section_schedules_unique_room_slot
- *   on public.section_schedules (sy_id, term_id, day_of_week, period_no, room)
- *   where room is not null and btrim(room) <> '';
- *
- * create trigger trg_section_schedules_set_updated_at
- * before update on public.section_schedules
- * for each row execute function set_updated_at();
+ * ✅ Table used: public.section_schedules
+ * ✅ Role behavior (single page):
+ * - super_admin: full CRUD + bulk + clear + import/export
+ * - admin: VIEW ONLY (can browse, cannot mutate)
  */
 
 // ====== UI THEME (White + Gold, minimal brown) ======
@@ -74,7 +42,6 @@ const UI = {
 };
 
 const SCHEDULE_TABLE = "section_schedules";
-
 const DAYS = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
 
 // Teaching periods only (breaks are excluded)
@@ -112,7 +79,6 @@ function sectionLabel(row) {
 function adviserLabel(section) {
   const a = section?.adviser;
   if (!a) return "—";
-  // reuse teacherName() formatting
   return teacherName(a);
 }
 
@@ -133,6 +99,36 @@ function norm(s) {
 export default function SeniorHighScheduleAdminPage() {
   const qc = useQueryClient();
 
+  // ====== Role / Permissions (single page, different behavior) ======
+  const meQ = useQuery({
+    queryKey: ["me_role"],
+    queryFn: async () => {
+      const { data: sess } = await supabase.auth.getSession();
+      const user = sess?.session?.user;
+      if (!user?.id) return { role: "admin", email: user?.email ?? "" };
+
+      // Your profiles RLS shows select_self/update_own, so this should work
+      const { data: prof, error } = await supabase
+        .from("profiles")
+        .select("role, email")
+        .eq("user_id", user.id)
+        .maybeSingle();
+
+      // Fallback: if profile can't be read, treat as admin (safer)
+      if (error) return { role: "admin", email: user.email ?? "" };
+
+      return {
+        role: (prof?.role ?? "admin"),
+        email: prof?.email ?? user.email ?? "",
+      };
+    },
+  });
+
+  const role = meQ.data?.role ?? "admin";
+
+  // ✅ For SCHEDULE page: only super_admin can mutate
+  const canEditSchedule = role === "super_admin";
+
   // Filters
   const [qSection, setQSection] = useState("");
   const [fGrade, setFGrade] = useState("All");
@@ -142,7 +138,7 @@ export default function SeniorHighScheduleAdminPage() {
   const [activeTab, setActiveTab] = useState("Timetable"); // Timetable | List
 
   // Wider weekly overview
-  const [focusTable, setFocusTable] = useState(false); // expands timetable + moves sections into a drawer
+  const [focusTable, setFocusTable] = useState(false);
   const [drawerOpen, setDrawerOpen] = useState(false);
   const [compact, setCompact] = useState(false);
 
@@ -184,7 +180,7 @@ export default function SeniorHighScheduleAdminPage() {
     queryFn: async () => {
       const { data, error } = await supabase
         .from("school_years")
-        .select("sy_id, sy_code, status")
+        .select("sy_id, sy_code, status, start_date")
         .eq("status", "Active")
         .order("start_date", { ascending: false })
         .limit(1);
@@ -506,6 +502,8 @@ export default function SeniorHighScheduleAdminPage() {
 
   const upsertM = useMutation({
     mutationFn: async () => {
+      if (!canEditSchedule) throw new Error("View-only: admin cannot modify schedules.");
+
       if (!activeSy?.sy_id) throw new Error("No active School Year.");
       if (!selectedTermId) throw new Error("Select a term.");
       if (!selectedSectionId) throw new Error("Select a section.");
@@ -529,6 +527,7 @@ export default function SeniorHighScheduleAdminPage() {
       };
 
       const scheduleId = slotModal.mode === "edit" ? slotModal.entry?.schedule_id : null;
+
       const conflict = await checkConflicts({
         schedule_id: scheduleId,
         day_of_week: payload.day_of_week,
@@ -561,6 +560,7 @@ export default function SeniorHighScheduleAdminPage() {
 
   const deleteM = useMutation({
     mutationFn: async (scheduleId) => {
+      if (!canEditSchedule) throw new Error("View-only: admin cannot delete schedules.");
       const { error } = await supabase.from(SCHEDULE_TABLE).delete().eq("schedule_id", scheduleId);
       if (error) throw error;
     },
@@ -574,13 +574,16 @@ export default function SeniorHighScheduleAdminPage() {
 
   const clearSectionM = useMutation({
     mutationFn: async () => {
+      if (!canEditSchedule) throw new Error("View-only: admin cannot clear schedules.");
       if (!activeSy?.sy_id || !selectedTermId || !selectedSectionId) return;
+
       const { error } = await supabase
         .from(SCHEDULE_TABLE)
         .delete()
         .eq("sy_id", activeSy.sy_id)
         .eq("term_id", selectedTermId)
         .eq("section_id", selectedSectionId);
+
       if (error) throw error;
     },
     onSuccess: async () => {
@@ -593,6 +596,8 @@ export default function SeniorHighScheduleAdminPage() {
 
   const bulkM = useMutation({
     mutationFn: async () => {
+      if (!canEditSchedule) throw new Error("View-only: admin cannot run bulk actions.");
+
       if (!activeSy?.sy_id) throw new Error("No active School Year.");
       if (!selectedTermId) throw new Error("Select a term.");
 
@@ -608,6 +613,7 @@ export default function SeniorHighScheduleAdminPage() {
           .eq("sy_id", activeSy.sy_id)
           .eq("term_id", selectedTermId)
           .eq("section_id", bulkSourceSectionId);
+
         if (srcErr) throw srcErr;
 
         for (const tid of targets) {
@@ -639,6 +645,7 @@ export default function SeniorHighScheduleAdminPage() {
               .eq("sy_id", activeSy.sy_id)
               .eq("term_id", selectedTermId)
               .eq("section_id", tid);
+
             if (exErr) throw exErr;
 
             const existingKeys = new Set((existing ?? []).map((e) => slotKey(e.day_of_week, e.period_no)));
@@ -681,6 +688,7 @@ export default function SeniorHighScheduleAdminPage() {
   // ====== Modal helpers ======
 
   function openCreate(preset = {}) {
+    if (!canEditSchedule) return;
     setSlotModal({ open: true, mode: "create", entry: null });
     setSlotForm({
       day_of_week: preset.day_of_week || "Mon",
@@ -693,6 +701,7 @@ export default function SeniorHighScheduleAdminPage() {
   }
 
   function openEdit(entry) {
+    if (!canEditSchedule) return;
     setSlotModal({ open: true, mode: "edit", entry });
     setSlotForm({
       day_of_week: entry.day_of_week,
@@ -709,6 +718,8 @@ export default function SeniorHighScheduleAdminPage() {
   }
 
   function onDelete(entry) {
+    if (!canEditSchedule) return;
+
     const p = PERIODS.find((x) => Number(x.period_no) === Number(entry.period_no));
     const ok = window.confirm(
       `Delete schedule entry?
@@ -744,11 +755,20 @@ ${subjectLabel(entry.subjects)}`
     }
 
     return { teacherOverlaps, roomOverlaps };
-  }, [allSySchedules, activeSy?.sy_id, selectedSectionId, slotForm.day_of_week, slotForm.period_no, slotForm.teacher_id, slotForm.room]);
+  }, [
+    allSySchedules,
+    activeSy?.sy_id,
+    selectedSectionId,
+    slotForm.day_of_week,
+    slotForm.period_no,
+    slotForm.teacher_id,
+    slotForm.room,
+  ]);
 
   // ====== Loading & errors ======
 
   const loading =
+    meQ.isLoading ||
     activeSyQ.isLoading ||
     termsQ.isLoading ||
     sectionsQ.isLoading ||
@@ -758,6 +778,7 @@ ${subjectLabel(entry.subjects)}`
     allSySchedulesQ.isLoading;
 
   const anyError =
+    meQ.isError ||
     activeSyQ.isError ||
     termsQ.isError ||
     sectionsQ.isError ||
@@ -767,6 +788,7 @@ ${subjectLabel(entry.subjects)}`
     allSySchedulesQ.isError;
 
   const errMsg =
+    (meQ.error?.message || "") +
     (activeSyQ.error?.message || "") +
     (termsQ.error?.message || "") +
     (sectionsQ.error?.message || "") +
@@ -785,9 +807,11 @@ ${subjectLabel(entry.subjects)}`
         <div>
           <div className="text-lg font-extrabold">Class Schedules</div>
           <div className={`text-sm ${UI.muted}`}>
-            Senior High School • Create, modify, and delete schedules per class section.
+            Senior High School • {canEditSchedule ? "Create, modify, and delete schedules per section." : "View schedules (view-only)."}
           </div>
           <div className={`mt-1 text-xs ${UI.muted}`}>
+            Role: <span className="font-semibold text-black">{role || "—"}</span>
+            <span className="mx-2 text-black/30">•</span>
             Active SY: <span className="font-semibold text-black">{activeSy?.sy_code || "—"}</span>
             <span className="mx-2 text-black/30">•</span>
             Term: <span className="font-semibold text-black">{selectedTerm?.term_code || "—"}</span>
@@ -809,30 +833,40 @@ ${subjectLabel(entry.subjects)}`
 
           <button
             onClick={() => setBulkModal({ open: true })}
-            className="inline-flex items-center gap-2 rounded-xl border border-black/10 bg-white px-4 py-2 text-sm font-semibold hover:bg-black/[0.02]"
+            disabled={!canEditSchedule}
+            className="inline-flex items-center gap-2 rounded-xl border border-black/10 bg-white px-4 py-2 text-sm font-semibold hover:bg-black/[0.02] disabled:opacity-60"
+            title={!canEditSchedule ? "View only" : "Bulk actions"}
           >
             <Wand2 className="h-4 w-4 text-black/60" />
             Bulk actions
           </button>
 
           <button
-            onClick={() => setFocusTable((v) => {
-              const next = !v;
-              if (!next) setDrawerOpen(false);
-              return next;
-            })}
+            onClick={() =>
+              setFocusTable((v) => {
+                const next = !v;
+                if (!next) setDrawerOpen(false);
+                return next;
+              })
+            }
             className={`inline-flex items-center gap-2 rounded-xl border px-4 py-2 text-sm font-semibold hover:bg-black/[0.02] ${
               focusTable ? "border-[#C9A227]/40 bg-[#C9A227]/10" : "border-black/10 bg-white"
             }`}
             title={focusTable ? "Exit focus" : "Focus timetable"}
           >
-            {focusTable ? <Minimize2 className="h-4 w-4 text-black/60" /> : <Maximize2 className="h-4 w-4 text-black/60" />}
+            {focusTable ? (
+              <Minimize2 className="h-4 w-4 text-black/60" />
+            ) : (
+              <Maximize2 className="h-4 w-4 text-black/60" />
+            )}
             {focusTable ? "Exit focus" : "Focus timetable"}
           </button>
 
           <button
             onClick={() => alert("Wire to your import flow")}
-            className="inline-flex items-center gap-2 rounded-xl border border-black/10 bg-white px-4 py-2 text-sm font-semibold hover:bg-black/[0.02]"
+            disabled={!canEditSchedule}
+            className="inline-flex items-center gap-2 rounded-xl border border-black/10 bg-white px-4 py-2 text-sm font-semibold hover:bg-black/[0.02] disabled:opacity-60"
+            title={!canEditSchedule ? "View only" : "Import"}
           >
             <Upload className="h-4 w-4 text-black/60" />
             Import
@@ -840,7 +874,9 @@ ${subjectLabel(entry.subjects)}`
 
           <button
             onClick={() => alert("Wire to your export flow")}
-            className="inline-flex items-center gap-2 rounded-xl border border-black/10 bg-white px-4 py-2 text-sm font-semibold hover:bg-black/[0.02]"
+            disabled={!canEditSchedule}
+            className="inline-flex items-center gap-2 rounded-xl border border-black/10 bg-white px-4 py-2 text-sm font-semibold hover:bg-black/[0.02] disabled:opacity-60"
+            title={!canEditSchedule ? "View only" : "Export"}
           >
             <Download className="h-4 w-4 text-black/60" />
             Export
@@ -848,14 +884,22 @@ ${subjectLabel(entry.subjects)}`
 
           <button
             onClick={() => openCreate()}
-            disabled={!activeSy?.sy_id || !selectedTermId || !selectedSectionId}
+            disabled={!canEditSchedule || !activeSy?.sy_id || !selectedTermId || !selectedSectionId}
             className={`inline-flex items-center gap-2 rounded-xl px-4 py-2 text-sm font-extrabold ${UI.goldBg} text-black hover:opacity-95 disabled:opacity-60`}
+            title={!canEditSchedule ? "View only" : "Add Entry"}
           >
             <Plus className="h-4 w-4" />
             Add Entry
           </button>
         </div>
       </div>
+
+      {/* View-only banner */}
+      {!canEditSchedule ? (
+        <div className="rounded-2xl border border-[#C9A227]/30 bg-[#C9A227]/10 p-3 text-sm">
+          <span className="font-extrabold">View only:</span> Admin accounts can view schedules but cannot create, edit, delete, clear, or run bulk actions.
+        </div>
+      ) : null}
 
       {/* Status */}
       {loading ? (
@@ -913,6 +957,7 @@ ${subjectLabel(entry.subjects)}`
               allSySchedules={allSySchedules}
               selectedSectionId={selectedSectionId}
               setSelectedSectionId={setSelectedSectionId}
+              canEdit={canEditSchedule}
             />
           </div>
         ) : null}
@@ -936,6 +981,7 @@ ${subjectLabel(entry.subjects)}`
                 setSelectedSectionId(id);
                 setDrawerOpen(false);
               }}
+              canEdit={canEditSchedule}
               headerRight={
                 <button
                   onClick={() => setDrawerOpen(false)}
@@ -954,7 +1000,7 @@ ${subjectLabel(entry.subjects)}`
           <div className={`rounded-2xl border ${UI.border} ${UI.panel} p-4`}>
             <div className="flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
               <div>
-                <div className={`text-xs font-semibold ${UI.muted}`}>Currently editing</div>
+                <div className={`text-xs font-semibold ${UI.muted}`}>Currently viewing</div>
                 <div className="text-base font-extrabold">{selectedSection ? sectionLabel(selectedSection) : "—"}</div>
                 <div className={`mt-1 text-xs ${UI.muted}`}>
                   Adviser: <span className="font-semibold text-black">{selectedSection ? adviserLabel(selectedSection) : "—"}</span>
@@ -994,8 +1040,9 @@ ${subjectLabel(entry.subjects)}`
 
                 <button
                   onClick={() => openCreate()}
-                  disabled={!activeSy?.sy_id || !selectedTermId || !selectedSectionId}
+                  disabled={!canEditSchedule || !activeSy?.sy_id || !selectedTermId || !selectedSectionId}
                   className={`inline-flex items-center gap-2 rounded-xl px-4 py-2 text-sm font-extrabold ${UI.goldBg} text-black hover:opacity-95 disabled:opacity-60`}
+                  title={!canEditSchedule ? "View only" : "Add Entry"}
                 >
                   <Plus className="h-4 w-4" />
                   Add Entry
@@ -1003,14 +1050,16 @@ ${subjectLabel(entry.subjects)}`
 
                 <button
                   onClick={() => {
+                    if (!canEditSchedule) return;
                     const ok = window.confirm(
                       `Clear schedule for ${selectedSection ? sectionLabel(selectedSection) : "this section"}?`
                     );
                     if (!ok) return;
                     clearSectionM.mutate();
                   }}
-                  disabled={clearSectionM.isPending || !activeSy?.sy_id || !selectedTermId || !selectedSectionId}
+                  disabled={!canEditSchedule || clearSectionM.isPending || !activeSy?.sy_id || !selectedTermId || !selectedSectionId}
                   className="inline-flex items-center gap-2 rounded-xl border border-black/10 bg-white px-4 py-2 text-sm font-semibold hover:bg-black/[0.02] disabled:opacity-60"
+                  title={!canEditSchedule ? "View only" : "Clear schedule"}
                 >
                   <Trash2 className="h-4 w-4 text-black/60" />
                   Clear
@@ -1031,7 +1080,7 @@ ${subjectLabel(entry.subjects)}`
           {activeTab === "Timetable" ? (
             <Section title="Weekly timetable">
               <div className="overflow-auto rounded-2xl border border-black/10">
-              <table className="w-full min-w-[1400px] text-left text-sm">
+                <table className="w-full min-w-[1400px] text-left text-sm">
                   <thead className="bg-black/[0.02] text-xs text-black/60 sticky top-0 z-20">
                     <tr>
                       <th className={`font-semibold w-[190px] sticky left-0 z-30 bg-white ${periodPad}`}>Period</th>
@@ -1060,8 +1109,11 @@ ${subjectLabel(entry.subjects)}`
                               {!entry ? (
                                 <button
                                   onClick={() => openCreate({ day_of_week: d, period_no: p.period_no })}
-                                  disabled={!activeSy?.sy_id || !selectedTermId || !selectedSectionId}
-                                  className={`w-full rounded-2xl border border-black/10 bg-black/[0.01] ${compact ? "p-2" : "p-3"} text-left hover:bg-black/[0.02] disabled:opacity-60`}
+                                  disabled={!canEditSchedule || !activeSy?.sy_id || !selectedTermId || !selectedSectionId}
+                                  className={`w-full rounded-2xl border border-black/10 bg-black/[0.01] ${
+                                    compact ? "p-2" : "p-3"
+                                  } text-left hover:bg-black/[0.02] disabled:opacity-60`}
+                                  title={!canEditSchedule ? "View only" : "Add entry"}
                                 >
                                   <div className="flex items-center justify-between">
                                     <span className="text-xs text-black/45">—</span>
@@ -1085,14 +1137,16 @@ ${subjectLabel(entry.subjects)}`
                                       <div className="text-xs text-black/60">{entry.room ? `Room: ${entry.room}` : "No room"}</div>
                                     </div>
 
-                                    <div className="flex gap-2">
-                                      <IconBtn title="Edit" onClick={() => openEdit(entry)} tone="gold">
-                                        <Pencil className="h-5 w-5" />
-                                      </IconBtn>
-                                      <IconBtn title="Delete" onClick={() => onDelete(entry)} tone="danger">
-                                        <Trash2 className="h-5 w-5" />
-                                      </IconBtn>
-                                    </div>
+                                    {canEditSchedule ? (
+                                      <div className="flex gap-2">
+                                        <IconBtn title="Edit" onClick={() => openEdit(entry)} tone="gold">
+                                          <Pencil className="h-5 w-5" />
+                                        </IconBtn>
+                                        <IconBtn title="Delete" onClick={() => onDelete(entry)} tone="danger">
+                                          <Trash2 className="h-5 w-5" />
+                                        </IconBtn>
+                                      </div>
+                                    ) : null}
                                   </div>
 
                                   {conflict ? (
@@ -1101,7 +1155,8 @@ ${subjectLabel(entry.subjects)}`
                                       <div className="mt-1 text-black/60 space-y-1">
                                         {conflict.teacherClash.length ? (
                                           <div>
-                                            Same teacher in: {conflict.teacherClash
+                                            Same teacher in:{" "}
+                                            {conflict.teacherClash
                                               .slice(0, 2)
                                               .map((x) => sectionLabel(x.sections))
                                               .join(", ")}
@@ -1110,7 +1165,8 @@ ${subjectLabel(entry.subjects)}`
                                         ) : null}
                                         {conflict.roomClash.length ? (
                                           <div>
-                                            Same room in: {conflict.roomClash
+                                            Same room in:{" "}
+                                            {conflict.roomClash
                                               .slice(0, 2)
                                               .map((x) => sectionLabel(x.sections))
                                               .join(", ")}
@@ -1136,11 +1192,12 @@ ${subjectLabel(entry.subjects)}`
           ) : (
             <Section title="Schedule entries">
               <div className="flex items-center justify-between gap-2">
-                <div className={`text-xs ${UI.muted}`}>Click a row to edit.</div>
+                <div className={`text-xs ${UI.muted}`}>{canEditSchedule ? "Click a row to edit." : "View only."}</div>
                 <button
                   onClick={() => openCreate()}
-                  disabled={!activeSy?.sy_id || !selectedTermId || !selectedSectionId}
+                  disabled={!canEditSchedule || !activeSy?.sy_id || !selectedTermId || !selectedSectionId}
                   className={`inline-flex items-center gap-2 rounded-xl px-4 py-2 text-sm font-extrabold ${UI.goldBg} text-black hover:opacity-95 disabled:opacity-60`}
+                  title={!canEditSchedule ? "View only" : "Add Entry"}
                 >
                   <Plus className="h-4 w-4" /> Add Entry
                 </button>
@@ -1177,7 +1234,11 @@ ${subjectLabel(entry.subjects)}`
                           <tr
                             key={entry.schedule_id}
                             className="border-t border-black/10 hover:bg-black/[0.01] cursor-pointer"
-                            onClick={() => openEdit(entry)}
+                            onClick={() => {
+                              if (!canEditSchedule) return;
+                              openEdit(entry);
+                            }}
+                            title={!canEditSchedule ? "View only" : "Click to edit"}
                           >
                             <td className="px-4 py-3 font-semibold">{entry.day_of_week}</td>
                             <td className="px-4 py-3 text-black/70">{entry.period_no}</td>
@@ -1192,12 +1253,18 @@ ${subjectLabel(entry.subjects)}`
                             <td className="px-4 py-3">{entry.room || "—"}</td>
                             <td className="px-4 py-3" onClick={(e) => e.stopPropagation()}>
                               <div className="flex justify-end gap-2">
-                                <IconBtn title="Edit" onClick={() => openEdit(entry)} tone="gold">
-                                  <Pencil className="h-5 w-5" />
-                                </IconBtn>
-                                <IconBtn title="Delete" onClick={() => onDelete(entry)} tone="danger">
-                                  <Trash2 className="h-5 w-5" />
-                                </IconBtn>
+                                {canEditSchedule ? (
+                                  <>
+                                    <IconBtn title="Edit" onClick={() => openEdit(entry)} tone="gold">
+                                      <Pencil className="h-5 w-5" />
+                                    </IconBtn>
+                                    <IconBtn title="Delete" onClick={() => onDelete(entry)} tone="danger">
+                                      <Trash2 className="h-5 w-5" />
+                                    </IconBtn>
+                                  </>
+                                ) : (
+                                  <span className="text-xs text-black/45">View only</span>
+                                )}
                               </div>
                             </td>
                           </tr>
@@ -1238,6 +1305,7 @@ ${subjectLabel(entry.subjects)}`
               value={slotForm.day_of_week}
               onChange={(v) => setSlotForm((p) => ({ ...p, day_of_week: v }))}
               options={DAYS}
+              disabled={!canEditSchedule}
             />
 
             <SelectField
@@ -1248,6 +1316,7 @@ ${subjectLabel(entry.subjects)}`
                 value: String(x.period_no),
                 label: `${x.period_no} • ${x.label} (${timeRange(x)})`,
               }))}
+              disabled={!canEditSchedule}
             />
 
             <SelectField
@@ -1258,6 +1327,7 @@ ${subjectLabel(entry.subjects)}`
                 { value: "", label: "Select subject" },
                 ...subjectsForSection.map((s) => ({ value: s.subject_id, label: subjectLabel(s) })),
               ]}
+              disabled={!canEditSchedule}
             />
 
             <SelectField
@@ -1268,6 +1338,7 @@ ${subjectLabel(entry.subjects)}`
                 { value: "", label: "—" },
                 ...teachers.map((t) => ({ value: t.user_id, label: teacherName(t) })),
               ]}
+              disabled={!canEditSchedule}
             />
 
             <InputField
@@ -1275,6 +1346,7 @@ ${subjectLabel(entry.subjects)}`
               value={slotForm.room}
               onChange={(v) => setSlotForm((p) => ({ ...p, room: v }))}
               placeholder="e.g., R-101, Lab-2"
+              disabled={!canEditSchedule}
             />
 
             <InputField
@@ -1282,6 +1354,7 @@ ${subjectLabel(entry.subjects)}`
               value={slotForm.notes}
               onChange={(v) => setSlotForm((p) => ({ ...p, notes: v }))}
               placeholder="e.g., Lab session / Bring calculator"
+              disabled={!canEditSchedule}
             />
           </div>
 
@@ -1289,7 +1362,8 @@ ${subjectLabel(entry.subjects)}`
           <div className="mt-4 rounded-2xl border border-black/10 bg-white p-4">
             <div className="text-sm font-extrabold">Conflict check (preview)</div>
             <div className={`mt-1 text-sm ${UI.muted}`}>
-              Flags overlaps across sections when the <span className="font-semibold">teacher</span> or <span className="font-semibold">room</span> is used at the same day/period.
+              Flags overlaps across sections when the <span className="font-semibold">teacher</span> or{" "}
+              <span className="font-semibold">room</span> is used at the same day/period.
             </div>
 
             <div className="mt-3 overflow-auto rounded-2xl border border-black/10">
@@ -1359,8 +1433,9 @@ ${subjectLabel(entry.subjects)}`
             <button
               type="button"
               onClick={() => upsertM.mutate()}
-              disabled={upsertM.isPending || !slotForm.subject_id}
+              disabled={!canEditSchedule || upsertM.isPending || !slotForm.subject_id}
               className={`inline-flex items-center gap-2 rounded-xl px-4 py-2 text-sm font-extrabold ${UI.goldBg} text-black hover:opacity-95 disabled:opacity-60`}
+              title={!canEditSchedule ? "View only" : "Save"}
             >
               <Save className="h-4 w-4" />
               {upsertM.isPending ? "Saving…" : "Save"}
@@ -1397,6 +1472,7 @@ ${subjectLabel(entry.subjects)}`
                   { value: "copy", label: "Copy schedule from one section" },
                   { value: "clear", label: "Clear schedules for selected sections" },
                 ]}
+                disabled={!canEditSchedule}
               />
 
               {bulkMode === "copy" ? (
@@ -1409,6 +1485,7 @@ ${subjectLabel(entry.subjects)}`
                       { value: "", label: "Select…" },
                       ...sections.map((s) => ({ value: s.section_id, label: sectionLabel(s) })),
                     ]}
+                    disabled={!canEditSchedule}
                   />
 
                   <label className="flex items-center gap-2 rounded-xl border border-black/10 bg-[#C9A227]/5 p-3">
@@ -1417,6 +1494,7 @@ ${subjectLabel(entry.subjects)}`
                       checked={bulkOverwrite}
                       onChange={(e) => setBulkOverwrite(e.target.checked)}
                       className="h-4 w-4 accent-[#C9A227]"
+                      disabled={!canEditSchedule}
                     />
                     <span className="text-sm font-semibold">Overwrite existing schedules</span>
                   </label>
@@ -1442,7 +1520,7 @@ ${subjectLabel(entry.subjects)}`
               <div className="grid gap-2 md:grid-cols-2">
                 {sections.map((s) => {
                   const checked = bulkTargetSectionIds.has(s.section_id);
-                  const disabled = bulkMode === "copy" && s.section_id === bulkSourceSectionId;
+                  const disabled = !canEditSchedule || (bulkMode === "copy" && s.section_id === bulkSourceSectionId);
                   const count = allSySchedules.filter((x) => x.section_id === s.section_id).length;
 
                   return (
@@ -1471,13 +1549,15 @@ ${subjectLabel(entry.subjects)}`
               <div className="flex flex-wrap items-center justify-between gap-2 pt-1">
                 <button
                   onClick={() => setBulkTargetSectionIds(new Set(sections.map((s) => s.section_id)))}
-                  className="rounded-xl border border-black/10 bg-white px-3 py-2 text-xs font-semibold hover:bg-black/[0.02]"
+                  disabled={!canEditSchedule}
+                  className="rounded-xl border border-black/10 bg-white px-3 py-2 text-xs font-semibold hover:bg-black/[0.02] disabled:opacity-60"
                 >
                   Select all
                 </button>
                 <button
                   onClick={() => setBulkTargetSectionIds(new Set())}
-                  className="rounded-xl border border-black/10 bg-white px-3 py-2 text-xs font-semibold hover:bg-black/[0.02]"
+                  disabled={!canEditSchedule}
+                  className="rounded-xl border border-black/10 bg-white px-3 py-2 text-xs font-semibold hover:bg-black/[0.02] disabled:opacity-60"
                 >
                   Clear selection
                 </button>
@@ -1498,11 +1578,13 @@ ${subjectLabel(entry.subjects)}`
               type="button"
               onClick={() => bulkM.mutate()}
               disabled={
+                !canEditSchedule ||
                 bulkM.isPending ||
                 bulkTargetSectionIds.size === 0 ||
                 (bulkMode === "copy" && !bulkSourceSectionId)
               }
               className={`inline-flex items-center gap-2 rounded-xl px-4 py-2 text-sm font-extrabold ${UI.goldBg} text-black hover:opacity-95 disabled:opacity-60`}
+              title={!canEditSchedule ? "View only" : "Apply"}
             >
               <Wand2 className="h-4 w-4" />
               {bulkM.isPending ? "Applying…" : "Apply"}
@@ -1538,7 +1620,7 @@ function Section({ title, children }) {
   );
 }
 
-function InputField({ label, value, onChange, placeholder, className = "" }) {
+function InputField({ label, value, onChange, placeholder, className = "", disabled = false }) {
   return (
     <label className={`block ${className}`}>
       <span className={`text-xs font-semibold ${UI.muted}`}>{label}</span>
@@ -1546,13 +1628,16 @@ function InputField({ label, value, onChange, placeholder, className = "" }) {
         value={value}
         onChange={(e) => onChange(e.target.value)}
         placeholder={placeholder}
-        className="mt-1 w-full rounded-xl border border-black/10 bg-white px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-[#C9A227]/40"
+        disabled={disabled}
+        className={`mt-1 w-full rounded-xl border border-black/10 bg-white px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-[#C9A227]/40 ${
+          disabled ? "opacity-60 cursor-not-allowed" : ""
+        }`}
       />
     </label>
   );
 }
 
-function SelectField({ label, value, onChange, options }) {
+function SelectField({ label, value, onChange, options, disabled = false }) {
   const normalized = Array.isArray(options)
     ? options.map((o) => (typeof o === "string" ? { value: o, label: o } : o))
     : [];
@@ -1563,7 +1648,10 @@ function SelectField({ label, value, onChange, options }) {
       <select
         value={value}
         onChange={(e) => onChange(e.target.value)}
-        className="mt-1 w-full rounded-xl border border-black/10 bg-white px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-[#C9A227]/40"
+        disabled={disabled}
+        className={`mt-1 w-full rounded-xl border border-black/10 bg-white px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-[#C9A227]/40 ${
+          disabled ? "opacity-60 cursor-not-allowed" : ""
+        }`}
       >
         {normalized.map((o) => (
           <option key={o.value} value={o.value}>
@@ -1653,13 +1741,16 @@ function SectionsPanel({
   selectedSectionId,
   setSelectedSectionId,
   headerRight,
+  canEdit,
 }) {
   return (
     <div className={`rounded-2xl border ${UI.border} ${UI.panel} p-4 space-y-4`}>
       <div className="flex items-start justify-between gap-3">
         <div>
           <div className="text-sm font-extrabold">Sections</div>
-          <div className={`text-xs ${UI.muted}`}>Find and select a section to edit.</div>
+          <div className={`text-xs ${UI.muted}`}>
+            Find and select a section to {canEdit ? "edit." : "view."}
+          </div>
         </div>
         {headerRight || null}
       </div>
@@ -1736,7 +1827,9 @@ function SectionsPanel({
       <div className="grid grid-cols-2 gap-2">
         <button
           onClick={() => alert("Wire to your duplicate section flow")}
-          className="inline-flex items-center justify-center gap-2 rounded-xl border border-black/10 bg-white px-3 py-2 text-sm font-semibold hover:bg-black/[0.02]"
+          disabled={!canEdit}
+          className="inline-flex items-center justify-center gap-2 rounded-xl border border-black/10 bg-white px-3 py-2 text-sm font-semibold hover:bg-black/[0.02] disabled:opacity-60"
+          title={!canEdit ? "View only" : "Duplicate"}
         >
           <Copy className="h-4 w-4 text-black/60" />
           Duplicate

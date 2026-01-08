@@ -4,7 +4,7 @@ import { motion } from "framer-motion";
 import { BookOpen, Clock, CheckCircle2, Sparkles } from "lucide-react";
 import { supabase } from "../lib/supabaseClient";
 
-// ✅ NEW: Supabase-powered calendar widget
+// ✅ Supabase-powered calendar widget
 import CalendarWidget from "../components/CalendarWidget"; // adjust if your folders differ
 
 const BRAND = {
@@ -87,6 +87,21 @@ function previewText(s, max = 80) {
   return t.length > max ? t.slice(0, max).trimEnd() + "..." : t;
 }
 
+// ✅ day-of-week mapper (JS -> your table’s Mon/Tue/... format)
+function jsDayToDow3(d) {
+  // JS: 0 Sun, 1 Mon ... 6 Sat
+  const map = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
+  return map[d.getDay()];
+}
+
+// ✅ combine today's date with Postgres time (HH:MM:SS)
+function combineDateAndTime(dateObj, timeStr) {
+  const [hh = "0", mm = "0", ss = "0"] = (timeStr || "00:00:00").split(":");
+  const x = new Date(dateObj);
+  x.setHours(Number(hh), Number(mm), Number(ss), 0);
+  return x;
+}
+
 export default function StudentDashboard() {
   const [now, setNow] = useState(new Date());
 
@@ -101,6 +116,21 @@ export default function StudentDashboard() {
   // ✅ Tip of the day (random per session / login)
   const [tip, setTip] = useState("");
 
+  // ✅ Schedule (Supabase)
+  const [todaysClasses, setTodaysClasses] = useState([]);
+  const [loadingSchedule, setLoadingSchedule] = useState(true);
+
+  // ✅ Lessons (Supabase)
+  const [lessons, setLessons] = useState([]);
+  const [loadingLessons, setLoadingLessons] = useState(true);
+
+  // ✅ Stats (computed)
+  const [stats, setStats] = useState({
+    totalCourses: 0,
+    todaysClasses: 0,
+    pendingAssignments: 0, // placeholder until you wire assignments table
+  });
+
   useEffect(() => {
     const t = setInterval(() => setNow(new Date()), 1000);
     return () => clearInterval(t);
@@ -111,7 +141,7 @@ export default function StudentDashboard() {
     setTip(pickRandomTipPerSession());
   }, []);
 
-  // OPTIONAL: if you want NEW tip on every SIGNED_IN event
+  // OPTIONAL: NEW tip on every SIGNED_IN event
   useEffect(() => {
     const { data: sub } = supabase.auth.onAuthStateChange((event) => {
       if (event === "SIGNED_IN") {
@@ -126,9 +156,11 @@ export default function StudentDashboard() {
   useEffect(() => {
     let isMounted = true;
 
-    async function loadDashboardBasics() {
+    async function loadDashboard() {
       setLoadingStudent(true);
       setLoadingAnnouncements(true);
+      setLoadingSchedule(true);
+      setLoadingLessons(true);
 
       const {
         data: { user },
@@ -140,16 +172,30 @@ export default function StudentDashboard() {
       if (authErr || !user) {
         setStudentName("Student");
         setAnnouncements([]);
+        setTodaysClasses([]);
+        setLessons([]);
+        setStats({ totalCourses: 0, todaysClasses: 0, pendingAssignments: 0 });
+
         setLoadingStudent(false);
         setLoadingAnnouncements(false);
+        setLoadingSchedule(false);
+        setLoadingLessons(false);
         return;
       }
 
-      // 1) Student first_name (preferred) + fallback to profiles.full_name
-      const [{ data: studentRow }, { data: profileRow }] = await Promise.all([
-        supabase.from("students").select("first_name").eq("user_id", user.id).maybeSingle(),
-        supabase.from("profiles").select("full_name").eq("user_id", user.id).maybeSingle(),
-      ]);
+      // 1) Student row (for section + grade/track/strand filters)
+      const { data: studentRow, error: studentErr } = await supabase
+        .from("students")
+        .select("first_name, section_id, grade_id, track_id, strand_id, sy_id")
+        .eq("user_id", user.id)
+        .maybeSingle();
+
+      // 2) Profile row fallback name
+      const { data: profileRow } = await supabase
+        .from("profiles")
+        .select("full_name")
+        .eq("user_id", user.id)
+        .maybeSingle();
 
       if (!isMounted) return;
 
@@ -161,15 +207,22 @@ export default function StudentDashboard() {
       setStudentName(name);
       setLoadingStudent(false);
 
-      // 2) Announcements for students
-      const { data: annRows, error: annErr } = await supabase
+      // ===== Announcements (All Students + Section Students) =====
+      const baseAnnQuery = supabase
         .from("announcements")
-        .select("id, title, content, priority, posted_at, posted_by")
+        .select("id, title, content, priority, posted_at, posted_by, target_audience, section_id")
         .eq("status", "Published")
         .eq("is_archived", false)
-        .eq("target_audience", "All Students")
         .order("posted_at", { ascending: false })
         .limit(3);
+
+      const annQuery = studentRow?.section_id
+        ? baseAnnQuery.or(
+            `target_audience.eq.All Students,and(target_audience.eq.Section Students,section_id.eq.${studentRow.section_id})`
+          )
+        : baseAnnQuery.eq("target_audience", "All Students");
+
+      const { data: annRows, error: annErr } = await annQuery;
 
       if (!isMounted) return;
 
@@ -181,44 +234,153 @@ export default function StudentDashboard() {
             id: a.id,
             title: a.title,
             by: "Admin", // can be joined to profiles later
-            tag: a.priority, // High / Medium / Low
+            tag: a.priority,
             preview: previewText(a.content, 80),
             posted_at: a.posted_at,
           }))
         );
       }
-
       setLoadingAnnouncements(false);
+
+      // ===== Today's Schedule (section_schedules + subjects + teachers) =====
+      const dow = jsDayToDow3(new Date());
+
+      if (!studentRow?.section_id || dow === "Sun") {
+        setTodaysClasses([]);
+        setLoadingSchedule(false);
+      } else {
+        const { data: schedRows, error: schedErr } = await supabase
+          .from("section_schedules") // ✅ correct table name per your schema
+          .select(
+            `
+            schedule_id,
+            day_of_week,
+            period_no,
+            start_time,
+            end_time,
+            room,
+            notes,
+            subject_id,
+            teacher_id,
+            subjects:subjects ( subject_title ),
+            teacher:teachers ( first_name, last_name )
+          `
+          )
+          .eq("section_id", studentRow.section_id)
+          .eq("day_of_week", dow)
+          .order("start_time", { ascending: true });
+
+        if (!isMounted) return;
+
+        // Debug (remove later)
+        // console.log("Dashboard schedule => section:", studentRow.section_id, "dow:", dow, "err:", schedErr, "rows:", schedRows);
+
+        if (schedErr) {
+          setTodaysClasses([]);
+        } else {
+          const baseDate = startOfDay(new Date());
+
+          setTodaysClasses(
+            (schedRows ?? []).map((r) => {
+              const teacherName =
+                r?.teacher?.first_name || r?.teacher?.last_name
+                  ? `${(r?.teacher?.first_name || "").trim()} ${(r?.teacher?.last_name || "").trim()}`.trim()
+                  : "—";
+
+              return {
+                start: combineDateAndTime(baseDate, r.start_time),
+                end: combineDateAndTime(baseDate, r.end_time),
+                subject: r?.subjects?.subject_title || "Subject",
+                room: r.room || "—",
+                teacher: teacherName,
+                raw: r,
+              };
+            })
+          );
+
+          // keep todaysClasses stat accurate without stale closure
+          setStats((s) => ({ ...s, todaysClasses: (schedRows ?? []).length }));
+        }
+
+        setLoadingSchedule(false);
+      }
+
+      // ===== Recent Lessons (Published + subjects + teachers) =====
+      const { data: lessonRows, error: lessonErr } = await supabase
+        .from("lessons")
+        .select(
+          `
+          lesson_id,
+          title,
+          owner_teacher_id,
+          created_at,
+          subject_id,
+          subjects:subjects ( subject_title ),
+          teacher:teachers ( first_name, last_name )
+        `
+        )
+        .eq("status", "Published")
+        .order("created_at", { ascending: false })
+        .limit(3);
+
+      if (!isMounted) return;
+
+      if (lessonErr) {
+        setLessons([]);
+      } else {
+        setLessons(
+          (lessonRows ?? []).map((l) => {
+            const teacherName =
+              l?.teacher?.first_name || l?.teacher?.last_name
+                ? `${(l?.teacher?.first_name || "").trim()} ${(l?.teacher?.last_name || "").trim()}`.trim()
+                : "Teacher";
+
+            return {
+              course: l?.subjects?.subject_title || "Subject",
+              title: l.title,
+              teacher: teacherName,
+              date: l.created_at ? new Date(l.created_at).toLocaleDateString() : "",
+              raw: l,
+            };
+          })
+        );
+      }
+      setLoadingLessons(false);
+
+      // ===== Stats: totalCourses (distinct subject_id for section) =====
+      let totalCourses = 0;
+
+      if (studentRow?.section_id) {
+        const { data: courseRows } = await supabase
+          .from("section_schedules") // ✅ correct table
+          .select("subject_id")
+          .eq("section_id", studentRow.section_id);
+
+        const uniq = new Set((courseRows ?? []).map((r) => r.subject_id).filter(Boolean));
+        totalCourses = uniq.size;
+      }
+
+      setStats((s) => ({
+        ...s,
+        totalCourses,
+        pendingAssignments: 0, // wire later
+      }));
+
+      // Helpful debug if student record is missing
+      // console.log("studentErr:", studentErr, "studentRow:", studentRow);
     }
 
-    loadDashboardBasics();
+    loadDashboard();
 
     return () => {
       isMounted = false;
     };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  // Demo schedule (temporary until schedule tables exist)
-  const todaysClasses = useMemo(() => {
-    const d = startOfDay(now);
-
-    const mk = (h1, m1, h2, m2, subject, room, teacher) => {
-      const start = new Date(d);
-      start.setHours(h1, m1, 0, 0);
-      const end = new Date(d);
-      end.setHours(h2, m2, 0, 0);
-      return { start, end, subject, room, teacher };
-    };
-
-    return [
-      mk(8, 0, 9, 30, "Oral Communication", "Room 201", "Ms. Reyes"),
-      mk(10, 0, 11, 30, "General Mathematics", "Room 305", "Mr. Santos"),
-      mk(13, 0, 14, 30, "UCSP", "Room 109", "Ms. Dizon"),
-    ];
-  }, [now]);
-
+  // ✅ next class computed from Supabase-powered todaysClasses
   const nextClass = useMemo(() => {
-    const upcoming = todaysClasses.filter((c) => c.end > now).sort((a, b) => a.start - b.start);
+    const upcoming = (todaysClasses ?? []).filter((c) => c.end > now).sort((a, b) => a.start - b.start);
     return upcoming[0] || null;
   }, [todaysClasses, now]);
 
@@ -228,23 +390,10 @@ export default function StudentDashboard() {
     return msToCountdown(diff);
   }, [nextClass, now]);
 
-  const stats = useMemo(
-    () => ({
-      totalCourses: 8,
-      todaysClasses: todaysClasses.length,
-      pendingAssignments: 2,
-    }),
-    [todaysClasses.length]
-  );
-
-  const lessons = useMemo(
-    () => [
-      { course: "Gen Math", title: "Quadratic Functions (Part 1)", teacher: "Mr. Santos", date: "Today" },
-      { course: "Oral Comm", title: "Speech Delivery Basics", teacher: "Ms. Reyes", date: "Yesterday" },
-      { course: "UCSP", title: "Culture & Society Notes", teacher: "Ms. Dizon", date: "2 days ago" },
-    ],
-    []
-  );
+  // keep stats.todaysClasses accurate when schedule loads
+  useEffect(() => {
+    setStats((s) => ({ ...s, todaysClasses: todaysClasses.length }));
+  }, [todaysClasses.length]);
 
   return (
     <div className="space-y-5">
@@ -332,62 +481,72 @@ export default function StudentDashboard() {
           </div>
 
           <div className="mt-4 space-y-3">
-            {todaysClasses.map((c, idx) => {
-              const status = now < c.start ? "Upcoming" : now >= c.start && now <= c.end ? "In Progress" : "Completed";
+            {loadingSchedule ? (
+              <div className="text-sm font-semibold" style={{ color: BRAND.muted }}>
+                Loading schedule...
+              </div>
+            ) : todaysClasses.length === 0 ? (
+              <div className="text-sm font-semibold" style={{ color: BRAND.muted }}>
+                No classes scheduled for today.
+              </div>
+            ) : (
+              todaysClasses.map((c, idx) => {
+                const status = now < c.start ? "Upcoming" : now >= c.start && now <= c.end ? "In Progress" : "Completed";
 
-              return (
-                <div
-                  key={idx}
-                  className="flex items-start gap-3 rounded-2xl border p-4"
-                  style={{
-                    borderColor: BRAND.stroke,
-                    background: status === "In Progress" ? "rgba(212,166,47,0.10)" : "rgba(255,255,255,1)",
-                  }}
-                >
-                  <div className="min-w-[110px]">
-                    <div className="text-xs font-semibold" style={{ color: BRAND.muted }}>
-                      {formatTime(c.start)} - {formatTime(c.end)}
-                    </div>
-                    <div
-                      className="mt-2 inline-flex rounded-full px-3 py-1 text-[11px] font-extrabold"
-                      style={{
-                        background:
-                          status === "Upcoming"
-                            ? "rgba(212,166,47,0.14)"
-                            : status === "In Progress"
-                            ? "rgba(34,197,94,0.14)"
-                            : "rgba(0,0,0,0.06)",
-                        color:
-                          status === "Upcoming"
-                            ? BRAND.brown
-                            : status === "In Progress"
-                            ? "rgba(22,101,52,0.95)"
-                            : "rgba(0,0,0,0.55)",
-                      }}
-                    >
-                      {status}
-                    </div>
-                  </div>
-
-                  <div className="flex-1">
-                    <div className="text-sm font-extrabold" style={{ color: BRAND.brown }}>
-                      {c.subject}
-                    </div>
-                    <div className="mt-1 text-xs font-semibold" style={{ color: BRAND.muted }}>
-                      {c.teacher} • {c.room}
-                    </div>
-                  </div>
-
-                  <button
-                    className="rounded-2xl border px-4 py-2 text-sm font-semibold transition hover:bg-black/5"
-                    style={{ borderColor: BRAND.stroke, color: BRAND.brown }}
-                    onClick={() => alert("Class details")}
+                return (
+                  <div
+                    key={idx}
+                    className="flex items-start gap-3 rounded-2xl border p-4"
+                    style={{
+                      borderColor: BRAND.stroke,
+                      background: status === "In Progress" ? "rgba(212,166,47,0.10)" : "rgba(255,255,255,1)",
+                    }}
                   >
-                    View Details
-                  </button>
-                </div>
-              );
-            })}
+                    <div className="min-w-[110px]">
+                      <div className="text-xs font-semibold" style={{ color: BRAND.muted }}>
+                        {formatTime(c.start)} - {formatTime(c.end)}
+                      </div>
+                      <div
+                        className="mt-2 inline-flex rounded-full px-3 py-1 text-[11px] font-extrabold"
+                        style={{
+                          background:
+                            status === "Upcoming"
+                              ? "rgba(212,166,47,0.14)"
+                              : status === "In Progress"
+                              ? "rgba(34,197,94,0.14)"
+                              : "rgba(0,0,0,0.06)",
+                          color:
+                            status === "Upcoming"
+                              ? BRAND.brown
+                              : status === "In Progress"
+                              ? "rgba(22,101,52,0.95)"
+                              : "rgba(0,0,0,0.55)",
+                        }}
+                      >
+                        {status}
+                      </div>
+                    </div>
+
+                    <div className="flex-1">
+                      <div className="text-sm font-extrabold" style={{ color: BRAND.brown }}>
+                        {c.subject}
+                      </div>
+                      <div className="mt-1 text-xs font-semibold" style={{ color: BRAND.muted }}>
+                        {c.teacher} • {c.room}
+                      </div>
+                    </div>
+
+                    <button
+                      className="rounded-2xl border px-4 py-2 text-sm font-semibold transition hover:bg-black/5"
+                      style={{ borderColor: BRAND.stroke, color: BRAND.brown }}
+                      onClick={() => alert("Class details")}
+                    >
+                      View Details
+                    </button>
+                  </div>
+                );
+              })
+            )}
           </div>
         </motion.section>
 
@@ -435,7 +594,10 @@ export default function StudentDashboard() {
                       <div className="text-sm font-extrabold" style={{ color: BRAND.brown }}>
                         {a.title}
                       </div>
-                      <span className="rounded-full px-3 py-1 text-[11px] font-extrabold" style={{ background: BRAND.softGoldBg, color: BRAND.brown }}>
+                      <span
+                        className="rounded-full px-3 py-1 text-[11px] font-extrabold"
+                        style={{ background: BRAND.softGoldBg, color: BRAND.brown }}
+                      >
                         {a.tag}
                       </span>
                     </div>
@@ -451,18 +613,14 @@ export default function StudentDashboard() {
             </div>
           </motion.section>
 
-          {/* ✅ CalendarWidget (replaces old demo calendar UI) */}
-          <motion.div
-            initial={{ opacity: 0, y: 8 }}
-            animate={{ opacity: 1, y: 0 }}
-            transition={{ duration: 0.18, delay: 0.06 }}
-          >
+          {/* ✅ CalendarWidget */}
+          <motion.div initial={{ opacity: 0, y: 8 }} animate={{ opacity: 1, y: 0 }} transition={{ duration: 0.18, delay: 0.06 }}>
             <CalendarWidget title="Academic Calendar" subtitle="Official yearly schedule (read-only)" />
           </motion.div>
         </div>
       </div>
 
-      {/* Recent Lessons (demo for now) */}
+      {/* Recent Lessons */}
       <motion.section
         initial={{ opacity: 0, y: 8 }}
         animate={{ opacity: 1, y: 0 }}
@@ -493,27 +651,37 @@ export default function StudentDashboard() {
         </div>
 
         <div className="mt-4 grid gap-3 md:grid-cols-3">
-          {lessons.map((l, idx) => (
-            <div key={idx} className="rounded-2xl border p-4" style={{ borderColor: BRAND.stroke }}>
-              <div className="text-xs font-semibold" style={{ color: BRAND.muted }}>
-                {l.course} • {l.date}
-              </div>
-              <div className="mt-1 text-sm font-extrabold" style={{ color: BRAND.brown }}>
-                {l.title}
-              </div>
-              <div className="mt-1 text-xs font-semibold" style={{ color: BRAND.muted }}>
-                {l.teacher}
-              </div>
-
-              <button
-                className="mt-3 w-full rounded-2xl border px-4 py-2 text-sm font-semibold transition hover:bg-black/5"
-                style={{ borderColor: BRAND.stroke, color: BRAND.brown }}
-                onClick={() => alert("Open lesson viewer")}
-              >
-                View Lesson
-              </button>
+          {loadingLessons ? (
+            <div className="text-sm font-semibold" style={{ color: BRAND.muted }}>
+              Loading lessons...
             </div>
-          ))}
+          ) : lessons.length === 0 ? (
+            <div className="text-sm font-semibold" style={{ color: BRAND.muted }}>
+              No lessons yet.
+            </div>
+          ) : (
+            lessons.map((l, idx) => (
+              <div key={idx} className="rounded-2xl border p-4" style={{ borderColor: BRAND.stroke }}>
+                <div className="text-xs font-semibold" style={{ color: BRAND.muted }}>
+                  {l.course} • {l.date}
+                </div>
+                <div className="mt-1 text-sm font-extrabold" style={{ color: BRAND.brown }}>
+                  {l.title}
+                </div>
+                <div className="mt-1 text-xs font-semibold" style={{ color: BRAND.muted }}>
+                  {l.teacher}
+                </div>
+
+                <button
+                  className="mt-3 w-full rounded-2xl border px-4 py-2 text-sm font-semibold transition hover:bg-black/5"
+                  style={{ borderColor: BRAND.stroke, color: BRAND.brown }}
+                  onClick={() => alert("Open lesson viewer")}
+                >
+                  View Lesson
+                </button>
+              </div>
+            ))
+          )}
         </div>
       </motion.section>
     </div>

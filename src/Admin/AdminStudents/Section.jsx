@@ -1,4 +1,4 @@
-import React, { useMemo, useState, useEffect } from "react";
+import React, { useMemo, useState } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { supabase } from "../../lib/supabaseClient";
 import {
@@ -229,6 +229,28 @@ export default function Sections() {
   // Auto-assign report modal
   const [autoAssignReport, setAutoAssignReport] = useState({ open: false, data: null });
 
+  // ===== Role (admin vs super_admin) =====
+  const roleQ = useQuery({
+    queryKey: ["my_role"],
+    queryFn: async () => {
+      const { data: auth } = await supabase.auth.getUser();
+      const uid = auth?.user?.id;
+      if (!uid) return "anonymous";
+
+      // assumes profiles.user_id + profiles.role
+      const { data, error } = await supabase.from("profiles").select("role").eq("user_id", uid).single();
+      if (error) throw error;
+      return data?.role || "anonymous";
+    },
+  });
+
+  const myRole = roleQ.data || "anonymous";
+  const canWrite = myRole === "super_admin"; // super_admin can insert/update/archive/assign/reset
+
+  function requireSuperAdmin() {
+    if (!canWrite) throw new Error("Not allowed. Super Admin only.");
+  }
+
   // Lookups
   const gradesQ = useQuery({
     queryKey: ["grade_levels"],
@@ -278,7 +300,7 @@ export default function Sections() {
     },
   });
 
-  // ✅ Active SY (use .single() so we don't deal with array indexing)
+  // ✅ Active SY
   const activeSYQ = useQuery({
     queryKey: ["active_school_year"],
     queryFn: async () => {
@@ -294,7 +316,7 @@ export default function Sections() {
     },
   });
 
-  // ✅ Unclassified section (active SY only) (use .single())
+  // ✅ Unclassified section (active SY only)
   const unclassifiedQ = useQuery({
     queryKey: ["unclassified_section", activeSYQ.data?.sy_id],
     enabled: !!activeSYQ.data?.sy_id,
@@ -311,73 +333,6 @@ export default function Sections() {
       return data ?? null;
     },
   });
-
-  // ✅ Optional debug (remove later)
-  useEffect(() => {
-    console.log("ACTIVE SY:", activeSYQ.data);
-    console.log("UNCLASSIFIED:", unclassifiedQ.data);
-  }, [activeSYQ.data, unclassifiedQ.data]);
-
-  useEffect(() => {
-  const run = async () => {
-    const syId = activeSYQ.data?.sy_id;
-    const ucId = unclassifiedQ.data?.section_id;
-
-    if (!syId || !ucId) return;
-
-    const logCount = async (label, q) => {
-      const { count, error } = await q;
-      console.log(label, { count, error });
-    };
-
-    // 1) Just SY
-    await logCount(
-      "TEST 1 (sy only)",
-      supabase.from("students").select("id", { count: "exact", head: true }).eq("sy_id", syId)
-    );
-
-    // 2) SY + status
-    await logCount(
-      "TEST 2 (sy + status Enrolled)",
-      supabase.from("students").select("id", { count: "exact", head: true }).eq("sy_id", syId).eq("status", "Enrolled")
-    );
-
-    // 3) SY + section only (uc or null)
-    await logCount(
-      "TEST 3 (sy + uc/null)",
-      supabase
-        .from("students")
-        .select("id", { count: "exact", head: true })
-        .eq("sy_id", syId)
-        .or(`section_id.is.null,section_id.eq.${ucId}`)
-    );
-
-    // 4) SY + status + uc/null (your real logic)
-    await logCount(
-      "TEST 4 (sy + status + uc/null)",
-      supabase
-        .from("students")
-        .select("id", { count: "exact", head: true })
-        .eq("sy_id", syId)
-        .eq("status", "Enrolled")
-        .or(`section_id.is.null,section_id.eq.${ucId}`)
-    );
-
-    // 5) sanity: exact uc only
-    await logCount(
-      "TEST 5 (sy + status + exact uc only)",
-      supabase
-        .from("students")
-        .select("id", { count: "exact", head: true })
-        .eq("sy_id", syId)
-        .eq("status", "Enrolled")
-        .eq("section_id", ucId)
-    );
-  };
-
-  run();
-}, [activeSYQ.data?.sy_id, unclassifiedQ.data?.section_id]);
-
 
   // Sections list + joins (active SY)
   const sectionsQ = useQuery({
@@ -415,10 +370,7 @@ export default function Sections() {
   const rows = sectionsQ.data ?? [];
 
   // Hide Unclassified always
-  const notUnclassified = useMemo(
-    () => rows.filter((r) => norm(r.section_name) !== "unclassified"),
-    [rows]
-  );
+  const notUnclassified = useMemo(() => rows.filter((r) => norm(r.section_name) !== "unclassified"), [rows]);
 
   // Tab filtering (active/archived)
   const visibleRows = useMemo(() => {
@@ -454,16 +406,13 @@ export default function Sections() {
     },
   });
 
-  // ✅ FIXED: Unclassified students list (active SY, Enrolled only)
-  // IMPORTANT: only run when BOTH sy_id and unclassified section_id exist
+  // ✅ Unclassified students list (active SY, Enrolled only)
   const unclassifiedStudentsQ = useQuery({
     queryKey: ["unclassified_students", activeSYQ.data?.sy_id, unclassifiedQ.data?.section_id],
     enabled: !!activeSYQ.data?.sy_id && !!unclassifiedQ.data?.section_id,
     queryFn: async () => {
       const sy = activeSYQ.data;
       const ucId = unclassifiedQ.data?.section_id;
-
-      // extra safety (shouldn't happen due to enabled)
       if (!sy?.sy_id || !ucId) return [];
 
       const { data, error } = await supabase
@@ -473,12 +422,10 @@ export default function Sections() {
         )
         .eq("sy_id", sy.sy_id)
         .eq("status", "Enrolled")
-        // include legacy null section_id AND explicit Unclassified section_id
         .or(`section_id.is.null,section_id.eq.${ucId}`)
         .order("last_name", { ascending: true });
 
       if (error) throw error;
-
       return data ?? [];
     },
   });
@@ -517,10 +464,33 @@ export default function Sections() {
     };
   }, [notUnclassified, countsQ.data, unclassifiedStudentsQ.data]);
 
+  /**
+   * ✅ NEW: Sync adviser assignment into section_advisers (per active SY).
+   * This writes every time a section is created/updated and adviser_id is set (or cleared).
+   */
+  async function syncSectionAdviser({ section_id, adviser_id }) {
+    const sy = activeSYQ.data;
+    if (!sy?.sy_id) throw new Error("No active school year found.");
+    if (!section_id) throw new Error("Missing section_id for adviser sync.");
+
+    const payload = {
+      sy_id: sy.sy_id,
+      section_id,
+      adviser_id: adviser_id || null,
+    };
+
+    const { error } = await supabase
+      .from("section_advisers")
+      .upsert(payload, { onConflict: "sy_id,section_id" });
+
+    if (error) throw error;
+  }
+
   /* ====================== CRUD + ARCHIVE ====================== */
 
   const createM = useMutation({
     mutationFn: async (values) => {
+      requireSuperAdmin();
       const sy = activeSYQ.data;
       if (!sy?.sy_id) throw new Error("No active school year found.");
 
@@ -530,12 +500,21 @@ export default function Sections() {
         grade_id: values.grade_id || null,
         track_id: values.track_id || null,
         strand_id: values.strand_id || null,
-        adviser_id: values.adviser_id || null,
+        adviser_id: values.adviser_id || null, // keep existing behavior
         is_archived: false,
       };
 
-      const { error } = await supabase.from("sections").insert(payload);
+      // ✅ CHANGE: select section_id so we can upsert into section_advisers
+      const { data, error } = await supabase
+        .from("sections")
+        .insert(payload)
+        .select("section_id, adviser_id")
+        .single();
+
       if (error) throw error;
+
+      // ✅ NEW: mirror adviser assignment to section_advisers
+      await syncSectionAdviser({ section_id: data.section_id, adviser_id: data.adviser_id });
     },
     onSuccess: async () => {
       await qc.invalidateQueries({ queryKey: ["sections", activeSYQ.data?.sy_id] });
@@ -544,15 +523,21 @@ export default function Sections() {
 
   const updateM = useMutation({
     mutationFn: async ({ section_id, values }) => {
+      requireSuperAdmin();
+
       const patch = {
         section_name: values.section_name,
         grade_id: values.grade_id || null,
         track_id: values.track_id || null,
         strand_id: values.strand_id || null,
-        adviser_id: values.adviser_id || null,
+        adviser_id: values.adviser_id || null, // keep existing behavior
       };
+
       const { error } = await supabase.from("sections").update(patch).eq("section_id", section_id);
       if (error) throw error;
+
+      // ✅ NEW: mirror adviser assignment to section_advisers
+      await syncSectionAdviser({ section_id, adviser_id: patch.adviser_id });
     },
     onSuccess: async () => {
       await qc.invalidateQueries({ queryKey: ["sections", activeSYQ.data?.sy_id] });
@@ -561,6 +546,7 @@ export default function Sections() {
 
   const toggleArchiveM = useMutation({
     mutationFn: async ({ section, nextArchived }) => {
+      requireSuperAdmin();
       const { error } = await supabase
         .from("sections")
         .update({ is_archived: !!nextArchived })
@@ -577,6 +563,7 @@ export default function Sections() {
 
   const autoAssignM = useMutation({
     mutationFn: async () => {
+      requireSuperAdmin();
       const sy = activeSYQ.data;
       if (!sy?.sy_id) throw new Error("No active school year found.");
 
@@ -586,22 +573,13 @@ export default function Sections() {
 
       const { data: stData, error: stErr } = await supabase
         .from("students")
-        .select(
-          "id, student_number, first_name, last_name, middle_initial, extension, gender, status, sy_id, grade_id, track_id, strand_id, section_id"
-        )
+        .select("id, student_number, first_name, last_name, middle_initial, extension, gender, status, sy_id, grade_id, track_id, strand_id, section_id")
         .eq("sy_id", sy.sy_id)
         .eq("status", "Enrolled");
-
       if (stErr) throw stErr;
 
-      const candidates = (stData ?? []).filter((s) => {
-        if (!s.section_id) return true; // legacy
-        return s.section_id === unclassifiedId;
-      });
-
-      if (candidates.length === 0) {
-        return { assigned: 0, skipped: 0, reason: "No unclassified enrolled students found." };
-      }
+      const candidates = (stData ?? []).filter((s) => (!s.section_id ? true : s.section_id === unclassifiedId));
+      if (candidates.length === 0) return { assigned: 0, skipped: 0, reason: "No unclassified enrolled students found." };
 
       // Only assign into NON-unclassified & NON-archived sections
       const usableSections = rows
@@ -664,17 +642,11 @@ export default function Sections() {
         counts.set(best.section_id, c);
       }
 
-      if (updates.length === 0) {
-        return { assigned: 0, skipped, reason: "No valid assignments found (capacity/match constraints)." };
-      }
+      if (updates.length === 0) return { assigned: 0, skipped, reason: "No valid assignments found (capacity/match constraints)." };
 
       // Execute updates
       for (const u of updates) {
-        const { error } = await supabase
-          .from("students")
-          .update({ section_id: u.section_id })
-          .eq("id", u.id)
-          .eq("sy_id", sy.sy_id);
+        const { error } = await supabase.from("students").update({ section_id: u.section_id }).eq("id", u.id).eq("sy_id", sy.sy_id);
         if (error) throw error;
 
         const { error: upErr } = await supabase
@@ -712,6 +684,7 @@ export default function Sections() {
 
   const resetAssignM = useMutation({
     mutationFn: async () => {
+      requireSuperAdmin();
       const sy = activeSYQ.data;
       if (!sy?.sy_id) throw new Error("No active school year found.");
 
@@ -745,6 +718,7 @@ export default function Sections() {
 
   const assignOneM = useMutation({
     mutationFn: async ({ student, section_id }) => {
+      requireSuperAdmin();
       const sy = activeSYQ.data;
       if (!sy?.sy_id) throw new Error("No active school year found.");
       const ucId = unclassifiedQ.data?.section_id;
@@ -760,11 +734,7 @@ export default function Sections() {
       const c = (countsQ.data ?? new Map()).get(section_id) || { total: 0 };
       if ((c.total ?? 0) >= MAX_CAPACITY) throw new Error(`This section is at maximum capacity (${MAX_CAPACITY}).`);
 
-      const { error } = await supabase
-        .from("students")
-        .update({ section_id })
-        .eq("id", student.id)
-        .eq("sy_id", sy.sy_id);
+      const { error } = await supabase.from("students").update({ section_id }).eq("id", student.id).eq("sy_id", sy.sy_id);
       if (error) throw error;
 
       const { error: upErr } = await supabase
@@ -776,9 +746,8 @@ export default function Sections() {
     },
     onSuccess: async ({ student_id, section_id }) => {
       // Instant UX: remove from unclassified list immediately
-      qc.setQueryData(
-        ["unclassified_students", activeSYQ.data?.sy_id, unclassifiedQ.data?.section_id],
-        (old) => (Array.isArray(old) ? old.filter((s) => s.id !== student_id) : old)
+      qc.setQueryData(["unclassified_students", activeSYQ.data?.sy_id, unclassifiedQ.data?.section_id], (old) =>
+        Array.isArray(old) ? old.filter((s) => s.id !== student_id) : old
       );
 
       await qc.invalidateQueries({ queryKey: ["students_counts_by_section", activeSYQ.data?.sy_id] });
@@ -791,6 +760,7 @@ export default function Sections() {
 
   const removeFromSectionM = useMutation({
     mutationFn: async ({ student_id }) => {
+      requireSuperAdmin();
       const sy = activeSYQ.data;
       if (!sy?.sy_id) throw new Error("No active school year found.");
       const ucId = unclassifiedQ.data?.section_id;
@@ -799,20 +769,10 @@ export default function Sections() {
       const ok = window.confirm("Remove this student from this section?\n\nThey will be moved back to Unclassified.");
       if (!ok) return { cancelled: true };
 
-      const { error } = await supabase
-        .from("students")
-        .update({ section_id: ucId })
-        .eq("id", student_id)
-        .eq("sy_id", sy.sy_id);
-
+      const { error } = await supabase.from("students").update({ section_id: ucId }).eq("id", student_id).eq("sy_id", sy.sy_id);
       if (error) throw error;
 
-      const { error: delErr } = await supabase
-        .from("student_school_years")
-        .delete()
-        .eq("sy_id", sy.sy_id)
-        .eq("student_id", student_id);
-
+      const { error: delErr } = await supabase.from("student_school_years").delete().eq("sy_id", sy.sy_id).eq("student_id", student_id);
       if (delErr) throw delErr;
 
       return { ok: true };
@@ -883,6 +843,7 @@ export default function Sections() {
   /* ====================== UI HANDLERS ====================== */
 
   function openCreate() {
+    if (!canWrite) return alert("Super Admin only.");
     setModal({
       open: true,
       mode: "create",
@@ -891,6 +852,7 @@ export default function Sections() {
   }
 
   function openEdit(row) {
+    if (!canWrite) return alert("Super Admin only.");
     setModal({
       open: true,
       mode: "edit",
@@ -928,10 +890,17 @@ export default function Sections() {
           <div className={`text-sm ${UI.muted}`}>Manage sections and view student lists per section.</div>
           <div className="mt-1 text-xs text-black/60">
             Active School Year: <span className="font-extrabold text-black">{syLabel}</span>
+            <span className="mx-2 text-black/30">•</span>
+            Role: <span className="font-extrabold text-black">{myRole || "—"}</span>
             <span className="ml-2 rounded-full border border-black/10 bg-black/[0.02] px-2 py-0.5 text-[11px] font-semibold text-black/60">
               Unclassified: {unclassifiedLabel}
             </span>
           </div>
+          {!canWrite ? (
+            <div className="mt-2 rounded-xl border border-black/10 bg-[#C9A227]/5 px-3 py-2 text-xs text-black/70">
+              You are in <span className="font-extrabold">Admin/Teacher view</span>. Editing, assigning, archiving, and reset actions are disabled.
+            </div>
+          ) : null}
         </div>
 
         <div className="flex flex-col gap-2 sm:flex-row">
@@ -939,39 +908,43 @@ export default function Sections() {
             onClick={() => setUnclassifiedModal(true)}
             disabled={!activeSYQ.data || !unclassifiedQ.data?.section_id}
             className="inline-flex items-center justify-center gap-2 rounded-xl border border-black/10 bg-white px-4 py-2 text-sm font-extrabold hover:bg-black/[0.02] disabled:opacity-60"
-            title="View and assign unclassified students"
+            title="View unclassified students"
           >
             <Users className="h-4 w-4 text-black/60" />
             Unclassified ({stats.unclassifiedCount})
           </button>
 
-          <button
-            onClick={() => autoAssignM.mutate()}
-            disabled={autoAssignM.isPending || !activeSYQ.data || !unclassifiedQ.data?.section_id}
-            className="inline-flex items-center justify-center gap-2 rounded-xl border border-black/10 bg-white px-4 py-2 text-sm font-extrabold hover:bg-black/[0.02] disabled:opacity-60"
-            title="Randomly assign enrolled unclassified students to matching non-archived sections (max 40; balanced gender)."
-          >
-            <Shuffle className="h-4 w-4 text-black/60" />
-            Auto-Assign
-          </button>
+          {canWrite ? (
+            <>
+              <button
+                onClick={() => autoAssignM.mutate()}
+                disabled={autoAssignM.isPending || !activeSYQ.data || !unclassifiedQ.data?.section_id}
+                className="inline-flex items-center justify-center gap-2 rounded-xl border border-black/10 bg-white px-4 py-2 text-sm font-extrabold hover:bg-black/[0.02] disabled:opacity-60"
+                title="Randomly assign enrolled unclassified students to matching non-archived sections (max 40; balanced gender)."
+              >
+                <Shuffle className="h-4 w-4 text-black/60" />
+                Auto-Assign
+              </button>
 
-          <button
-            onClick={() => resetAssignM.mutate()}
-            disabled={resetAssignM.isPending || !activeSYQ.data || !unclassifiedQ.data?.section_id}
-            className="inline-flex items-center justify-center gap-2 rounded-xl border border-black/10 bg-white px-4 py-2 text-sm font-extrabold hover:bg-black/[0.02] disabled:opacity-60"
-            title='Reset all section assignments for enrolled students in the active school year (set back to "Unclassified").'
-          >
-            <RotateCcw className="h-4 w-4 text-black/60" />
-            Reset
-          </button>
+              <button
+                onClick={() => resetAssignM.mutate()}
+                disabled={resetAssignM.isPending || !activeSYQ.data || !unclassifiedQ.data?.section_id}
+                className="inline-flex items-center justify-center gap-2 rounded-xl border border-black/10 bg-white px-4 py-2 text-sm font-extrabold hover:bg-black/[0.02] disabled:opacity-60"
+                title='Reset all section assignments for enrolled students in the active school year (set back to "Unclassified").'
+              >
+                <RotateCcw className="h-4 w-4 text-black/60" />
+                Reset
+              </button>
 
-          <button
-            onClick={openCreate}
-            className={`inline-flex items-center justify-center gap-2 rounded-xl px-4 py-2 text-sm font-extrabold ${UI.goldBg} text-black hover:opacity-95`}
-          >
-            <Plus className="h-4 w-4" />
-            Add Section
-          </button>
+              <button
+                onClick={openCreate}
+                className={`inline-flex items-center justify-center gap-2 rounded-xl px-4 py-2 text-sm font-extrabold ${UI.goldBg} text-black hover:opacity-95`}
+              >
+                <Plus className="h-4 w-4" />
+                Add Section
+              </button>
+            </>
+          ) : null}
         </div>
       </div>
 
@@ -1002,18 +975,31 @@ export default function Sections() {
         </div>
       ) : null}
 
+      {createM.isError ? (
+        <div className="rounded-2xl border border-rose-200 bg-rose-50 p-4 text-sm text-rose-700">
+          Create Error: {sbErrorMessage(createM.error)}
+        </div>
+      ) : null}
+      {updateM.isError ? (
+        <div className="rounded-2xl border border-rose-200 bg-rose-50 p-4 text-sm text-rose-700">
+          Update Error: {sbErrorMessage(updateM.error)}
+        </div>
+      ) : null}
+      {toggleArchiveM.isError ? (
+        <div className="rounded-2xl border border-rose-200 bg-rose-50 p-4 text-sm text-rose-700">
+          Archive Error: {sbErrorMessage(toggleArchiveM.error)}
+        </div>
+      ) : null}
       {autoAssignM.isError ? (
         <div className="rounded-2xl border border-rose-200 bg-rose-50 p-4 text-sm text-rose-700">
           Auto-Assign Error: {sbErrorMessage(autoAssignM.error)}
         </div>
       ) : null}
-
       {resetAssignM.isError ? (
         <div className="rounded-2xl border border-rose-200 bg-rose-50 p-4 text-sm text-rose-700">
           Reset Error: {sbErrorMessage(resetAssignM.error)}
         </div>
       ) : null}
-
       {downloadPdfM.isError ? (
         <div className="rounded-2xl border border-rose-200 bg-rose-50 p-4 text-sm text-rose-700">
           PDF Error: {sbErrorMessage(downloadPdfM.error)}
@@ -1164,9 +1150,7 @@ export default function Sections() {
                 const grade = r.grade_levels?.grade_level ?? "—";
                 const track = r.tracks?.track_code ?? "—";
                 const strand = r.strands?.strand_code ?? "—";
-                const adviser = r.teachers
-                  ? `${r.teachers.last_name || ""}, ${r.teachers.first_name || ""}`.trim()
-                  : "—";
+                const adviser = r.teachers ? `${r.teachers.last_name || ""}, ${r.teachers.first_name || ""}`.trim() : "—";
 
                 const rowMode = r.is_archived ? "ONE_ARCHIVED" : "ONE_ACTIVE";
 
@@ -1175,8 +1159,7 @@ export default function Sections() {
                     <td className="px-4 py-3">
                       <div className="font-extrabold">{r.section_name || "—"}</div>
                       <div className="mt-1 text-xs text-black/55">
-                        <span className="text-black/70">Updated:</span>{" "}
-                        {r.updated_at ? new Date(r.updated_at).toLocaleString() : "—"}
+                        <span className="text-black/70">Updated:</span> {r.updated_at ? new Date(r.updated_at).toLocaleString() : "—"}
                       </div>
                     </td>
 
@@ -1222,27 +1205,31 @@ export default function Sections() {
                           <Download className="h-5 w-5 text-black/70" />
                         </button>
 
-                        <IconBtn title="Edit" onClick={() => openEdit(r)} tone="gold">
-                          <Pencil className="h-5 w-5" />
-                        </IconBtn>
+                        {canWrite ? (
+                          <>
+                            <IconBtn title="Edit" onClick={() => openEdit(r)} tone="gold">
+                              <Pencil className="h-5 w-5" />
+                            </IconBtn>
 
-                        {!r.is_archived ? (
-                          <IconBtn
-                            title="Archive section"
-                            onClick={() => toggleArchiveM.mutate({ section: r, nextArchived: true })}
-                            tone="neutral"
-                          >
-                            <Archive className="h-5 w-5" />
-                          </IconBtn>
-                        ) : (
-                          <IconBtn
-                            title="Restore section"
-                            onClick={() => toggleArchiveM.mutate({ section: r, nextArchived: false })}
-                            tone="neutral"
-                          >
-                            <ArchiveRestore className="h-5 w-5" />
-                          </IconBtn>
-                        )}
+                            {!r.is_archived ? (
+                              <IconBtn
+                                title="Archive section"
+                                onClick={() => toggleArchiveM.mutate({ section: r, nextArchived: true })}
+                                tone="neutral"
+                              >
+                                <Archive className="h-5 w-5" />
+                              </IconBtn>
+                            ) : (
+                              <IconBtn
+                                title="Restore section"
+                                onClick={() => toggleArchiveM.mutate({ section: r, nextArchived: false })}
+                                tone="neutral"
+                              >
+                                <ArchiveRestore className="h-5 w-5" />
+                              </IconBtn>
+                            )}
+                          </>
+                        ) : null}
                       </div>
                     </td>
                   </tr>
@@ -1285,7 +1272,7 @@ export default function Sections() {
           activeSY={activeSYQ.data}
           counts={countsQ.data ?? new Map()}
           unclassifiedSectionId={unclassifiedQ.data?.section_id}
-          allSections={rows}
+          canWrite={canWrite}
           onClose={() => setStudentsModal({ open: false, row: null })}
           onRemove={(student_id) => removeFromSectionM.mutate({ student_id })}
           removing={removeFromSectionM.isPending}
@@ -1302,6 +1289,7 @@ export default function Sections() {
           error={unclassifiedStudentsQ.isError ? unclassifiedStudentsQ.error : null}
           allSections={rows}
           counts={countsQ.data ?? new Map()}
+          canWrite={canWrite}
           onAssign={(student, section_id) => assignOneM.mutate({ student, section_id })}
           assigning={assignOneM.isPending}
           assignError={assignOneM.isError ? assignOneM.error : null}
@@ -1311,16 +1299,13 @@ export default function Sections() {
 
       {/* Auto-Assign Report Modal */}
       {autoAssignReport.open ? (
-        <AutoAssignReportModal
-          sy={activeSYQ.data}
-          data={autoAssignReport.data}
-          onClose={() => setAutoAssignReport({ open: false, data: null })}
-        />
+        <AutoAssignReportModal sy={activeSYQ.data} data={autoAssignReport.data} onClose={() => setAutoAssignReport({ open: false, data: null })} />
       ) : null}
 
       <div className="text-xs text-black/55">
-        Wired: <span className="font-mono">sections</span>, <span className="font-mono">students</span>,{" "}
-        <span className="font-mono">school_years</span>, and <span className="font-mono">student_school_years</span>.
+        Wired: <span className="font-mono">sections</span>, <span className="font-mono">students</span>, <span className="font-mono">school_years</span>, and{" "}
+        <span className="font-mono">student_school_years</span>.{" "}
+        <span className="font-mono">section_advisers</span> is now auto-synced on create/update.
       </div>
     </div>
   );
@@ -1356,9 +1341,7 @@ function SectionModal({ mode, row, onClose, onCreate, onUpdate, busy, grades, tr
     return set;
   }, [allSections, isEdit, row?.adviser_id]);
 
-  const availableTeachers = useMemo(() => {
-    return (teachers ?? []).filter((t) => !usedAdvisers.has(t.user_id));
-  }, [teachers, usedAdvisers]);
+  const availableTeachers = useMemo(() => (teachers ?? []).filter((t) => !usedAdvisers.has(t.user_id)), [teachers, usedAdvisers]);
 
   const canSave = !!draft.section_name?.trim();
 
@@ -1411,11 +1394,7 @@ function SectionModal({ mode, row, onClose, onCreate, onUpdate, busy, grades, tr
           <form onSubmit={submit} className="p-4 space-y-4 max-h-[75vh] overflow-auto">
             <CardSection title="Section Details">
               <div className="grid gap-3 md:grid-cols-2">
-                <Input
-                  label="Section Name *"
-                  value={draft.section_name}
-                  onChange={(e) => setDraft((d) => ({ ...d, section_name: e.target.value }))}
-                />
+                <Input label="Section Name *" value={draft.section_name} onChange={(e) => setDraft((d) => ({ ...d, section_name: e.target.value }))} />
 
                 <Select label="Grade Level (optional)" value={draft.grade_id} onChange={(e) => setDraft((d) => ({ ...d, grade_id: e.target.value }))}>
                   <option value="">—</option>
@@ -1451,7 +1430,11 @@ function SectionModal({ mode, row, onClose, onCreate, onUpdate, busy, grades, tr
                   ))}
                 </Select>
 
-                <Select label="Adviser (optional, unique per section)" value={draft.adviser_id || ""} onChange={(e) => setDraft((d) => ({ ...d, adviser_id: e.target.value }))}>
+                <Select
+                  label="Adviser (optional, unique per section)"
+                  value={draft.adviser_id || ""}
+                  onChange={(e) => setDraft((d) => ({ ...d, adviser_id: e.target.value }))}
+                >
                   <option value="">—</option>
                   {availableTeachers.map((t) => (
                     <option key={t.user_id} value={t.user_id}>
@@ -1462,9 +1445,7 @@ function SectionModal({ mode, row, onClose, onCreate, onUpdate, busy, grades, tr
 
                 <div className="rounded-xl border border-black/10 bg-black/[0.01] p-3">
                   <div className="text-xs font-semibold text-black/60">Capacity rule</div>
-                  <div className="mt-1 text-xs text-black/55">
-                    Auto-assign respects max {MAX_CAPACITY} students/section and balances gender.
-                  </div>
+                  <div className="mt-1 text-xs text-black/55">Auto-assign respects max {MAX_CAPACITY} students/section and balances gender.</div>
                 </div>
               </div>
             </CardSection>
@@ -1489,9 +1470,7 @@ function SectionModal({ mode, row, onClose, onCreate, onUpdate, busy, grades, tr
   );
 }
 
-// (rest of your modals + components unchanged)
-
-function StudentsModal({ section, activeSY, counts, unclassifiedSectionId, onClose, onRemove, removing }) {
+function StudentsModal({ section, activeSY, counts, unclassifiedSectionId, canWrite, onClose, onRemove, removing }) {
   const [q, setQ] = useState("");
 
   const studentsQ = useQuery({
@@ -1548,9 +1527,7 @@ function StudentsModal({ section, activeSY, counts, unclassifiedSectionId, onClo
               <div className="flex flex-col gap-3 md:flex-row md:items-end md:justify-between">
                 <div>
                   <div className="text-sm font-extrabold">Roster</div>
-                  <div className={`text-xs ${UI.muted}`}>
-                    {studentsQ.isLoading ? "Loading…" : `Showing ${filtered.length} of ${students.length} students`}
-                  </div>
+                  <div className={`text-xs ${UI.muted}`}>{studentsQ.isLoading ? "Loading…" : `Showing ${filtered.length} of ${students.length} students`}</div>
                 </div>
 
                 <div className="w-full md:w-[360px]">
@@ -1570,9 +1547,7 @@ function StudentsModal({ section, activeSY, counts, unclassifiedSectionId, onClo
             </div>
 
             {studentsQ.isError ? (
-              <div className="rounded-2xl border border-rose-200 bg-rose-50 p-4 text-sm text-rose-700">
-                Error: {sbErrorMessage(studentsQ.error)}
-              </div>
+              <div className="rounded-2xl border border-rose-200 bg-rose-50 p-4 text-sm text-rose-700">Error: {sbErrorMessage(studentsQ.error)}</div>
             ) : (
               <div className={`overflow-hidden rounded-2xl border ${UI.border} ${UI.panel}`}>
                 <table className="w-full text-left text-sm">
@@ -1598,15 +1573,19 @@ function StudentsModal({ section, activeSY, counts, unclassifiedSectionId, onClo
                         <td className="px-4 py-3 text-black/70">{s.updated_at ? new Date(s.updated_at).toLocaleString() : "—"}</td>
                         <td className="px-4 py-3">
                           <div className="flex justify-end">
-                            <button
-                              title="Delete from section (move back to Unclassified)"
-                              onClick={() => onRemove(s.id)}
-                              disabled={removing || !unclassifiedSectionId}
-                              className="inline-flex items-center gap-2 rounded-xl border border-black/10 bg-white px-3 py-2 text-xs font-extrabold hover:bg-black/[0.02] disabled:opacity-60"
-                            >
-                              <Undo2 className="h-4 w-4 text-black/60" />
-                              Unclassify
-                            </button>
+                            {canWrite ? (
+                              <button
+                                title="Delete from section (move back to Unclassified)"
+                                onClick={() => onRemove(s.id)}
+                                disabled={removing || !unclassifiedSectionId}
+                                className="inline-flex items-center gap-2 rounded-xl border border-black/10 bg-white px-3 py-2 text-xs font-extrabold hover:bg-black/[0.02] disabled:opacity-60"
+                              >
+                                <Undo2 className="h-4 w-4 text-black/60" />
+                                Unclassify
+                              </button>
+                            ) : (
+                              <span className="text-xs text-black/45">—</span>
+                            )}
                           </div>
                         </td>
                       </tr>
@@ -1625,11 +1604,7 @@ function StudentsModal({ section, activeSY, counts, unclassifiedSectionId, onClo
             )}
 
             <div className="flex items-center justify-end">
-              <button
-                type="button"
-                onClick={onClose}
-                className="rounded-xl border border-black/10 bg-white px-4 py-2 text-sm font-semibold hover:bg-black/[0.02]"
-              >
+              <button type="button" onClick={onClose} className="rounded-xl border border-black/10 bg-white px-4 py-2 text-sm font-semibold hover:bg-black/[0.02]">
                 Close
               </button>
             </div>
@@ -1640,7 +1615,7 @@ function StudentsModal({ section, activeSY, counts, unclassifiedSectionId, onClo
   );
 }
 
-function UnclassifiedModal({ activeSY, unclassifiedSectionId, students, loading, error, allSections, counts, onAssign, assigning, assignError, onClose }) {
+function UnclassifiedModal({ activeSY, unclassifiedSectionId, students, loading, error, allSections, counts, canWrite, onAssign, assigning, assignError, onClose }) {
   const [q, setQ] = useState("");
   const [pick, setPick] = useState({ student: null, section_id: "" });
 
@@ -1684,8 +1659,12 @@ function UnclassifiedModal({ activeSY, unclassifiedSectionId, students, loading,
 
           <div className="p-4 space-y-4 max-h-[80vh] overflow-auto">
             {!unclassifiedSectionId ? (
-              <div className="rounded-2xl border border-rose-200 bg-rose-50 p-4 text-sm text-rose-700">
-                "Unclassified" section is missing for this active school year.
+              <div className="rounded-2xl border border-rose-200 bg-rose-50 p-4 text-sm text-rose-700">"Unclassified" section is missing for this active school year.</div>
+            ) : null}
+
+            {!canWrite ? (
+              <div className="rounded-2xl border border-black/10 bg-[#C9A227]/5 p-4 text-sm text-black/70">
+                You can view the list, but only <span className="font-extrabold">Super Admin</span> can assign students.
               </div>
             ) : null}
 
@@ -1715,9 +1694,7 @@ function UnclassifiedModal({ activeSY, unclassifiedSectionId, students, loading,
             {loading ? (
               <div className={`rounded-2xl border ${UI.border} bg-white p-6 text-sm ${UI.muted}`}>Loading…</div>
             ) : error ? (
-              <div className="rounded-2xl border border-rose-200 bg-rose-50 p-4 text-sm text-rose-700">
-                Error: {sbErrorMessage(error)}
-              </div>
+              <div className="rounded-2xl border border-rose-200 bg-rose-50 p-4 text-sm text-rose-700">Error: {sbErrorMessage(error)}</div>
             ) : (
               <div className={`overflow-hidden rounded-2xl border ${UI.border} ${UI.panel}`}>
                 <table className="w-full text-left text-sm">
@@ -1740,7 +1717,8 @@ function UnclassifiedModal({ activeSY, unclassifiedSectionId, students, loading,
                           <td className="px-4 py-3 text-black/70">{s.gender || "—"}</td>
                           <td className="px-4 py-3">
                             <select
-                              className="w-full rounded-xl border border-black/10 bg-white px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-[#C9A227]/40"
+                              disabled={!canWrite}
+                              className="w-full rounded-xl border border-black/10 bg-white px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-[#C9A227]/40 disabled:opacity-60"
                               value={isPicked ? pick.section_id : ""}
                               onFocus={() => setPick({ student: s, section_id: "" })}
                               onChange={(e) => setPick({ student: s, section_id: e.target.value })}
@@ -1752,20 +1730,22 @@ function UnclassifiedModal({ activeSY, unclassifiedSectionId, students, loading,
                                 </option>
                               ))}
                             </select>
-                            {isPicked && eligibleSections.length === 0 ? (
-                              <div className="mt-1 text-[11px] text-rose-700">No eligible sections for this student.</div>
-                            ) : null}
+                            {isPicked && eligibleSections.length === 0 ? <div className="mt-1 text-[11px] text-rose-700">No eligible sections for this student.</div> : null}
                           </td>
                           <td className="px-4 py-3">
                             <div className="flex justify-end">
-                              <button
-                                disabled={!isPicked || !pick.section_id || assigning}
-                                onClick={() => onAssign(s, pick.section_id)}
-                                className={`inline-flex items-center gap-2 rounded-xl px-3 py-2 text-xs font-extrabold ${UI.goldBg} text-black hover:opacity-95 disabled:opacity-60`}
-                              >
-                                <UserCheck className="h-4 w-4" />
-                                Assign
-                              </button>
+                              {canWrite ? (
+                                <button
+                                  disabled={!isPicked || !pick.section_id || assigning}
+                                  onClick={() => onAssign(s, pick.section_id)}
+                                  className={`inline-flex items-center gap-2 rounded-xl px-3 py-2 text-xs font-extrabold ${UI.goldBg} text-black hover:opacity-95 disabled:opacity-60`}
+                                >
+                                  <UserCheck className="h-4 w-4" />
+                                  Assign
+                                </button>
+                              ) : (
+                                <span className="text-xs text-black/45">—</span>
+                              )}
                             </div>
                           </td>
                         </tr>
@@ -1785,17 +1765,11 @@ function UnclassifiedModal({ activeSY, unclassifiedSectionId, students, loading,
             )}
 
             {assignError ? (
-              <div className="rounded-2xl border border-rose-200 bg-rose-50 p-4 text-sm text-rose-700">
-                {sbErrorMessage(assignError)}
-              </div>
+              <div className="rounded-2xl border border-rose-200 bg-rose-50 p-4 text-sm text-rose-700">{sbErrorMessage(assignError)}</div>
             ) : null}
 
             <div className="flex items-center justify-end">
-              <button
-                type="button"
-                onClick={onClose}
-                className="rounded-xl border border-black/10 bg-white px-4 py-2 text-sm font-semibold hover:bg-black/[0.02]"
-              >
+              <button type="button" onClick={onClose} className="rounded-xl border border-black/10 bg-white px-4 py-2 text-sm font-semibold hover:bg-black/[0.02]">
                 Close
               </button>
             </div>
@@ -1986,11 +1960,7 @@ function Select({ label, error, children, ...rest }) {
 }
 
 function IconBtn({ title, onClick, tone, children }) {
-  const cls =
-    tone === "neutral"
-      ? "bg-black/5 text-black/70 hover:bg-black/10"
-      : "bg-[#C9A227]/10 text-[#C9A227] hover:opacity-90";
-
+  const cls = tone === "neutral" ? "bg-black/5 text-black/70 hover:bg-black/10" : "bg-[#C9A227]/10 text-[#C9A227] hover:opacity-90";
   return (
     <button title={title} onClick={onClick} className={`grid h-9 w-9 place-items-center rounded-xl border border-black/10 ${cls}`}>
       {children}
