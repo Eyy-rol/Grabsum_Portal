@@ -44,6 +44,7 @@ import AdminManagement from "./dev/pages/AdminManagement.jsx";
 import ActivityLogs from "./dev/pages/ActivityLogs.jsx";
 import AuditReports from "./dev/pages/AuditReports.jsx";
 
+
 export default function App() {
   return (
     <BrowserRouter>
@@ -59,7 +60,9 @@ export default function App() {
             ADMIN (protected)
            =========================== */}
         <Route element={<RequireRole allow={["admin", "super_admin"]} />}>
+        
           <Route path="/admin" element={<AdminLayout />}>
+          
             <Route index element={<AdminHome />} />
             <Route path="students/enrollment" element={<Enrollment />} />
             <Route path="students/classes" element={<Classes />} />
