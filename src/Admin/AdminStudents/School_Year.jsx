@@ -246,8 +246,8 @@ export default function SchoolYears() {
           <div className="text-lg font-extrabold">School Years</div>
           <div className={`text-sm ${UI.muted}`}>
             {canWrite
-              ? "Manage academic school years. New years are created as Inactive. Activate exactly one."
-              : "View academic school years (Read-only). Super Admin can manage records."}
+              ? ""
+              : ""}
           </div>
           <div className="mt-1 text-xs text-black/60">
             Role:{" "}
@@ -326,11 +326,7 @@ export default function SchoolYears() {
           </div>
         </div>
 
-        <div className={`mt-3 rounded-xl border border-black/10 bg-white p-3 text-xs ${UI.muted}`}>
-          Tip: For best safety, create a Postgres RPC{" "}
-          <span className="font-semibold text-black">activate_school_year(p_sy_id uuid)</span>. This UI calls RPC first,
-          then falls back to sequential updates.
-        </div>
+       
       </div>
 
       {/* Error banners */}

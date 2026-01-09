@@ -1,6 +1,8 @@
-import React, { useEffect, useMemo, useState } from "react";
+// Subjects.jsx (refactored to match Sections/Enrollment-style: react-query, white+gold UI, clean cards/tables/modals)
+import React, { useMemo, useState } from "react";
 import { supabase } from "../../lib/supabaseClient";
-import { Plus, Search, Pencil, Archive, RotateCcw, X, Save, Download } from "lucide-react";
+import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
+import { Plus, Search, Pencil, Archive, RotateCcw, X, Save, Download, ArchiveRestore } from "lucide-react";
 
 // PDF export (install): npm i jspdf jspdf-autotable
 import jsPDF from "jspdf";
@@ -37,9 +39,7 @@ function prettyDate(raw) {
 }
 
 function sbErrMsg(err) {
-  const msg = String(err?.message || err || "");
-  // customize if you have unique constraints later
-  return msg;
+  return String(err?.message || err || "Unknown error");
 }
 
 function TypePill({ value }) {
@@ -53,44 +53,11 @@ function TypePill({ value }) {
       ? "bg-emerald-500/10 text-emerald-700"
       : "bg-black/5 text-black/70";
 
-  return <span className={`inline-flex rounded-full px-3 py-1 text-xs font-semibold ${cls}`}>{value}</span>;
+  return <span className={`inline-flex rounded-full px-3 py-1 text-xs font-semibold ${cls}`}>{value || "—"}</span>;
 }
 
 export default function Subjects() {
-  // ===== Role (admin vs super_admin) =====
-  const [myRole, setMyRole] = useState("anonymous");
-  const canWrite = myRole === "super_admin";
-
-  useEffect(() => {
-    let alive = true;
-
-    async function loadRole() {
-      try {
-        const { data: auth } = await supabase.auth.getUser();
-        const uid = auth?.user?.id;
-        if (!uid) {
-          if (alive) setMyRole("anonymous");
-          return;
-        }
-
-        const { data, error } = await supabase.from("profiles").select("role").eq("user_id", uid).single();
-        if (error) throw error;
-        if (alive) setMyRole(data?.role || "anonymous");
-      } catch {
-        if (alive) setMyRole("anonymous");
-      }
-    }
-
-    loadRole();
-
-    return () => {
-      alive = false;
-    };
-  }, []);
-
-  function requireSuperAdmin() {
-    if (!canWrite) throw new Error("Not allowed. Super Admin only.");
-  }
+  const qc = useQueryClient();
 
   // Filters
   const [q, setQ] = useState("");
@@ -100,123 +67,132 @@ export default function Subjects() {
   const [fTrack, setFTrack] = useState("All");
   const [fStrand, setFStrand] = useState("All");
 
-  // Data
-  const [rows, setRows] = useState([]);
-  const [grades, setGrades] = useState([]); // {id,label}
-  const [tracks, setTracks] = useState([]); // {id,label}
-  const [strands, setStrands] = useState([]); // {id,label,track_id}
-  const [loading, setLoading] = useState(true);
-  const [err, setErr] = useState(null);
-
   // Bulk selection
-  const [selected, setSelected] = useState({});
+  const [selected, setSelected] = useState({}); // { [subject_id]: boolean }
 
   // Modal
   const [modal, setModal] = useState({ open: false, mode: "create", row: null });
 
-  const loadAll = async () => {
-    setLoading(true);
-    setErr(null);
+  // ===== Role (admin vs super_admin) =====
+  const roleQ = useQuery({
+    queryKey: ["my_role"],
+    queryFn: async () => {
+      const { data: auth } = await supabase.auth.getUser();
+      const uid = auth?.user?.id;
+      if (!uid) return "anonymous";
+      const { data, error } = await supabase.from("profiles").select("role").eq("user_id", uid).single();
+      if (error) throw error;
+      return data?.role || "anonymous";
+    },
+  });
 
-    try {
-      const [subRes, gradeRes, trackRes, strandRes] = await Promise.all([
-        supabase
-          .from("subjects")
-          .select(
-            "subject_id, subject_code, subject_title, subject_type, units, grade_id, strand_id, is_archived, created_at, updated_at, archived_at"
-          )
-          .order("subject_code", { ascending: true }),
+  const myRole = roleQ.data || "anonymous";
+  const canWrite = myRole === "super_admin";
 
-        supabase.from("grade_levels").select("grade_id, grade_level").order("grade_level", { ascending: true }),
+  function requireSuperAdmin() {
+    if (!canWrite) throw new Error("Not allowed. Super Admin only.");
+  }
 
-        supabase.from("tracks").select("track_id, track_code").order("track_code", { ascending: true }),
+  // Lookups
+  const gradesQ = useQuery({
+    queryKey: ["grade_levels"],
+    queryFn: async () => {
+      const { data, error } = await supabase.from("grade_levels").select("grade_id, grade_level").order("grade_level", { ascending: true });
+      if (error) throw error;
+      return (data ?? []).map((g) => ({ id: g.grade_id, label: String(g.grade_level) }));
+    },
+  });
 
-        supabase.from("strands").select("strand_id, strand_code, track_id").order("strand_code", { ascending: true }),
-      ]);
+  const tracksQ = useQuery({
+    queryKey: ["tracks"],
+    queryFn: async () => {
+      const { data, error } = await supabase.from("tracks").select("track_id, track_code").order("track_code", { ascending: true });
+      if (error) throw error;
+      return (data ?? []).map((t) => ({ id: t.track_id, label: t.track_code ?? "(Unnamed)" }));
+    },
+  });
 
-      if (subRes.error) throw subRes.error;
-      if (gradeRes.error) throw gradeRes.error;
-      if (trackRes.error) throw trackRes.error; // ✅ FIX: missing check in your code
-      if (strandRes.error) throw strandRes.error;
+  const strandsQ = useQuery({
+    queryKey: ["strands", tracksQ.data?.length],
+    enabled: true,
+    queryFn: async () => {
+      const { data, error } = await supabase.from("strands").select("strand_id, strand_code, track_id").order("strand_code", { ascending: true });
+      if (error) throw error;
+      return data ?? [];
+    },
+  });
 
-      setRows(subRes.data ?? []);
+  const strands = useMemo(() => {
+    const tracks = tracksQ.data ?? [];
+    const trackMap = new Map(tracks.map((t) => [t.id, t.label]));
+    return (strandsQ.data ?? []).map((s) => ({
+      id: s.strand_id,
+      track_id: s.track_id,
+      label: `${trackMap.get(s.track_id) || ""}${trackMap.get(s.track_id) ? " - " : ""}${s.strand_code ?? "(Unnamed)"}`.trim(),
+      _strand_code: s.strand_code ?? "",
+    }));
+  }, [strandsQ.data, tracksQ.data]);
 
-      setGrades(
-        (gradeRes.data ?? []).map((g) => ({
-          id: g.grade_id,
-          label: String(g.grade_level),
-        }))
-      );
+  // Subjects list
+  const subjectsQ = useQuery({
+    queryKey: ["subjects"],
+    queryFn: async () => {
+      const { data, error } = await supabase
+        .from("subjects")
+        .select("subject_id, subject_code, subject_title, subject_type, units, grade_id, strand_id, is_archived, created_at, updated_at, archived_at")
+        .order("subject_code", { ascending: true });
+      if (error) throw error;
+      return data ?? [];
+    },
+  });
 
-      setTracks(
-        (trackRes.data ?? []).map((t) => ({
-          id: t.track_id,
-          label: t.track_code ?? "(Unnamed)",
-        }))
-      );
-
-      const trackMap = new Map((trackRes.data ?? []).map((t) => [t.track_id, t.track_code ?? ""]));
-
-      setStrands(
-        (strandRes.data ?? []).map((s) => ({
-          id: s.strand_id,
-          track_id: s.track_id,
-          label: `${trackMap.get(s.track_id) || ""}${trackMap.get(s.track_id) ? " - " : ""}${s.strand_code ?? "(Unnamed)"}`
-            .trim(),
-        }))
-      );
-    } catch (e) {
-      setErr(e?.message ?? String(e));
-    } finally {
-      setLoading(false);
-    }
-  };
-
-  useEffect(() => {
-    loadAll();
-  }, []);
+  const rows = subjectsQ.data ?? [];
+  const grades = gradesQ.data ?? [];
+  const tracks = tracksQ.data ?? [];
 
   const activeRows = useMemo(() => rows.filter((r) => !r.is_archived), [rows]);
-  const archivedRows = useMemo(() => rows.filter((r) => r.is_archived), [rows]);
+  const archivedRows = useMemo(() => rows.filter((r) => !!r.is_archived), [rows]);
   const data = tab === "Archived" ? archivedRows : activeRows;
+
+  // Maps (fast lookups)
+  const gradeMap = useMemo(() => new Map(grades.map((g) => [g.id, g.label])), [grades]);
+  const trackMap = useMemo(() => new Map(tracks.map((t) => [t.id, t.label])), [tracks]);
+  const strandMap = useMemo(() => new Map(strands.map((s) => [s.id, s])), [strands]);
 
   const filtered = useMemo(() => {
     const needle = q.trim().toLowerCase();
 
     return data
-      .filter((r) =>
-        needle
-          ? `${r.subject_code || ""} ${r.subject_title || ""}`.toLowerCase().includes(needle)
-          : true
-      )
+      .filter((r) => (needle ? `${r.subject_code || ""} ${r.subject_title || ""}`.toLowerCase().includes(needle) : true))
       .filter((r) => (fType === "All" ? true : norm(r.subject_type) === norm(fType)))
       .filter((r) => (fGrade === "All" ? true : (r.grade_id || "") === fGrade))
       .filter((r) => {
         if (fTrack === "All") return true;
-        const strand = strands.find((x) => x.id === r.strand_id);
-        return strand ? strand.track_id === fTrack : false;
+        const st = strandMap.get(r.strand_id);
+        return st ? st.track_id === fTrack : false;
       })
       .filter((r) => (fStrand === "All" ? true : (r.strand_id || "") === fStrand));
-  }, [data, q, fType, fGrade, fTrack, fStrand, strands]);
+  }, [data, q, fType, fGrade, fTrack, fStrand, strandMap]);
 
   const selectedIds = useMemo(
     () => Object.entries(selected).filter(([, v]) => v).map(([k]) => k),
     [selected]
   );
 
-  const allVisibleSelected =
-    filtered.length > 0 && filtered.every((r) => Boolean(selected[r.subject_id]));
+  const allVisibleSelected = filtered.length > 0 && filtered.every((r) => Boolean(selected[r.subject_id]));
 
-  const clearSelection = () => setSelected({});
+  function clearSelection() {
+    setSelected({});
+  }
 
-  const toggleSelectAll = (checked) => {
-    if (!canWrite) return; // ✅ Super Admin only
+  function toggleSelectAll(checked) {
+    if (!canWrite) return;
     setSelected((prev) => {
       const next = { ...prev };
       for (const r of filtered) next[r.subject_id] = checked;
       return next;
     });
-  };
+  }
 
   function openCreate() {
     if (!canWrite) return alert("Super Admin only.");
@@ -231,6 +207,8 @@ export default function Subjects() {
         units: 0,
         grade_id: "",
         strand_id: "",
+        created_at: null,
+        updated_at: null,
       },
     });
   }
@@ -240,117 +218,114 @@ export default function Subjects() {
     setModal({ open: true, mode: "edit", row });
   }
 
-  async function createSubject(values) {
-    requireSuperAdmin();
-    const payload = {
-      subject_id: values.subject_id,
-      subject_code: String(values.subject_code || "").trim(),
-      subject_title: String(values.subject_title || "").trim(),
-      subject_type: values.subject_type,
-      units: Number(values.units || 0),
-      grade_id: values.grade_id ? values.grade_id : null,
-      strand_id: values.strand_id ? values.strand_id : null,
-      is_archived: false,
-      archived_at: null,
-    };
+  // Mutations
+  const createM = useMutation({
+    mutationFn: async (values) => {
+      requireSuperAdmin();
+      const payload = {
+        subject_id: values.subject_id || uid(),
+        subject_code: String(values.subject_code || "").trim(),
+        subject_title: String(values.subject_title || "").trim(),
+        subject_type: values.subject_type,
+        units: Number(values.units || 0),
+        grade_id: values.grade_id ? values.grade_id : null,
+        strand_id: values.strand_id ? values.strand_id : null,
+        is_archived: false,
+        archived_at: null,
+      };
+      const { error } = await supabase.from("subjects").insert(payload);
+      if (error) throw error;
+    },
+    onSuccess: async () => {
+      await qc.invalidateQueries({ queryKey: ["subjects"] });
+    },
+  });
 
-    const { error } = await supabase.from("subjects").insert(payload);
-    if (error) throw error;
-    await loadAll();
-  }
+  const updateM = useMutation({
+    mutationFn: async ({ id, values }) => {
+      requireSuperAdmin();
+      const patch = {
+        subject_code: String(values.subject_code || "").trim(),
+        subject_title: String(values.subject_title || "").trim(),
+        subject_type: values.subject_type,
+        units: Number(values.units || 0),
+        grade_id: values.grade_id ? values.grade_id : null,
+        strand_id: values.strand_id ? values.strand_id : null,
+      };
+      const { error } = await supabase.from("subjects").update(patch).eq("subject_id", id);
+      if (error) throw error;
+    },
+    onSuccess: async () => {
+      await qc.invalidateQueries({ queryKey: ["subjects"] });
+    },
+  });
 
-  async function updateSubject(id, values) {
-    requireSuperAdmin();
-    const patch = {
-      subject_code: String(values.subject_code || "").trim(),
-      subject_title: String(values.subject_title || "").trim(),
-      subject_type: values.subject_type,
-      units: Number(values.units || 0),
-      grade_id: values.grade_id ? values.grade_id : null,
-      strand_id: values.strand_id ? values.strand_id : null,
-    };
+  const archiveOneM = useMutation({
+    mutationFn: async (row) => {
+      requireSuperAdmin();
+      const ok = window.confirm(`Archive ${row.subject_code || "this subject"}?`);
+      if (!ok) return { cancelled: true };
+      const { error } = await supabase
+        .from("subjects")
+        .update({ is_archived: true, archived_at: new Date().toISOString() })
+        .eq("subject_id", row.subject_id);
+      if (error) throw error;
+      return { ok: true };
+    },
+    onSuccess: async (res) => {
+      if (res?.cancelled) return;
+      clearSelection();
+      await qc.invalidateQueries({ queryKey: ["subjects"] });
+    },
+  });
 
-    const { error } = await supabase.from("subjects").update(patch).eq("subject_id", id);
-    if (error) throw error;
-    await loadAll();
-  }
+  const restoreOneM = useMutation({
+    mutationFn: async (row) => {
+      requireSuperAdmin();
+      const { error } = await supabase.from("subjects").update({ is_archived: false, archived_at: null }).eq("subject_id", row.subject_id);
+      if (error) throw error;
+      return { ok: true };
+    },
+    onSuccess: async () => {
+      clearSelection();
+      await qc.invalidateQueries({ queryKey: ["subjects"] });
+    },
+  });
 
-  async function archiveOne(row) {
-    if (!canWrite) return alert("Super Admin only.");
-    const ok = window.confirm(`Archive ${row.subject_code}?`);
-    if (!ok) return;
+  const bulkArchiveM = useMutation({
+    mutationFn: async () => {
+      requireSuperAdmin();
+      const ok = window.confirm(`Archive ${selectedIds.length} subject(s)?`);
+      if (!ok) return { cancelled: true };
+      const { error } = await supabase
+        .from("subjects")
+        .update({ is_archived: true, archived_at: new Date().toISOString() })
+        .in("subject_id", selectedIds);
+      if (error) throw error;
+      return { ok: true };
+    },
+    onSuccess: async (res) => {
+      if (res?.cancelled) return;
+      clearSelection();
+      await qc.invalidateQueries({ queryKey: ["subjects"] });
+    },
+  });
 
-    const { error } = await supabase
-      .from("subjects")
-      .update({ is_archived: true, archived_at: new Date().toISOString() })
-      .eq("subject_id", row.subject_id);
+  const bulkRestoreM = useMutation({
+    mutationFn: async () => {
+      requireSuperAdmin();
+      const { error } = await supabase.from("subjects").update({ is_archived: false, archived_at: null }).in("subject_id", selectedIds);
+      if (error) throw error;
+      return { ok: true };
+    },
+    onSuccess: async () => {
+      clearSelection();
+      await qc.invalidateQueries({ queryKey: ["subjects"] });
+    },
+  });
 
-    if (error) {
-      alert(error.message);
-      return;
-    }
-
-    clearSelection();
-    await loadAll();
-  }
-
-  async function restoreOne(row) {
-    if (!canWrite) return alert("Super Admin only.");
-
-    const { error } = await supabase
-      .from("subjects")
-      .update({ is_archived: false, archived_at: null })
-      .eq("subject_id", row.subject_id);
-
-    if (error) {
-      alert(error.message);
-      return;
-    }
-
-    clearSelection();
-    await loadAll();
-  }
-
-  async function bulkArchive() {
-    if (!canWrite) return alert("Super Admin only.");
-    const ok = window.confirm(`Archive ${selectedIds.length} subject(s)?`);
-    if (!ok) return;
-
-    const { error } = await supabase
-      .from("subjects")
-      .update({ is_archived: true, archived_at: new Date().toISOString() })
-      .in("subject_id", selectedIds);
-
-    if (error) {
-      alert(error.message);
-      return;
-    }
-
-    clearSelection();
-    await loadAll();
-  }
-
-  async function bulkRestore() {
-    if (!canWrite) return alert("Super Admin only.");
-
-    const { error } = await supabase
-      .from("subjects")
-      .update({ is_archived: false, archived_at: null })
-      .in("subject_id", selectedIds);
-
-    if (error) {
-      alert(error.message);
-      return;
-    }
-
-    clearSelection();
-    await loadAll();
-  }
-
-  const typeTabs = ["All", ...SUBJECT_TYPES];
-
-  const exportSubjectsPdf = (which) => {
-    // which: "active" | "archived"
+  // PDF Export (all active or all archived)
+  function exportSubjectsPdf(which) {
     const list = which === "archived" ? archivedRows : activeRows;
 
     const doc = new jsPDF({ orientation: "landscape", unit: "pt", format: "a4" });
@@ -358,7 +333,6 @@ export default function Subjects() {
     const title = which === "archived" ? "Archived Subjects" : "Active Subjects";
     const generatedAt = new Date().toLocaleString();
 
-    // Header
     doc.setFont("helvetica", "bold");
     doc.setFontSize(16);
     doc.text(title, 40, 40);
@@ -367,10 +341,6 @@ export default function Subjects() {
     doc.setFontSize(10);
     doc.text(`Generated: ${generatedAt}`, 40, 60);
     doc.text(`Total: ${list.length}`, 40, 74);
-
-    const gradeMap = new Map(grades.map((g) => [g.id, g.label]));
-    const trackMap = new Map(tracks.map((t) => [t.id, t.label]));
-    const strandMap = new Map(strands.map((s) => [s.id, s]));
 
     const body = list.map((r) => {
       const grade = gradeMap.get(r.grade_id) ?? "All";
@@ -394,25 +364,20 @@ export default function Subjects() {
       startY: 90,
       head: [["Code", "Title", "Type", "Grade", "Track", "Strand", "Units", "Updated"]],
       body,
-      styles: {
-        font: "helvetica",
-        fontSize: 9,
-        cellPadding: 6,
-      },
-      headStyles: {
-        fillColor: [245, 245, 245],
-        textColor: 60,
-      },
-      alternateRowStyles: {
-        fillColor: [252, 252, 252],
-      },
+      styles: { font: "helvetica", fontSize: 9, cellPadding: 6 },
+      headStyles: { fontStyle: "bold" }, // keep minimal style (like Enrollment/Sections)
       margin: { left: 40, right: 40 },
       theme: "grid",
     });
 
     const filename = `subjects_${which}_${new Date().toISOString().slice(0, 10)}.pdf`;
     doc.save(filename);
-  };
+  }
+
+  const typeTabs = ["All", ...SUBJECT_TYPES];
+
+  const loading = subjectsQ.isLoading || gradesQ.isLoading || tracksQ.isLoading || strandsQ.isLoading;
+  const err = subjectsQ.error || gradesQ.error || tracksQ.error || strandsQ.error;
 
   return (
     <div className={`${UI.pageBg} ${UI.text} space-y-4`}>
@@ -420,10 +385,11 @@ export default function Subjects() {
       <div className="flex flex-col gap-3 md:flex-row md:items-end md:justify-between">
         <div>
           <div className="text-lg font-extrabold">Subjects</div>
-          <div className={`text-sm ${UI.muted}`}>Clean, white + gold admin subjects management.</div>
+          <div className={`text-sm ${UI.muted}`}>Manage subjects (Core / Applied / Specialized) with clean white + gold UI.</div>
           <div className="mt-1 text-xs text-black/60">
             Role: <span className="font-extrabold text-black">{myRole || "—"}</span>
           </div>
+
           {!canWrite ? (
             <div className="mt-2 rounded-xl border border-black/10 bg-[#C9A227]/5 px-3 py-2 text-xs text-black/70">
               You are in <span className="font-extrabold">Admin/Teacher view</span>. Add/Edit/Archive/Restore are disabled.
@@ -436,7 +402,8 @@ export default function Subjects() {
             <button
               type="button"
               onClick={() => exportSubjectsPdf("active")}
-              className="inline-flex items-center gap-2 rounded-xl border border-black/10 bg-white px-4 py-2 text-sm font-extrabold hover:bg-black/[0.02]"
+              disabled={loading}
+              className="inline-flex items-center gap-2 rounded-xl border border-black/10 bg-white px-4 py-2 text-sm font-extrabold hover:bg-black/[0.02] disabled:opacity-60"
               title="Download Active Subjects (PDF)"
             >
               <Download className="h-4 w-4 text-black/70" />
@@ -445,7 +412,8 @@ export default function Subjects() {
             <button
               type="button"
               onClick={() => exportSubjectsPdf("archived")}
-              className="inline-flex items-center gap-2 rounded-xl border border-black/10 bg-white px-4 py-2 text-sm font-extrabold hover:bg-black/[0.02]"
+              disabled={loading}
+              className="inline-flex items-center gap-2 rounded-xl border border-black/10 bg-white px-4 py-2 text-sm font-extrabold hover:bg-black/[0.02] disabled:opacity-60"
               title="Download Archived Subjects (PDF)"
             >
               <Download className="h-4 w-4 text-black/70" />
@@ -487,7 +455,7 @@ export default function Subjects() {
 
       {/* Filters */}
       <div className={`rounded-2xl border ${UI.border} ${UI.panel} p-4`}>
-        <div className="grid gap-3 md:grid-cols-4">
+        <div className="grid gap-3 md:grid-cols-5">
           <Field label="Search (code/title)">
             <div className="relative">
               <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-black/45" />
@@ -544,7 +512,7 @@ export default function Subjects() {
               value={fTrack}
               onChange={(e) => {
                 setFTrack(e.target.value);
-                setFStrand("All"); // avoid mismatches
+                setFStrand("All");
               }}
               className="mt-1 w-full rounded-xl border border-black/10 bg-white px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-[#C9A227]/40"
             >
@@ -577,11 +545,12 @@ export default function Subjects() {
 
         <div className="mt-3 flex flex-col gap-2 md:flex-row md:items-center md:justify-between">
           <div className={`text-xs ${UI.muted}`}>
-            Showing {filtered.length} of {rows.length}
+            Showing <span className="font-extrabold text-black">{filtered.length}</span> of{" "}
+            <span className="font-extrabold text-black">{rows.length}</span>
           </div>
 
           {selectedIds.length > 0 ? (
-            <div className="flex items-center justify-end gap-2">
+            <div className="flex flex-wrap items-center justify-end gap-2">
               <span className="rounded-full border border-black/10 bg-black/[0.02] px-3 py-1 text-xs font-semibold text-black/70">
                 {selectedIds.length} selected
               </span>
@@ -589,16 +558,18 @@ export default function Subjects() {
               {canWrite ? (
                 tab === "Active" ? (
                   <button
-                    onClick={bulkArchive}
-                    className="inline-flex items-center gap-2 rounded-xl border border-black/10 bg-rose-500/10 px-4 py-2 text-sm font-extrabold text-rose-700 hover:bg-rose-500/15"
+                    onClick={() => bulkArchiveM.mutate()}
+                    disabled={bulkArchiveM.isPending}
+                    className="inline-flex items-center gap-2 rounded-xl border border-black/10 bg-rose-500/10 px-4 py-2 text-sm font-extrabold text-rose-700 hover:bg-rose-500/15 disabled:opacity-60"
                   >
                     <Archive className="h-4 w-4" />
                     Archive Selected
                   </button>
                 ) : (
                   <button
-                    onClick={bulkRestore}
-                    className="inline-flex items-center gap-2 rounded-xl border border-black/10 bg-[#C9A227]/10 px-4 py-2 text-sm font-extrabold text-[#C9A227] hover:opacity-90"
+                    onClick={() => bulkRestoreM.mutate()}
+                    disabled={bulkRestoreM.isPending}
+                    className="inline-flex items-center gap-2 rounded-xl border border-black/10 bg-[#C9A227]/10 px-4 py-2 text-sm font-extrabold text-[#C9A227] hover:opacity-90 disabled:opacity-60"
                   >
                     <RotateCcw className="h-4 w-4" />
                     Restore Selected
@@ -618,6 +589,7 @@ export default function Subjects() {
               onClick={() => {
                 setQ("");
                 setFType("All");
+                setTab("Active");
                 setFGrade("All");
                 setFTrack("All");
                 setFStrand("All");
@@ -631,27 +603,35 @@ export default function Subjects() {
         </div>
       </div>
 
+      {/* Errors */}
+      {err ? (
+        <div className="rounded-2xl border border-rose-200 bg-rose-50 p-4 text-sm text-rose-700">
+          Error: {sbErrMsg(err)}
+          <div className="mt-3">
+            <button
+              onClick={() => {
+                qc.invalidateQueries({ queryKey: ["subjects"] });
+                qc.invalidateQueries({ queryKey: ["grade_levels"] });
+                qc.invalidateQueries({ queryKey: ["tracks"] });
+                qc.invalidateQueries({ queryKey: ["strands"] });
+              }}
+              className="rounded-xl border border-black/10 bg-white px-4 py-2 text-sm font-semibold hover:bg-black/[0.02]"
+            >
+              Retry
+            </button>
+          </div>
+        </div>
+      ) : null}
+
       {/* Table */}
       <div className={`overflow-hidden rounded-2xl border ${UI.border} ${UI.panel}`}>
         <div className="flex items-center justify-between border-b border-black/10 px-4 py-3">
           <div className="text-sm font-extrabold">{tab === "Active" ? "Active Subjects" : "Archived Subjects"}</div>
-          <div className={`text-xs ${UI.muted}`}>{loading ? "Loading…" : err ? "Error" : "Ready"}</div>
+          <div className={`text-xs ${UI.muted}`}>{loading ? "Loading…" : "Ready"}</div>
         </div>
 
         {loading ? (
           <div className={`p-6 text-sm ${UI.muted}`}>Loading…</div>
-        ) : err ? (
-          <div className="p-6 text-sm text-rose-700">
-            Error: {String(err)}
-            <div className="mt-3">
-              <button
-                onClick={loadAll}
-                className="rounded-xl border border-black/10 bg-white px-4 py-2 text-sm font-semibold hover:bg-black/[0.02]"
-              >
-                Retry
-              </button>
-            </div>
-          </div>
         ) : (
           <table className="w-full text-left text-sm">
             <thead className="bg-black/[0.02] text-xs text-black/60">
@@ -679,10 +659,10 @@ export default function Subjects() {
             </thead>
             <tbody>
               {filtered.map((r) => {
-                const g = grades.find((x) => x.id === r.grade_id)?.label ?? "All";
-                const strandObj = strands.find((x) => x.id === r.strand_id);
+                const g = gradeMap.get(r.grade_id) ?? "All";
+                const strandObj = strandMap.get(r.strand_id);
                 const s = strandObj?.label ?? "All";
-                const t = tracks.find((x) => x.id === strandObj?.track_id)?.label ?? "All";
+                const t = strandObj ? trackMap.get(strandObj.track_id) ?? "All" : "All";
 
                 return (
                   <tr key={r.subject_id} className="border-t border-black/10 hover:bg-black/[0.01]">
@@ -691,43 +671,35 @@ export default function Subjects() {
                         type="checkbox"
                         checked={Boolean(selected[r.subject_id])}
                         disabled={!canWrite}
-                        onChange={(e) =>
-                          setSelected((prev) => ({
-                            ...prev,
-                            [r.subject_id]: e.target.checked,
-                          }))
-                        }
+                        onChange={(e) => setSelected((prev) => ({ ...prev, [r.subject_id]: e.target.checked }))}
                         className="h-4 w-4 rounded border border-black/20 disabled:opacity-60"
                         title={canWrite ? "Select" : "Super Admin only"}
                       />
                     </td>
-                    <td className="px-4 py-3 font-semibold">{r.subject_code}</td>
-                    <td className="px-4 py-3">{r.subject_title}</td>
+
+                    <td className="px-4 py-3 font-semibold">{r.subject_code || "—"}</td>
+                    <td className="px-4 py-3">{r.subject_title || "—"}</td>
                     <td className="px-4 py-3">
                       <TypePill value={r.subject_type} />
                     </td>
                     <td className="px-4 py-3 text-black/70">{g}</td>
                     <td className="px-4 py-3 text-black/70">{t}</td>
                     <td className="px-4 py-3 text-black/70">{s}</td>
-                    <td className="px-4 py-3 text-black/70">{r.units}</td>
+                    <td className="px-4 py-3 text-black/70">{String(r.units ?? 0)}</td>
                     <td className="px-4 py-3 text-black/70">{prettyDate(r.updated_at)}</td>
+
                     <td className="px-4 py-3">
                       <div className="flex justify-end gap-2">
                         {tab === "Active" ? (
                           <>
-                            <IconBtn
-                              title={canWrite ? "Edit" : "Super Admin only"}
-                              onClick={() => openEdit(r)}
-                              tone="gold"
-                              disabled={!canWrite}
-                            >
+                            <IconBtn title={canWrite ? "Edit" : "Super Admin only"} onClick={() => openEdit(r)} tone="gold" disabled={!canWrite}>
                               <Pencil className="h-5 w-5" />
                             </IconBtn>
                             <IconBtn
                               title={canWrite ? "Archive" : "Super Admin only"}
-                              onClick={() => archiveOne(r)}
+                              onClick={() => archiveOneM.mutate(r)}
                               tone="danger"
-                              disabled={!canWrite}
+                              disabled={!canWrite || archiveOneM.isPending}
                             >
                               <Archive className="h-5 w-5" />
                             </IconBtn>
@@ -735,11 +707,11 @@ export default function Subjects() {
                         ) : (
                           <IconBtn
                             title={canWrite ? "Restore" : "Super Admin only"}
-                            onClick={() => restoreOne(r)}
+                            onClick={() => restoreOneM.mutate(r)}
                             tone="gold"
-                            disabled={!canWrite}
+                            disabled={!canWrite || restoreOneM.isPending}
                           >
-                            <RotateCcw className="h-5 w-5" />
+                            <ArchiveRestore className="h-5 w-5" />
                           </IconBtn>
                         )}
                       </div>
@@ -768,9 +740,10 @@ export default function Subjects() {
           grades={grades}
           strands={strands}
           canWrite={canWrite}
+          busy={createM.isPending || updateM.isPending}
           onClose={() => setModal({ open: false, mode: "create", row: null })}
-          onCreate={createSubject}
-          onUpdate={updateSubject}
+          onCreate={(values) => createM.mutateAsync(values)}
+          onUpdate={(id, values) => updateM.mutateAsync({ id, values })}
         />
       ) : null}
     </div>
@@ -779,9 +752,8 @@ export default function Subjects() {
 
 /* ================= Modal (CENTER + BACKDROP BLUR) ================= */
 
-function SubjectModal({ mode, row, grades, strands, canWrite, onClose, onCreate, onUpdate }) {
+function SubjectModal({ mode, row, grades, strands, canWrite, busy, onClose, onCreate, onUpdate }) {
   const isEdit = mode === "edit";
-  const [busy, setBusy] = useState(false);
 
   const lastUpdatedAt = useMemo(() => {
     if (!row) return null;
@@ -825,15 +797,12 @@ function SubjectModal({ mode, row, grades, strands, canWrite, onClose, onCreate,
     setErrors(vErr);
     if (Object.keys(vErr).length) return;
 
-    setBusy(true);
     try {
       if (isEdit) await onUpdate(row.subject_id, values);
       else await onCreate(values);
       onClose();
     } catch (err) {
       alert(sbErrMsg(err));
-    } finally {
-      setBusy(false);
     }
   }
 
@@ -846,7 +815,7 @@ function SubjectModal({ mode, row, grades, strands, canWrite, onClose, onCreate,
           <div className="flex items-start justify-between gap-4 border-b border-black/10 p-4">
             <div>
               <div className="text-base font-extrabold">{isEdit ? "Edit Subject" : "Add Subject"}</div>
-              <div className={`text-xs ${UI.muted}`}>White + gold minimal design. Uses Supabase subjects table.</div>
+              <div className={`text-xs ${UI.muted}`}>Clean white + gold form. Subject code + title required.</div>
             </div>
 
             <div className="text-right">
@@ -857,11 +826,7 @@ function SubjectModal({ mode, row, grades, strands, canWrite, onClose, onCreate,
                 </div>
               ) : null}
 
-              <button
-                onClick={onClose}
-                className="mt-2 grid h-9 w-9 place-items-center rounded-xl hover:bg-black/5 ml-auto"
-                title="Close"
-              >
+              <button onClick={onClose} className="mt-2 grid h-9 w-9 place-items-center rounded-xl hover:bg-black/5 ml-auto" title="Close">
                 <X className="h-5 w-5 text-black/60" />
               </button>
             </div>
@@ -883,6 +848,7 @@ function SubjectModal({ mode, row, grades, strands, canWrite, onClose, onCreate,
                   error={errors.subject_code}
                   disabled={!canWrite}
                 />
+
                 <Select
                   label="Subject Type *"
                   value={values.subject_type}
@@ -896,6 +862,7 @@ function SubjectModal({ mode, row, grades, strands, canWrite, onClose, onCreate,
                     </option>
                   ))}
                 </Select>
+
                 <Input
                   label="Units"
                   type="number"
@@ -919,12 +886,7 @@ function SubjectModal({ mode, row, grades, strands, canWrite, onClose, onCreate,
 
             <Section title="Scope (optional)">
               <div className="grid gap-3 md:grid-cols-2">
-                <Select
-                  label="Grade"
-                  value={values.grade_id}
-                  onChange={(e) => setValues((p) => ({ ...p, grade_id: e.target.value }))}
-                  disabled={!canWrite}
-                >
+                <Select label="Grade" value={values.grade_id} onChange={(e) => setValues((p) => ({ ...p, grade_id: e.target.value }))} disabled={!canWrite}>
                   <option value="">All</option>
                   {grades.map((g) => (
                     <option key={g.id} value={g.id}>
@@ -964,6 +926,7 @@ function SubjectModal({ mode, row, grades, strands, canWrite, onClose, onCreate,
               >
                 Cancel
               </button>
+
               {canWrite ? (
                 <button
                   disabled={busy}

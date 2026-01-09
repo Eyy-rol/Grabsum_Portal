@@ -314,33 +314,39 @@ export default function Enrollment() {
   });
 
   // ✅ Students (Enrolled tab) + profiles flags for Active/Archived scope
-  const studentsQ = useQuery({
-    queryKey: ["students_with_profile"],
-    enabled: tab === "Enrolled",
-    queryFn: async () => {
-      const { data, error } = await supabase
-        .from("students")
-        .select(
-          `
+const studentsQ = useQuery({
+  queryKey: ["students_with_profile"],
+  enabled: tab === "Enrolled",
+  queryFn: async () => {
+    const { data, error } = await supabase
+      .from("students")
+      .select(
+        `
           *,
           profiles (
             user_id,
             is_active,
             is_archived
+          ),
+          enrollment (
+            id,
+            is_archived
           )
         `
-        )
-        .order("updated_at", { ascending: false });
+      )
+      .order("updated_at", { ascending: false });
 
-      if (error) throw error;
+    if (error) throw error;
 
-      return (data ?? []).map((s) => ({
-        ...s,
-        profile_is_active: s.profiles?.is_active ?? true,
-        profile_is_archived: s.profiles?.is_archived ?? false,
-      }));
-    },
-  });
+    return (data ?? []).map((s) => ({
+      ...s,
+      profile_is_active: s.profiles?.is_active ?? true,
+      profile_is_archived: s.profiles?.is_archived ?? false,
+      enrollment_is_archived: s.enrollment?.is_archived ?? false,
+    }));
+  },
+});
+
 
   const enrollmentRows = enrollQ.data ?? [];
   const studentsRows = studentsQ.data ?? [];
@@ -380,20 +386,25 @@ export default function Enrollment() {
   );
 
   const filteredStudents = useMemo(() => {
-    const needle = qName.trim().toLowerCase();
+  const needle = qName.trim().toLowerCase();
 
-    return (studentsRows ?? [])
-      .filter((s) => {
-        // Active scope = NOT archived, Archived scope = archived OR inactive
-        const archived = Boolean(s.profile_is_archived) || !Boolean(s.profile_is_active);
-        return archived === (scope === "Archived");
-      })
-      .filter((r) => {
-        if (!needle) return true;
-        const hay = `${r.student_number || ""} ${r.first_name || ""} ${r.last_name || ""} ${r.email || ""}`.toLowerCase();
-        return hay.includes(needle);
-      });
-  }, [studentsRows, qName, scope]);
+  return (studentsRows ?? [])
+    .filter((s) => {
+      // ✅ archived if:
+      // - profile archived OR profile inactive OR enrollment archived
+      const archived =
+        Boolean(s.profile_is_archived) ||
+        !Boolean(s.profile_is_active) ||
+        Boolean(s.enrollment_is_archived);
+
+      return archived === (scope === "Archived");
+    })
+    .filter((r) => {
+      if (!needle) return true;
+      const hay = `${r.student_number || ""} ${r.first_name || ""} ${r.last_name || ""} ${r.email || ""}`.toLowerCase();
+      return hay.includes(needle);
+    });
+}, [studentsRows, qName, scope]);
 
   /* ===================== Mutations ===================== */
 
@@ -549,100 +560,45 @@ export default function Enrollment() {
   });
 
   // ✅ archive enrolled student directly (Enrolled tab)
-  const archiveStudentM = useMutation({
-    mutationFn: async (stuRow) => {
-      if (!stuRow.user_id) throw new Error("Missing user_id");
+const archiveStudentM = useMutation({
+  mutationFn: async (stuRow) => {
+    const { data, error } = await supabase.functions.invoke(EDGE_FN_NAME, {
+      body: { action: "archive_student", student_id: stuRow.id },
+    });
 
-      // 1) lock profile => RequireRole will force logout
-      const { error: e1 } = await supabase
-        .from("profiles")
-        .update({
-          is_active: false,
-          is_archived: true,
-          updated_at: new Date().toISOString(),
-        })
-        .eq("user_id", stuRow.user_id);
-      if (e1) throw e1;
+    if (error) throw new Error(error.message || "Archive failed");
+    if (!data?.ok) throw new Error(data?.error || "Archive failed");
 
-      // 2) archive enrollment row too (if linked)
-      if (stuRow.enrollment_id) {
-        const { error: e2 } = await supabase
-          .from("enrollment")
-          .update({
-            is_archived: true,
-            updated_at: new Date().toISOString(),
-            st_updated_at: new Date().toISOString(),
-          })
-          .eq("id", stuRow.enrollment_id);
-        if (e2) throw e2;
-      } else {
-        // fallback by user_id (your schema supports enrollment.user_id)
-        const { error: e3 } = await supabase
-          .from("enrollment")
-          .update({
-            is_archived: true,
-            updated_at: new Date().toISOString(),
-            st_updated_at: new Date().toISOString(),
-          })
-          .eq("user_id", stuRow.user_id);
-        if (e3) throw e3;
-      }
+    return true;
+  },
+  onSuccess: async () => {
+    await qc.invalidateQueries({ queryKey: ["students_with_profile"] });
+    await qc.invalidateQueries({ queryKey: ["enrollment"] });
+    toast.push({ tone: "success", title: "Archived", message: "Student moved to Archived and access disabled." });
+  },
+  onError: (e) => toast.push({ tone: "danger", title: "Archive failed", message: String(e?.message || e) }),
+});
 
-      return true;
-    },
-    onSuccess: async () => {
-      await qc.invalidateQueries({ queryKey: ["students_with_profile"] });
-      await qc.invalidateQueries({ queryKey: ["enrollment"] });
-      toast.push({ tone: "success", title: "Archived", message: "Student account disabled." });
-    },
-    onError: (e) => toast.push({ tone: "danger", title: "Archive failed", message: String(e?.message || e) }),
-  });
 
-  const restoreStudentM = useMutation({
-    mutationFn: async (stuRow) => {
-      if (!stuRow.user_id) throw new Error("Missing user_id");
+const restoreStudentM = useMutation({
+  mutationFn: async (stuRow) => {
+    const { data, error } = await supabase.functions.invoke(EDGE_FN_NAME, {
+      body: { action: "restore_student", student_id: stuRow.id },
+    });
 
-      const { error: e1 } = await supabase
-        .from("profiles")
-        .update({
-          is_active: true,
-          is_archived: false,
-          updated_at: new Date().toISOString(),
-        })
-        .eq("user_id", stuRow.user_id);
-      if (e1) throw e1;
+    if (error) throw new Error(error.message || "Restore failed");
+    if (!data?.ok) throw new Error(data?.error || "Restore failed");
 
-      if (stuRow.enrollment_id) {
-        const { error: e2 } = await supabase
-          .from("enrollment")
-          .update({
-            is_archived: false,
-            updated_at: new Date().toISOString(),
-            st_updated_at: new Date().toISOString(),
-          })
-          .eq("id", stuRow.enrollment_id);
-        if (e2) throw e2;
-      } else {
-        const { error: e3 } = await supabase
-          .from("enrollment")
-          .update({
-            is_archived: false,
-            updated_at: new Date().toISOString(),
-            st_updated_at: new Date().toISOString(),
-          })
-          .eq("user_id", stuRow.user_id);
-        if (e3) throw e3;
-      }
+    return true;
+  },
+  onSuccess: async () => {
+    await qc.invalidateQueries({ queryKey: ["students_with_profile"] });
+    await qc.invalidateQueries({ queryKey: ["enrollment"] });
+    toast.push({ tone: "success", title: "Restored", message: "Student access enabled." });
+  },
+  onError: (e) => toast.push({ tone: "danger", title: "Restore failed", message: String(e?.message || e) }),
+});
 
-      return true;
-    },
-    onSuccess: async () => {
-      await qc.invalidateQueries({ queryKey: ["students_with_profile"] });
-      await qc.invalidateQueries({ queryKey: ["enrollment"] });
-      toast.push({ tone: "success", title: "Restored", message: "Student access enabled." });
-    },
-    onError: (e) => toast.push({ tone: "danger", title: "Restore failed", message: String(e?.message || e) }),
-  });
 
   const resetPwdM = useMutation({
     mutationFn: async (stuRow) => {
