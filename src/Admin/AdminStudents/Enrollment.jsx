@@ -71,7 +71,6 @@ const enrollmentSchema = z.object({
   track_id: z.string().optional().or(z.literal("")),
   strand_id: z.string().optional().or(z.literal("")),
 
-  sy_id: z.string().optional().or(z.literal("")),
 
   st_application_status: z.enum(["Pending", "Approved", "Rejected"]).optional(),
 });
@@ -664,7 +663,7 @@ export default function Enrollment() {
         grade_id: "",
         track_id: "",
         strand_id: "",
-        sy_id: "",
+       
         st_application_status: "Pending",
       },
     });
@@ -1211,7 +1210,7 @@ function StudentModal({ mode, row, tracks, grades, strands, onClose, onCreate, o
       grade_id: row?.grade_id || "",
       track_id: row?.track_id || "",
       strand_id: row?.strand_id || "",
-      sy_id: row?.sy_id || "",
+  
 
       st_application_status: row?.st_application_status || "Pending",
     };
