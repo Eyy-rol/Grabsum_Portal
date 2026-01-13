@@ -57,12 +57,8 @@ function titleFromPath(path) {
   if (path.includes("/teacher/schedule")) return "Schedule";
   if (path.includes("/teacher/announcements")) return "Announcements";
   if (path.includes("/teacher/students")) return "Students";
-<<<<<<< HEAD:src/layout/TeacherLayout.jsx
   if (path.includes("/teacher/settings")) return "Profile";
-=======
-  if (path.includes("/teacher/settings")) return "Settings";
   if (path.includes("/teacher/lesson-library")) return "Lesson Library";
->>>>>>> parent of 178c498 (Revert "[FEAT-0003B] Add Teacher Lesson"):src/layout/TeacherLayout.tsx
   return "Teacher";
 }
 

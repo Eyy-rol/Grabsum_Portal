@@ -824,7 +824,7 @@ export default function LessonSampler() {
         setLessonStatus(data.status || nextStatus);
 
         // move URL from /lesson/edit/new -> /lesson/edit/:uuid
-        navigate(`/lesson/edit/${savedLessonId}`, { replace: true });
+        navigate(`/teacher/lesson/edit/${savedLessonId}`, { replace: true });
       } else {
         const { error } = await supabase
           .from("lessons")

@@ -112,6 +112,8 @@ export default function App() {
             <Route path="announcements" element={<TeacherAnnouncements />} />
             <Route path="students" element={<TeacherStudents />} />
             <Route path="settings" element={<TeacherSettings />} />
+            <Route path="lesson/edit/:lessonId" element={<LessonSampler />} />
+            <Route path="lesson/edit/new" element={<LessonSampler />} />
 
             {/* ✅ teacher change password route */}
             <Route path="change-password" element={<ChangePassword />} />
