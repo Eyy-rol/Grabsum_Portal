@@ -1005,15 +1005,13 @@ export default function Sections() {
       <div className="flex flex-col gap-3 md:flex-row md:items-end md:justify-between">
         <div>
           <div className="text-lg font-extrabold">Sections</div>
-          <div className={`text-sm ${UI.muted}`}>Manage sections and view student lists per section.</div>
+      
 
           <div className="mt-1 text-xs text-black/60">
             Active School Year: <span className="font-extrabold text-black">{syLabel}</span>
             <span className="mx-2 text-black/30">•</span>
             Role: <span className="font-extrabold text-black">{myRole || "—"}</span>
-            <span className="ml-2 rounded-full border border-black/10 bg-black/[0.02] px-2 py-0.5 text-[11px] font-semibold text-black/60">
-              Unclassified: {unclassifiedLabel}
-            </span>
+          
           </div>
 
           {!canWrite ? (
@@ -1400,10 +1398,7 @@ export default function Sections() {
         />
       ) : null}
 
-      <div className="text-xs text-black/55">
-        Wired: <span className="font-mono">sections</span>, <span className="font-mono">students</span>, <span className="font-mono">school_years</span>,{" "}
-        <span className="font-mono">student_school_years</span>. <span className="font-mono">section_advisers</span> is auto-synced on create/update.
-      </div>
+   
     </div>
   );
 }

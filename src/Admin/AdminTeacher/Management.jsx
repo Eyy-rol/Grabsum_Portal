@@ -1,12 +1,6 @@
-// Management.jsx (UPDATED: Advisory comes from section_advisers + sections for the ACTIVE school year)
-// Table now shows: Employee # | Name | Email | Advisory | Position | Status | Actions
-// Department + Contact are hidden in table and only shown in View/Edit modal.
-//
-// IMPORTANT:
-// 1) This assumes your `school_years` table has a boolean column `is_active`.
-//    - If your column name differs (e.g. `active`), change fetchActiveSchoolYear().
-// 2) This assumes your `sections` table has either `section_name` or `section_code` (or both).
-//    - Adjust the `sections(...)` selection if your columns differ.
+// Admin/AdminTeacher/Management.jsx
+// UPDATED: Toast confirmations for Save / Reset Password / Archive / Restore
+// NO alert() / NO window.confirm()
 
 import React, { useEffect, useMemo, useState } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
@@ -35,6 +29,114 @@ function errMsg(e) {
   return String(e?.message || e || "Unknown error");
 }
 
+/* ===================== Toasts ===================== */
+
+function ToastHost({ toasts, onDismiss }) {
+  return (
+    <div className="fixed top-4 right-4 z-[9999] flex w-[360px] max-w-[92vw] flex-col gap-2">
+      {toasts.map((t) => (
+        <div
+          key={t.id}
+          className={`rounded-2xl border bg-white p-4 shadow-xl ${
+            t.tone === "danger"
+              ? "border-rose-200"
+              : t.tone === "success"
+              ? "border-emerald-200"
+              : "border-black/10"
+          }`}
+        >
+          <div className="flex items-start justify-between gap-3">
+            <div className="min-w-0">
+              <div className="text-sm font-extrabold text-[#1F1A14]">{t.title}</div>
+              {t.message ? <div className="mt-1 text-xs font-semibold text-black/60">{t.message}</div> : null}
+
+              {t.actions?.length ? (
+                <div className="mt-3 flex flex-wrap gap-2">
+                  {t.actions.map((a) => (
+                    <button
+                      key={a.label}
+                      onClick={a.onClick}
+                      className={`rounded-xl px-3 py-2 text-xs font-extrabold ${
+                        a.variant === "danger"
+                          ? "bg-rose-600 text-white"
+                          : a.variant === "primary"
+                          ? "bg-[#C9A227] text-black"
+                          : "border border-black/10 bg-white text-black/70"
+                      }`}
+                      type="button"
+                    >
+                      {a.label}
+                    </button>
+                  ))}
+                </div>
+              ) : null}
+            </div>
+
+            <button
+              onClick={() => onDismiss(t.id)}
+              className="grid h-8 w-8 place-items-center rounded-xl hover:bg-black/5"
+              title="Close"
+              type="button"
+            >
+              <X className="h-4 w-4 text-black/50" />
+            </button>
+          </div>
+        </div>
+      ))}
+    </div>
+  );
+}
+
+function useToasts() {
+  const [toasts, setToasts] = useState([]);
+
+  const push = (toast) => {
+    const id = crypto.randomUUID?.() || String(Date.now() + Math.random());
+    const item = { id, tone: "info", ...toast };
+    setToasts((p) => [item, ...p]);
+
+    if (!item.actions?.length) {
+      setTimeout(() => {
+        setToasts((p) => p.filter((x) => x.id !== id));
+      }, 3200);
+    }
+    return id;
+  };
+
+  const dismiss = (id) => setToasts((p) => p.filter((x) => x.id !== id));
+
+  const confirm = ({ title, message, confirmText = "Confirm", cancelText = "Cancel", tone = "danger" }) =>
+    new Promise((resolve) => {
+      const id = push({
+        title,
+        message,
+        tone,
+        actions: [
+          {
+            label: cancelText,
+            variant: "secondary",
+            onClick: () => {
+              dismiss(id);
+              resolve(false);
+            },
+          },
+          {
+            label: confirmText,
+            variant: tone === "danger" ? "danger" : "primary",
+            onClick: () => {
+              dismiss(id);
+              resolve(true);
+            },
+          },
+        ],
+      });
+    });
+
+  return { toasts, push, dismiss, confirm };
+}
+
+/* ===================== Role + Advisory helpers ===================== */
+
 /** fetch my role once */
 async function fetchMyRole() {
   const { data: sess, error: sessErr } = await supabase.auth.getSession();
@@ -47,7 +149,7 @@ async function fetchMyRole() {
   return (prof?.role || "").toLowerCase() || null;
 }
 
-/** Get active school year (adjust column name if needed) */
+/** Get active school year (adjust if needed) */
 async function fetchActiveSchoolYear() {
   const { data, error } = await supabase
     .from("school_years")
@@ -66,20 +168,21 @@ async function fetchAdvisoryMapForSy(syId) {
 
   const { data, error } = await supabase
     .from("section_advisers")
-    .select(`
+    .select(
+      `
       adviser_id,
       section_id,
       sections (
         section_id,
         section_name
       )
-    `)
+    `
+    )
     .eq("sy_id", syId);
 
   if (error) throw error;
 
   const map = new Map();
-
   for (const row of data || []) {
     const adviserId = row?.adviser_id;
     if (!adviserId) continue;
@@ -97,9 +200,11 @@ async function fetchAdvisoryMapForSy(syId) {
   return map;
 }
 
+/* ===================== Page ===================== */
 
 export default function Management() {
   const qc = useQueryClient();
+  const toast = useToasts();
 
   const [q, setQ] = useState("");
   const [tab, setTab] = useState("active"); // "active" | "archived"
@@ -167,7 +272,6 @@ export default function Management() {
     if (!needle) return visibleRows;
 
     return visibleRows.filter((r) => {
-      // ✅ search excludes department/contact; includes advisory_label
       const hay =
         `${r.employee_number || ""} ${r.position || ""} ${r.status || ""} ` +
         `${r.first_name || ""} ${r.last_name || ""} ${r.email || ""} ` +
@@ -209,7 +313,11 @@ export default function Management() {
 
       return data;
     },
-    onSuccess: () => qc.invalidateQueries({ queryKey: ["teachers-with-advisory"] }),
+    onSuccess: async () => {
+      await qc.invalidateQueries({ queryKey: ["teachers-with-advisory"] });
+      toast.push({ tone: "success", title: "Created", message: "Teacher created successfully." });
+    },
+    onError: (e) => toast.push({ tone: "danger", title: "Create failed", message: errMsg(e) }),
   });
 
   // UPDATE (teachers table only)
@@ -230,10 +338,14 @@ export default function Management() {
       const { error } = await supabase.from("teachers").update(payload).eq("user_id", user_id);
       if (error) throw error;
     },
-    onSuccess: () => qc.invalidateQueries({ queryKey: ["teachers-with-advisory"] }),
+    onSuccess: async () => {
+      await qc.invalidateQueries({ queryKey: ["teachers-with-advisory"] });
+      toast.push({ tone: "success", title: "Saved", message: "Teacher updated successfully." });
+    },
+    onError: (e) => toast.push({ tone: "danger", title: "Update failed", message: errMsg(e) }),
   });
 
-  // ✅ ARCHIVE / RESTORE (via Edge Function so it can also update profiles reliably)
+  // ARCHIVE / RESTORE
   const archiveM = useMutation({
     mutationFn: async ({ user_id, is_archived }) => {
       requireSuperAdmin();
@@ -243,20 +355,20 @@ export default function Management() {
           action: "set_archived",
           user_id,
           is_archived: Boolean(is_archived),
-          // if you want to clear adviser mapping on archive, implement this server-side and pass a flag
-          // clear_adviser_assignments: true,
         },
       });
 
       if (error) throw error;
       if (!data?.ok) throw new Error(data?.error || "Archive/restore failed.");
-
       return data;
     },
-    onSuccess: () => qc.invalidateQueries({ queryKey: ["teachers-with-advisory"] }),
+    onSuccess: async () => {
+      await qc.invalidateQueries({ queryKey: ["teachers-with-advisory"] });
+    },
+    onError: (e) => toast.push({ tone: "danger", title: "Archive/restore failed", message: errMsg(e) }),
   });
 
-  // Reset Password via Edge Function
+  // Reset Password
   const resetPwdM = useMutation({
     mutationFn: async ({ user_id }) => {
       requireSuperAdmin();
@@ -278,7 +390,11 @@ export default function Management() {
 
       return data;
     },
-    onSuccess: () => qc.invalidateQueries({ queryKey: ["teachers-with-advisory"] }),
+    onSuccess: async () => {
+      await qc.invalidateQueries({ queryKey: ["teachers-with-advisory"] });
+      toast.push({ tone: "success", title: "Password reset", message: "Temporary password generated." });
+    },
+    onError: (e) => toast.push({ tone: "danger", title: "Reset failed", message: errMsg(e) }),
   });
 
   function openCreate() {
@@ -302,24 +418,61 @@ export default function Management() {
     setModal({ open: false, mode: "create", row: null });
   }
 
-  function onArchive(row) {
+  async function onArchive(row) {
     if (!canManage) return;
-    const ok = window.confirm(`Archive teacher ${row.employee_number}? (Hidden from UI. You can restore from Archived tab.)`);
+
+    const ok = await toast.confirm({
+      title: "Archive teacher?",
+      message: `This will disable access for ${row.employee_number}.`,
+      confirmText: "Archive",
+      cancelText: "Cancel",
+      tone: "danger",
+    });
+
     if (!ok) return;
-    archiveM.mutate({ user_id: row.user_id, is_archived: true });
-  }
 
-  function onRestore(row) {
-    if (!canManage) return;
-    archiveM.mutate({ user_id: row.user_id, is_archived: false });
-  }
-
-  function onResetPassword(row) {
-    if (!canManage) return;
-    const ok = window.confirm(
-      `Reset password for ${row.employee_number}? This will generate a new temp password and force password change on next login.`
+    archiveM.mutate(
+      { user_id: row.user_id, is_archived: true },
+      {
+        onSuccess: () => toast.push({ tone: "success", title: "Archived", message: "Teacher has been archived." }),
+      }
     );
+  }
+
+  async function onRestore(row) {
+    if (!canManage) return;
+
+    const ok = await toast.confirm({
+      title: "Restore teacher?",
+      message: `Restore access for ${row.employee_number}?`,
+      confirmText: "Restore",
+      cancelText: "Cancel",
+      tone: "info",
+    });
+
     if (!ok) return;
+
+    archiveM.mutate(
+      { user_id: row.user_id, is_archived: false },
+      {
+        onSuccess: () => toast.push({ tone: "success", title: "Restored", message: "Teacher access restored." }),
+      }
+    );
+  }
+
+  async function onResetPassword(row) {
+    if (!canManage) return;
+
+    const ok = await toast.confirm({
+      title: "Reset password?",
+      message: `Generate a new temporary password for ${row.employee_number}?`,
+      confirmText: "Reset Password",
+      cancelText: "Cancel",
+      tone: "danger",
+    });
+
+    if (!ok) return;
+
     resetPwdM.mutate({ user_id: row.user_id });
   }
 
@@ -341,6 +494,8 @@ export default function Management() {
 
   return (
     <div className="space-y-4">
+      <ToastHost toasts={toast.toasts} onDismiss={toast.dismiss} />
+
       <div className="flex flex-col gap-3 md:flex-row md:items-end md:justify-between">
         <div>
           <div className="text-sm font-extrabold">Teacher • Management {roleBadge}</div>
@@ -407,14 +562,18 @@ export default function Management() {
             <button
               type="button"
               onClick={() => setTab("active")}
-              className={`rounded-2xl px-4 py-2 text-sm font-extrabold border border-black/10 ${tab === "active" ? "bg-white" : "bg-white/60"}`}
+              className={`rounded-2xl px-4 py-2 text-sm font-extrabold border border-black/10 ${
+                tab === "active" ? "bg-white" : "bg-white/60"
+              }`}
             >
               Active
             </button>
             <button
               type="button"
               onClick={() => setTab("archived")}
-              className={`rounded-2xl px-4 py-2 text-sm font-extrabold border border-black/10 ${tab === "archived" ? "bg-white" : "bg-white/60"}`}
+              className={`rounded-2xl px-4 py-2 text-sm font-extrabold border border-black/10 ${
+                tab === "archived" ? "bg-white" : "bg-white/60"
+              }`}
             >
               Archived
             </button>
@@ -521,31 +680,11 @@ export default function Management() {
           canManage={canManage}
         />
       ) : null}
-
-      {/* feedback */}
-      {createM.isError ? (
-        <div className="rounded-2xl border border-rose-200 bg-rose-50 p-4 text-sm text-rose-700">
-          Create error: {errMsg(createM.error)}
-        </div>
-      ) : null}
-      {resetPwdM.isError ? (
-        <div className="rounded-2xl border border-rose-200 bg-rose-50 p-4 text-sm text-rose-700">
-          Reset password error: {errMsg(resetPwdM.error)}
-        </div>
-      ) : null}
-      {updateM.isError ? (
-        <div className="rounded-2xl border border-rose-200 bg-rose-50 p-4 text-sm text-rose-700">
-          Update error: {errMsg(updateM.error)}
-        </div>
-      ) : null}
-      {archiveM.isError ? (
-        <div className="rounded-2xl border border-rose-200 bg-rose-50 p-4 text-sm text-rose-700">
-          Archive/restore error: {errMsg(archiveM.error)}
-        </div>
-      ) : null}
     </div>
   );
 }
+
+/* ================= Modal ================= */
 
 function TeacherModal({ mode, row, onClose, onCreate, onUpdate, busy, canManage }) {
   const isView = mode === "view";
@@ -614,7 +753,9 @@ function TeacherModal({ mode, row, onClose, onCreate, onUpdate, busy, canManage 
   return (
     <>
       <div className="fixed inset-0 z-40 bg-black/25" onClick={onClose} />
-      <div className={`fixed right-4 top-4 bottom-4 z-50 w-[92vw] max-w-xl rounded-2xl border ${TOKENS.border} ${TOKENS.panel} shadow-xl`}>
+      <div
+        className={`fixed right-4 top-4 bottom-4 z-50 w-[92vw] max-w-xl rounded-2xl border ${TOKENS.border} ${TOKENS.panel} shadow-xl`}
+      >
         <div className="flex items-center justify-between border-b border-black/10 p-4">
           <div>
             <div className="text-sm font-extrabold">{isView ? "View Teacher" : isEdit ? "Edit Teacher" : "Add Teacher"}</div>
@@ -639,7 +780,6 @@ function TeacherModal({ mode, row, onClose, onCreate, onUpdate, busy, canManage 
                 {...register("employee_number")}
               />
 
-              {/* Advisory read-only here */}
               <ReadOnlyField label="Advisory (Active SY)" value={row?.advisory_label || "—"} />
 
               <Input label="First Name *" disabled={isView || !canManage} error={errors.first_name?.message} {...register("first_name")} />
@@ -664,7 +804,11 @@ function TeacherModal({ mode, row, onClose, onCreate, onUpdate, busy, canManage 
           </div>
 
           <div className="flex items-center justify-end gap-2">
-            <button type="button" onClick={onClose} className="rounded-2xl border border-black/10 bg-white/70 px-4 py-2 text-sm font-semibold hover:bg-white">
+            <button
+              type="button"
+              onClick={onClose}
+              className="rounded-2xl border border-black/10 bg-white/70 px-4 py-2 text-sm font-semibold hover:bg-white"
+            >
               Close
             </button>
 
@@ -684,6 +828,8 @@ function TeacherModal({ mode, row, onClose, onCreate, onUpdate, busy, canManage 
     </>
   );
 }
+
+/* ================= Small Components ================= */
 
 function StatusPill({ value }) {
   const v = String(value || "").toLowerCase();
@@ -706,7 +852,12 @@ function IconBtn({ title, onClick, tone, children }) {
       : "bg-white/70 text-black/65 hover:bg-white";
 
   return (
-    <button type="button" title={title} onClick={onClick} className={`grid h-9 w-9 place-items-center rounded-2xl border border-black/10 ${cls}`}>
+    <button
+      type="button"
+      title={title}
+      onClick={onClick}
+      className={`grid h-9 w-9 place-items-center rounded-2xl border border-black/10 ${cls}`}
+    >
       {children}
     </button>
   );

@@ -192,22 +192,8 @@ export default function StudentLayout() {
             </div>
           </div>
 
-          <button
-            className="relative grid h-11 w-11 place-items-center rounded-2xl border bg-white/70 transition hover:bg-white"
-            style={{ borderColor: BRAND.stroke }}
-            aria-label="Notifications"
-            onClick={() => alert("Notifications UI (wire later)")}
-          >
-            <Bell className="h-5 w-5" style={{ color: BRAND.muted }} />
-            {me.notifications > 0 ? (
-              <span
-                className="absolute -right-1 -top-1 grid h-5 w-5 place-items-center rounded-full text-[10px] font-black text-black"
-                style={{ background: BRAND.gold }}
-              >
-                {me.notifications}
-              </span>
-            ) : null}
-          </button>
+        
+         
         </div>
 
         <div className="grid grid-cols-1 gap-4 md:grid-cols-[260px_1fr]">

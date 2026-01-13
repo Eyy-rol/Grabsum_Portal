@@ -2,7 +2,7 @@
 import React, { useMemo, useState } from "react";
 import { Link, useNavigate } from "react-router-dom";
 import { motion } from "framer-motion";
-import { ArrowLeft, Mail, Lock, Eye, EyeOff } from "lucide-react";
+import { ArrowLeft, Mail, Lock, Eye, EyeOff, GraduationCap } from "lucide-react";
 
 import logo from "../assets/grabsum-logo.png";
 import { supabase } from "../lib/supabaseClient";
@@ -10,30 +10,28 @@ import { supabase } from "../lib/supabaseClient";
 const BRAND = {
   bg: "#fbf6ef",
   brown: "#2b1a12",
-  muted: "rgba(43,26,18,0.55)",
-  stroke: "rgba(43,26,18,0.16)",
+  muted: "rgba(43,26,18,0.62)",
+  stroke: "rgba(43,26,18,0.14)",
   gold: "#d4a62f",
   goldHover: "#deb23c",
-  link: "#d4a62f",
+  link: "#c79b2b",
+  danger: "#b91c1c",
+  dangerBg: "rgba(239,68,68,0.06)",
+  dangerStroke: "rgba(239,68,68,0.28)",
 };
 
 function isEmail(v) {
   return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(String(v).trim());
 }
-
 function isStudentNumber(v) {
   return /^s\d{2}-\d{4}$/i.test(String(v).trim());
 }
-
 function isTeacherNumber(v) {
   return /^t\d{2}-\d{4}$/i.test(String(v).trim());
 }
-
-// employee_number -> internal auth email (same rule used in create-teacher edge fn)
 function teacherAuthEmail(empNo) {
   return `${String(empNo).trim().toLowerCase()}@teachers.local`;
 }
-
 function routeForRole(role) {
   const r = (role || "").toLowerCase();
   if (r === "admin") return "/admin";
@@ -122,7 +120,6 @@ export default function Login() {
       console.error("fetchProfile error:", error);
       throw error;
     }
-
     return profile;
   }
 
@@ -137,7 +134,7 @@ export default function Login() {
     try {
       const x = ident.trim();
 
-      // ✅ A) student number login (S25-0001)
+      // A) student number login (S25-0001)
       if (isStudentNumber(x)) {
         const user = await loginByStudentNumber(x.toUpperCase(), pw);
 
@@ -158,7 +155,6 @@ export default function Login() {
           await supabase.auth.signOut();
           return;
         }
-
         if (profile.is_active === false) {
           setAuthError("Your account is inactive. Please contact the administrator.");
           await supabase.auth.signOut();
@@ -174,7 +170,7 @@ export default function Login() {
         return;
       }
 
-      // ✅ A2) teacher username login (T25-0001)
+      // A2) teacher number login (T25-0001)
       if (isTeacherNumber(x)) {
         const email = teacherAuthEmail(x);
 
@@ -206,7 +202,6 @@ export default function Login() {
           await supabase.auth.signOut();
           return;
         }
-
         if (profile.is_active === false) {
           setAuthError("Your account is inactive. Please contact the administrator.");
           await supabase.auth.signOut();
@@ -222,7 +217,7 @@ export default function Login() {
         return;
       }
 
-      // ✅ B) email login
+      // B) email login
       const { data, error } = await supabase.auth.signInWithPassword({
         email: x.toLowerCase(),
         password: pw,
@@ -251,14 +246,12 @@ export default function Login() {
         await supabase.auth.signOut();
         return;
       }
-
       if (profile.is_active === false) {
         setAuthError("Your account is inactive. Please contact the administrator.");
         await supabase.auth.signOut();
         return;
       }
 
-      // ✅ force-change based on role
       const role = (profile.role || "").toLowerCase();
       if (role === "student" && profile.must_change_password) {
         nav("/student/change-password", { replace: true });
@@ -277,20 +270,26 @@ export default function Login() {
     }
   }
 
+  const shell =
+    "min-h-screen font-[Nunito] selection:bg-black/10 selection:text-black";
   const inputBase =
     "w-full rounded-2xl pl-11 pr-4 py-3.5 text-sm outline-none transition disabled:opacity-70";
   const inputShell =
-    "relative rounded-2xl bg-white/60 backdrop-blur border transition focus-within:ring-4";
+    "relative rounded-2xl bg-white/70 backdrop-blur border transition focus-within:ring-4";
+
+  const showIdentError = touched.ident && errors.ident;
+  const showPwError = touched.pw && errors.pw;
 
   return (
     <div
-      className="min-h-screen font-[Nunito]"
+      className={shell}
       style={{
         background: `radial-gradient(1200px 800px at 20% 10%, rgba(212,166,47,0.10), transparent 55%),
                      radial-gradient(1200px 800px at 90% 30%, rgba(43,26,18,0.07), transparent 60%),
                      ${BRAND.bg}`,
       }}
     >
+      {/* Back */}
       <button
         onClick={() => nav(-1)}
         aria-label="Back"
@@ -299,89 +298,106 @@ export default function Login() {
         <ArrowLeft className="h-5 w-5" style={{ color: BRAND.muted }} />
       </button>
 
-      <div className="mx-auto max-w-5xl px-6">
+      <div className="mx-auto max-w-6xl px-6">
         <div className="min-h-screen grid items-center gap-10 lg:grid-cols-2">
-          {/* Left / Brand */}
+          {/* Left / School Branding */}
           <motion.section
-            initial={{ opacity: 0, y: 8 }}
+            initial={{ opacity: 0, y: 10 }}
             animate={{ opacity: 1, y: 0 }}
             transition={{ duration: 0.25 }}
             className="text-center lg:text-left"
           >
-            <div className="mx-auto lg:mx-0 w-fit">
-   <div className="lg:max-w-md">
-  <div className="mx-auto lg:mx-0 lg:flex lg:justify-center lg:translate-x-1">
+          <div className="mx-auto lg:mx-0 w-fit">
+  <div className="flex flex-col items-center lg:items-start">
     <img
       src={logo}
       alt="Grabsum School logo"
-      className="h-28 w-28 md:h-32 md:w-32 object-contain"
+      className="h-28 w-28 sm:h-36 sm:w-36 md:h-54 md:w-54 object-contain"
       style={{
-        filter: "drop-shadow(0 8px 18px rgba(43,26,18,0.18))",
+        filter: "drop-shadow(0 16px 28px rgba(43,26,18,0.18))",
       }}
     />
+
+    <div
+      className="mt-4 flex items-center gap-2 text-xs font-semibold tracking-wide uppercase"
+      style={{ color: "rgba(43,26,18,0.68)" }}
+    >
+      
+    </div>
   </div>
 </div>
 
 
-            </div>
-
-            <h1 className="mt-6 text-3xl md:text-4xl font-extrabold tracking-tight" style={{ color: BRAND.brown }}>
-              Welcome Angelicos!
+            <h1
+              className="mt-6 text-3xl md:text-4xl font-extrabold tracking-tight"
+              style={{ color: BRAND.brown }}
+            >
+             Grabsum School Inc.
             </h1>
 
-            <p className="mt-3 max-w-xl mx-auto lg:mx-0 text-sm leading-relaxed" style={{ color: BRAND.muted }}>
-              Sign in using <b>Email</b>, <b>Student Number</b> (S25-0001), or <b>Teacher Number</b> (T25-0001).
+            <p
+              className="mt-3 max-w-xl mx-auto lg:mx-0 text-sm leading-relaxed"
+              style={{ color: BRAND.muted }}
+            >
+              Sign in to access your dashboard. Students and teachers may use their
+              school number (e.g., <span className="font-semibold">S##-####</span> /{" "}
+              <span className="font-semibold">T##-####</span>) or email.
             </p>
 
-            <div className="mt-10 hidden lg:block">
+            <div className="mt-8 hidden lg:flex items-center gap-2">
               <div
                 className="inline-flex items-center gap-2 rounded-full px-3 py-1 text-xs"
                 style={{
                   border: `1px solid ${BRAND.stroke}`,
                   background: "rgba(255,255,255,0.55)",
-                  color: "rgba(43,26,18,0.65)",
+                  color: "rgba(43,26,18,0.70)",
                 }}
               >
-               Role Based Access • GRABSUM School
+                Role-based Access • Secure Sign-in
               </div>
             </div>
 
             <div className="mt-10 text-xs" style={{ color: "rgba(43,26,18,0.45)" }}>
-              © {new Date().getFullYear()} GRABSUM School, Inc. All righfts reserved.
+              © {new Date().getFullYear()} GRABSUM School, Inc. All rights reserved.
             </div>
           </motion.section>
 
-          {/* Right / Card */}
+          {/* Right / Login Card */}
           <motion.section
-            initial={{ opacity: 0, y: 10 }}
+            initial={{ opacity: 0, y: 12 }}
             animate={{ opacity: 1, y: 0 }}
             transition={{ duration: 0.25, delay: 0.03 }}
             className="w-full max-w-xl lg:justify-self-end"
           >
             <div
-              className="rounded-3xl bg-white/70 backdrop-blur"
+              className="rounded-3xl bg-white/75 backdrop-blur"
               style={{
                 border: `1px solid ${BRAND.stroke}`,
                 boxShadow: "0 18px 55px rgba(43,26,18,0.10)",
               }}
             >
               <form onSubmit={onSubmit} className="p-7 md:p-10">
+                {/* Header */}
                 <div className="mb-7">
-                  <div className="text-xl font-extrabold tracking-tight" style={{ color: BRAND.brown }}>
+                  <div
+                    className="text-xl font-extrabold tracking-tight"
+                    style={{ color: BRAND.brown }}
+                  >
                     Sign in
                   </div>
                   <div className="mt-1 text-sm" style={{ color: BRAND.muted }}>
-                    Use your credentials to continue.
+                    Enter your credentials to continue.
                   </div>
                 </div>
 
+                {/* Error */}
                 {authError ? (
                   <div
                     className="mb-5 rounded-2xl border px-4 py-3 text-sm"
                     style={{
-                      borderColor: "rgba(239,68,68,0.28)",
-                      background: "rgba(239,68,68,0.06)",
-                      color: "#b91c1c",
+                      borderColor: BRAND.dangerStroke,
+                      background: BRAND.dangerBg,
+                      color: BRAND.danger,
                     }}
                   >
                     <span className="font-semibold">Sign-in failed.</span> {authError}
@@ -389,55 +405,73 @@ export default function Login() {
                 ) : null}
 
                 {/* Identifier */}
-                <label className="text-xs font-semibold tracking-wide uppercase" style={{ color: "rgba(43,26,18,0.70)" }}>
-                  Email / Student / Teacher No.
+                <label
+                  className="text-xs font-semibold tracking-wide uppercase"
+                  style={{ color: "rgba(43,26,18,0.75)" }}
+                >
+                  Email / Student No. / Teacher No.
                 </label>
 
                 <div className="mt-2">
                   <div
-                    className={`${inputShell}`}
+                    className={inputShell}
                     style={{
-                      borderColor: touched.ident && errors.ident ? "rgba(239,68,68,0.40)" : "rgba(43,26,18,0.14)",
+                      borderColor: showIdentError
+                        ? "rgba(239,68,68,0.38)"
+                        : "rgba(43,26,18,0.16)",
                       ringColor: "rgba(212,166,47,0.25)",
                     }}
                   >
-                    <Mail className="absolute left-4 top-1/2 -translate-y-1/2 h-4 w-4" style={{ color: BRAND.muted }} />
+                    <Mail
+                      className="absolute left-4 top-1/2 -translate-y-1/2 h-4 w-4"
+                      style={{ color: BRAND.muted }}
+                    />
                     <input
                       value={ident}
                       onChange={(e) => setIdent(e.target.value)}
                       onBlur={() => setTouched((t) => ({ ...t, ident: true }))}
-                      placeholder="your.email@grabsum.edu.ph or S25-0001 or T25-0001"
+                      placeholder="your.email@grabsum.edu.ph  •  S25-0001  •  T25-0001"
                       className={inputBase}
-                      style={{
-                        background: "transparent",
-                        color: BRAND.brown,
-                      }}
+                      style={{ background: "transparent", color: BRAND.brown }}
                       disabled={loading}
                       autoComplete="username"
+                      inputMode="email"
                     />
                   </div>
 
-                  {touched.ident && errors.ident ? (
-                    <div className="mt-2 text-xs font-semibold text-red-500">{errors.ident}</div>
-                  ) : null}
+                  {showIdentError ? (
+                    <div className="mt-2 text-xs font-semibold text-red-500">
+                      {errors.ident}
+                    </div>
+                  ) : (
+                    <div className="mt-2 text-xs" style={{ color: "rgba(43,26,18,0.55)" }}>
+                      Tip: Use <span className="font-semibold">S##-####</span> for students or{" "}
+                      <span className="font-semibold">T##-####</span> for teachers.
+                    </div>
+                  )}
                 </div>
 
                 {/* Password */}
                 <label
                   className="mt-5 block text-xs font-semibold tracking-wide uppercase"
-                  style={{ color: "rgba(43,26,18,0.70)" }}
+                  style={{ color: "rgba(43,26,18,0.75)" }}
                 >
                   Password
                 </label>
 
                 <div className="mt-2">
                   <div
-                    className={`${inputShell}`}
+                    className={inputShell}
                     style={{
-                      borderColor: touched.pw && errors.pw ? "rgba(239,68,68,0.40)" : "rgba(43,26,18,0.14)",
+                      borderColor: showPwError
+                        ? "rgba(239,68,68,0.38)"
+                        : "rgba(43,26,18,0.16)",
                     }}
                   >
-                    <Lock className="absolute left-4 top-1/2 -translate-y-1/2 h-4 w-4" style={{ color: BRAND.muted }} />
+                    <Lock
+                      className="absolute left-4 top-1/2 -translate-y-1/2 h-4 w-4"
+                      style={{ color: BRAND.muted }}
+                    />
                     <input
                       value={pw}
                       onChange={(e) => setPw(e.target.value)}
@@ -449,7 +483,6 @@ export default function Login() {
                       disabled={loading}
                       autoComplete="current-password"
                     />
-
                     <button
                       type="button"
                       onClick={() => setShow((s) => !s)}
@@ -465,19 +498,14 @@ export default function Login() {
                     </button>
                   </div>
 
-                  {touched.pw && errors.pw ? (
-                    <div className="mt-2 text-xs font-semibold text-red-500">{errors.pw}</div>
+                  {showPwError ? (
+                    <div className="mt-2 text-xs font-semibold text-red-500">
+                      {errors.pw}
+                    </div>
                   ) : null}
                 </div>
 
-                <div className="mt-4 flex items-center justify-between">
-                  <div className="text-xs" style={{ color: "rgba(43,26,18,0.55)" }}>
-                    Tip: S25-0001 / T25-0001
-                  </div>
-
-          
-                </div>
-
+                {/* Actions */}
                 <button
                   type="submit"
                   disabled={!canSubmit}
@@ -500,11 +528,16 @@ export default function Login() {
                   {loading ? "Signing in…" : "Sign In"}
                 </button>
 
+                {/* Footer */}
                 <div className="mt-7 text-center text-sm" style={{ color: BRAND.muted }}>
                   Don&apos;t have an account?{" "}
                   <Link to="/pre-enroll" className="hover:underline" style={{ color: BRAND.link }}>
                     Pre-enroll here
                   </Link>
+                </div>
+
+                <div className="mt-3 text-center text-xs" style={{ color: "rgba(43,26,18,0.45)" }}>
+                  By signing in, you agree to follow the school portal policies.
                 </div>
               </form>
             </div>

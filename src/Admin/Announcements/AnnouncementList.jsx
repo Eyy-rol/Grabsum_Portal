@@ -6,6 +6,12 @@ import { getMyProfile, getActiveSy } from "../../lib/portalCtx";
 
 const STAFF_ROLES = new Set(["admin", "dev", "staff"]);
 
+// Tabs we want to show
+const AUDIENCE_TABS = [
+  { key: "teachers", label: "Teachers", value: "All Teachers" },
+  { key: "students", label: "Students", value: "All Students" },
+];
+
 export default function AdminAnnouncement() {
   const [sy, setSy] = useState(null);
   const [items, setItems] = useState([]);
@@ -13,6 +19,9 @@ export default function AdminAnnouncement() {
   const [posting, setPosting] = useState(false);
   const [errMsg, setErrMsg] = useState("");
   const [role, setRole] = useState("");
+
+  // ✅ NEW: audience tab state
+  const [tab, setTab] = useState("teachers"); // "teachers" | "students"
 
   const canPost = role === "super_admin";
   const canView = canPost || STAFF_ROLES.has(role);
@@ -29,7 +38,13 @@ export default function AdminAnnouncement() {
     setForm((s) => ({ ...s, [k]: v }));
   }
 
-  async function load() {
+  // ✅ Keep form audience synced with tab (for super_admin posting)
+  useEffect(() => {
+    const selected = AUDIENCE_TABS.find((t) => t.key === tab)?.value || "All Teachers";
+    setForm((s) => ({ ...s, target_audience: selected }));
+  }, [tab]);
+
+  async function load(currentTab = tab) {
     setLoading(true);
     setErrMsg("");
 
@@ -46,13 +61,19 @@ export default function AdminAnnouncement() {
       const activeSy = await getActiveSy();
       setSy(activeSy);
 
+      const targetAudience = AUDIENCE_TABS.find((t) => t.key === currentTab)?.value;
+
+      if (!targetAudience) throw new Error("Invalid audience tab.");
+
       if (r === "super_admin") {
+        // ✅ super_admin: view THEIR posts for that audience + active sy
         const { data, error } = await supabase
           .from("announcements")
           .select("id,title,content,priority,target_audience,status,is_archived,posted_at,sy_id")
           .eq("posted_by", user.id)
           .eq("sy_id", activeSy.sy_id)
           .eq("is_archived", false)
+          .eq("target_audience", targetAudience)
           .order("posted_at", { ascending: false });
 
         if (error) throw error;
@@ -60,14 +81,14 @@ export default function AdminAnnouncement() {
         return;
       }
 
-      // ✅ staff read-only: view published teacher/student facing announcements
+      // ✅ staff read-only: view published announcements for chosen tab
       const { data, error } = await supabase
         .from("announcements")
         .select("id,title,content,priority,target_audience,status,is_archived,posted_at,sy_id,posted_by")
         .eq("sy_id", activeSy.sy_id)
         .eq("status", "Published")
         .eq("is_archived", false)
-        .in("target_audience", ["All Teachers", "All Students"]) // ✅ FIX
+        .eq("target_audience", targetAudience)
         .order("posted_at", { ascending: false });
 
       if (error) throw error;
@@ -81,9 +102,15 @@ export default function AdminAnnouncement() {
   }
 
   useEffect(() => {
-    load();
+    load("teachers");
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
+
+  // ✅ reload when tab changes
+  useEffect(() => {
+    load(tab);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [tab]);
 
   async function createAnnouncement() {
     setErrMsg("");
@@ -101,13 +128,14 @@ export default function AdminAnnouncement() {
       if (!form.title.trim()) throw new Error("Title is required.");
       if (!form.content.trim()) throw new Error("Content is required.");
 
+      // ✅ audience must match tabs
       if (!["All Teachers", "All Students"].includes(form.target_audience)) {
-        throw new Error("Invalid audience for super_admin.");
+        throw new Error("Invalid audience.");
       }
 
       const payload = {
         posted_by: user.id,
-        posted_by_role: "super_admin", // ✅ IMPORTANT FIX
+        posted_by_role: "super_admin",
         posted_by_teacher_id: null,
 
         title: form.title.trim(),
@@ -127,7 +155,7 @@ export default function AdminAnnouncement() {
       if (error) throw error;
 
       setForm((s) => ({ ...s, title: "", content: "" }));
-      await load();
+      await load(tab);
     } catch (e) {
       setErrMsg(String(e?.message || e));
     } finally {
@@ -140,12 +168,12 @@ export default function AdminAnnouncement() {
     return `Current SY: ${sy.sy_code}`;
   }, [sy]);
 
+  const activeAudienceLabel = useMemo(() => {
+    return AUDIENCE_TABS.find((t) => t.key === tab)?.label || "Teachers";
+  }, [tab]);
+
   if (!canView) {
-    return (
-      <div className="rounded-2xl border border-black/10 bg-white p-4 text-sm text-black/60">
-        Forbidden.
-      </div>
-    );
+    return <div className="rounded-2xl border border-black/10 bg-white p-4 text-sm text-black/60">Forbidden.</div>;
   }
 
   return (
@@ -153,13 +181,14 @@ export default function AdminAnnouncement() {
       <div className="rounded-2xl border border-black/10 bg-white p-4">
         <div className="flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
           <div>
-            <div className="text-sm font-extrabold text-[#2b1a12]">
+            <div className="text-lg font-extrabold text-[#2b1a12]">
               Admin Announcements{" "}
-              <span className="ml-2 text-xs font-semibold text-black/40">({role || "—"})</span>
+              <span className="ml-2 text-xs font-semibold text-black/40">
+                ({role || "—"}) • {activeAudienceLabel}
+              </span>
             </div>
-            <div className="text-xs font-semibold text-black/50">
-              {canPost ? "Super Admin posts to teachers/students." : "Read-only view for staff."} {headerSubtitle}
-            </div>
+
+          
 
             {errMsg ? (
               <div className="mt-2 rounded-xl border border-rose-200 bg-rose-50 px-3 py-2 text-xs font-semibold text-rose-800">
@@ -169,12 +198,29 @@ export default function AdminAnnouncement() {
           </div>
 
           <button
-            onClick={load}
+            onClick={() => load(tab)}
             className="inline-flex items-center gap-2 rounded-2xl border border-black/10 bg-[#fafafa] px-4 py-2 text-xs font-semibold hover:bg-black/5"
           >
             <RefreshCcw className="h-4 w-4" />
             Refresh
           </button>
+        </div>
+
+        {/* ✅ NEW: tabs for Teachers vs Students */}
+        <div className="mt-4 flex items-center gap-2">
+          {AUDIENCE_TABS.map((t) => (
+            <button
+              key={t.key}
+              type="button"
+              onClick={() => setTab(t.key)}
+              className={[
+                "rounded-2xl px-4 py-2 text-xs font-extrabold border border-black/10 transition",
+                tab === t.key ? "bg-white" : "bg-white/60 hover:bg-white/80",
+              ].join(" ")}
+            >
+              {t.label}
+            </button>
+          ))}
         </div>
 
         {canPost ? (
@@ -203,16 +249,14 @@ export default function AdminAnnouncement() {
                 </select>
               </div>
 
+              {/* ✅ audience is locked to tab (no mismatch) */}
               <div>
                 <div className="text-xs font-semibold text-black/60">Audience</div>
-                <select
+                <input
                   value={form.target_audience}
-                  onChange={(e) => patch("target_audience", e.target.value)}
-                  className="mt-1 w-full rounded-2xl border border-black/10 bg-[#fafafa] px-3 py-2 text-sm outline-none"
-                >
-                  <option value="All Teachers">All Teachers</option>
-                  <option value="All Students">All Students</option>
-                </select>
+                  disabled
+                  className="mt-1 w-full rounded-2xl border border-black/10 bg-[#fafafa] px-3 py-2 text-sm outline-none opacity-70"
+                />
               </div>
             </div>
 

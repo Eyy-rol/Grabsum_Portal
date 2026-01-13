@@ -64,22 +64,33 @@ export default function DevDashboard() {
   }, []);
 
   const [sy, setSy] = useState(null);
+
   const [stats, setStats] = useState({
     students: "—",
     pending: "—",
     teachers: "—",
     postsToday: "—",
   });
-  const [ann, setAnn] = useState([]);
+
+  const [annMeta, setAnnMeta] = useState([]);
   const [loading, setLoading] = useState(true);
   const [errMsg, setErrMsg] = useState("");
+
+  function friendlyErr(e) {
+    const msg = String(e?.message || e || "");
+    // Common supabase RLS text patterns:
+    if (msg.toLowerCase().includes("permission denied") || msg.toLowerCase().includes("row level security")) {
+      return "Limited by RLS: dev dashboard uses anonymized metrics RPC. Verify RPC + grants are applied.";
+    }
+    return msg || "Something went wrong.";
+  }
 
   async function load() {
     setLoading(true);
     setErrMsg("");
 
     try {
-      // role gate
+      // ✅ role gate (allowed: dev + super_admin)
       const { profile } = await getMyProfile();
       const role = String(profile?.role || "").toLowerCase();
       if (!["dev", "super_admin"].includes(role)) {
@@ -89,47 +100,37 @@ export default function DevDashboard() {
       const activeSy = await getActiveSy();
       setSy(activeSy);
 
-      // quick counts (head:true uses count without returning rows)
-      const [stuRes, enrRes, tchRes, annTodayRes] = await Promise.all([
-        supabase.from("students").select("id", { count: "exact", head: true }).eq("sy_id", activeSy.sy_id),
-        supabase.from("enrollment").select("id", { count: "exact", head: true }).eq("st_application_status", "Pending"),
-        supabase.from("teachers").select("user_id", { count: "exact", head: true }).eq("is_archived", false),
-        supabase
-          .from("announcements")
-          .select("id", { count: "exact", head: true })
-          .eq("status", "Published")
-          .eq("is_archived", false)
-          .gte("posted_at", new Date(new Date().setHours(0, 0, 0, 0)).toISOString()),
-      ]);
+      // ✅ IMPORTANT:
+      // Do NOT query students/teachers/enrollment/announcements directly.
+      // Use RPC that returns aggregated counts only.
+      const { data: m, error: mErr } = await supabase.rpc("dev_dashboard_metrics", {
+        p_sy_id: activeSy.sy_id,
+      });
+      if (mErr) throw mErr;
 
-      if (stuRes.error) throw stuRes.error;
-      if (enrRes.error) throw enrRes.error;
-      if (tchRes.error) throw tchRes.error;
-      if (annTodayRes.error) throw annTodayRes.error;
+      // supabase rpc returns array for table-returning SQL functions
+      const row = Array.isArray(m) ? m[0] : m;
 
       setStats({
-        students: String(stuRes.count ?? 0),
-        pending: String(enrRes.count ?? 0),
-        teachers: String(tchRes.count ?? 0),
-        postsToday: String(annTodayRes.count ?? 0),
+        students: String(row?.students_active_sy ?? 0),
+        pending: String(row?.pending_enrollment ?? 0),
+        teachers: String(row?.teachers_active ?? 0),
+        postsToday: String(row?.announcements_today ?? 0),
       });
 
-      // latest super_admin announcements (Published, current SY)
-      // NOTE: we filter by audience if you want, but RLS should enforce visibility.
-      const { data: annRows, error: annErr } = await supabase
-        .from("announcements")
-        .select("id,title,content,priority,target_audience,posted_at,posted_by")
-        .eq("status", "Published")
-        .eq("is_archived", false)
-        .eq("sy_id", activeSy.sy_id)
-        .in("target_audience", ["All Teachers", "All Students"])
-        .order("posted_at", { ascending: false })
-        .limit(8);
+      // ✅ Optional metadata-only “feed” (no announcement content)
+      const { data: a, error: aErr } = await supabase.rpc("dev_latest_announcements_meta", {
+        p_sy_id: activeSy.sy_id,
+      });
 
-      if (annErr) throw annErr;
-      setAnn(annRows || []);
+      if (aErr) {
+        // Not fatal; you can hide the section if RPC not created
+        setAnnMeta([]);
+      } else {
+        setAnnMeta(Array.isArray(a) ? a : []);
+      }
     } catch (e) {
-      setErrMsg(String(e?.message || e));
+      setErrMsg(friendlyErr(e));
     } finally {
       setLoading(false);
     }
@@ -145,9 +146,15 @@ export default function DevDashboard() {
       <div className="grid gap-4 lg:grid-cols-3">
         <div className="lg:col-span-2 rounded-[28px] border border-black/10 bg-white p-6 shadow-sm">
           <div className="text-xs text-black/50">{today}</div>
-          <div className="mt-1 text-2xl font-semibold">Dev Dashboard</div>
+          <div className="mt-1 text-2xl font-semibold">System Overview</div>
           <div className="mt-2 text-sm text-black/50">
             Active SY: <span className="font-semibold text-black/70">{sy?.sy_code || "—"}</span>
+          </div>
+
+          <div className="mt-3 flex flex-wrap items-center gap-2">
+            <Badge tone="info">Anonymized Metrics</Badge>
+            <Badge tone="neutral">No PII Reads</Badge>
+            <Badge tone="success">Dev-safe</Badge>
           </div>
 
           {errMsg ? (
@@ -173,21 +180,25 @@ export default function DevDashboard() {
 
       {/* Stat tiles */}
       <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-4">
-        <Stat label="Students (Active SY)" value={loading ? "…" : stats.students} />
-        <Stat label="Pending Enrollment" value={loading ? "…" : stats.pending} />
-        <Stat label="Teachers" value={loading ? "…" : stats.teachers} />
-        <Stat label="Announcements Today" value={loading ? "…" : stats.postsToday} />
+        <Stat label="Students (Active SY)" value={loading ? "…" : stats.students} hint="Aggregated count (no records)" />
+        <Stat label="Pending Enrollment" value={loading ? "…" : stats.pending} hint="Aggregated count (no records)" />
+        <Stat label="Teachers" value={loading ? "…" : stats.teachers} hint="Aggregated count (no records)" />
+        <Stat label="Announcements Today" value={loading ? "…" : stats.postsToday} hint="Count only" />
       </div>
 
-      {/* Announcements */}
-      <SectionCard title="Latest Announcements" subtitle="From Super Admin (Published)">
+      {/* Safe metadata feed */}
+      <SectionCard
+        title="Recent Notices (metadata)"
+        subtitle="Published announcements metadata only (no content)"
+        right={<Badge tone="neutral">Safe feed</Badge>}
+      >
         {loading ? (
           <div className="text-sm text-black/50">Loading…</div>
-        ) : ann.length === 0 ? (
-          <div className="text-sm text-black/40">No announcements found.</div>
+        ) : annMeta.length === 0 ? (
+          <div className="text-sm text-black/40">No notices found (or RPC not enabled).</div>
         ) : (
           <div className="space-y-3">
-            {ann.map((a) => (
+            {annMeta.map((a) => (
               <div key={a.id} className="rounded-[22px] border border-black/10 bg-[#fafafa] p-4">
                 <div className="flex items-start justify-between gap-3">
                   <div className="min-w-0">
@@ -198,7 +209,6 @@ export default function DevDashboard() {
                   </div>
                   <Badge tone={tonePriority(a.priority)}>{a.priority}</Badge>
                 </div>
-                <div className="mt-2 text-sm text-black/70 whitespace-pre-wrap">{a.content}</div>
               </div>
             ))}
           </div>

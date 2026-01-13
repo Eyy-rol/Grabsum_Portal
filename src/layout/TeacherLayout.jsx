@@ -347,7 +347,7 @@ function TeacherSidebar({ collapsed, setCollapsed, onLogout, me }) {
             title="Settings"
           >
             <Settings className="h-4 w-4" style={{ color: "rgba(43,26,18,0.60)" }} />
-            {!collapsed ? "Settings" : null}
+            {!collapsed ? "Profile" : null}
           </button>
 
           <button
@@ -434,41 +434,9 @@ function TeacherTopbar({ title, onLogout, me }) {
         </div>
 
         <div className="flex items-center gap-2">
-          {/* Search (UI only) */}
-          <div className="relative w-full md:w-[360px]">
-            <input
-              className="w-full rounded-2xl border bg-white/70 px-4 py-2 text-sm font-semibold outline-none transition focus:bg-white"
-              style={{ borderColor: "rgba(43,26,18,0.14)", color: BRAND.ink }}
-              placeholder="Search… (UI only)"
-            />
-          </div>
+      
 
-          {/* AI button (UI only) */}
-          <button
-            onClick={() => alert("AI Lesson Planner modal later.")}
-            className="hidden sm:inline-flex items-center justify-center gap-2 rounded-2xl border bg-white/70 px-3 py-2 text-sm font-semibold transition hover:bg-white"
-            style={{ borderColor: "rgba(212,166,47,0.55)", color: BRAND.ink }}
-          >
-            <Sparkles className="h-4 w-4" style={{ color: BRAND.gold }} />
-            AI Planner
-          </button>
-
-          {/* Notifications (UI only) */}
-          <button
-            className="relative grid h-10 w-10 place-items-center rounded-2xl border bg-white/70 transition hover:bg-white"
-            style={{ borderColor: "rgba(43,26,18,0.14)" }}
-            aria-label="Notifications"
-            onClick={() => alert("Notifications UI (connect later).")}
-          >
-            <Bell className="h-5 w-5" style={{ color: "rgba(43,26,18,0.65)" }} />
-            {/* set to 0 if you want none */}
-            <span
-              className="absolute -right-1 -top-1 grid h-5 w-5 place-items-center rounded-full text-[10px] font-black text-black"
-              style={{ background: BRAND.gold }}
-            >
-              3
-            </span>
-          </button>
+         
 
           {/* Profile dropdown */}
           <div className="relative" ref={dropdownRef}>
