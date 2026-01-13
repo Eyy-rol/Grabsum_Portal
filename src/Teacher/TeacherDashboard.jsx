@@ -1,5 +1,5 @@
 // src/pages/teacher/TeacherDashboard.jsx
-import React, { useMemo } from "react";
+import React, { useEffect, useMemo, useState } from "react";
 import { motion } from "framer-motion";
 import {
   BookOpen,
@@ -12,6 +12,9 @@ import {
   Clock,
   ArrowRight,
 } from "lucide-react";
+import { useNavigate } from "react-router-dom";
+import { supabase } from "../lib/supabaseClient";
+import CalendarWidget from "../components/CalendarWidget";
 
 const BRAND = {
   gold: "#d4a62f",
@@ -32,40 +35,421 @@ function CardShell({ children, className = "" }) {
   );
 }
 
+// ---------- helpers ----------
+const DOW = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
+
+function cleanTime(t) {
+  if (!t) return "";
+  return String(t).split(".")[0]; // "13:00:00" or "13:00:00.000"
+}
+
+function to12h(t) {
+  const tt = cleanTime(t);
+  if (!tt || tt.length < 5) return "—";
+  const hh = Number(tt.slice(0, 2));
+  const mm = tt.slice(3, 5);
+  const ampm = hh >= 12 ? "PM" : "AM";
+  let h = hh % 12;
+  if (h === 0) h = 12;
+  return `${h}:${mm} ${ampm}`;
+}
+
+function formatTimeRange(startTime, endTime) {
+  return `${to12h(startTime)}–${to12h(endTime)}`;
+}
+
+function timeToMinutes(t) {
+  const tt = cleanTime(t);
+  if (!tt || tt.length < 5) return 0;
+  const hh = Number(tt.slice(0, 2));
+  const mm = Number(tt.slice(3, 5));
+  return hh * 60 + mm;
+}
+
+/**
+ * Picks current sy_id + term_id by frequency in the teacher’s schedule rows.
+ * (More reliable than using a separate "classes" table that might not match your real source.)
+ */
+function chooseCurrentSyTermFromSchedules(scheduleRows) {
+  const freq = new Map();
+  for (const r of scheduleRows || []) {
+    if (!r.sy_id || !r.term_id) continue;
+    const key = `${r.sy_id}::${r.term_id}`;
+    freq.set(key, (freq.get(key) || 0) + 1);
+  }
+  let best = null;
+  let bestCount = -1;
+  for (const [k, v] of freq.entries()) {
+    if (v > bestCount) {
+      bestCount = v;
+      best = k;
+    }
+  }
+  if (!best) return { sy_id: null, term_id: null };
+  const [sy_id, term_id] = best.split("::");
+  return { sy_id, term_id };
+}
+
+function buildHighlightedDaysForMonth(year, monthIndex, teacherWeekdaysSet) {
+  const daysInMonth = new Date(year, monthIndex + 1, 0).getDate();
+  const highlighted = new Set();
+  for (let d = 1; d <= daysInMonth; d++) {
+    const dow = DOW[new Date(year, monthIndex, d).getDay()];
+    if (teacherWeekdaysSet.has(dow)) highlighted.add(d);
+  }
+  return highlighted;
+}
+
+function sectionLabelFromRow(sectionRow) {
+  return sectionRow?.section_name || "Section";
+}
+// ---------- end helpers ----------
+
 export default function TeacherDashboard() {
-  // Demo data (replace later with Supabase)
+  const navigate = useNavigate();
+
+  const [loading, setLoading] = useState(true);
+  const [err, setErr] = useState("");
+
+  const [teacher, setTeacher] = useState(null);
+
+  // NOTE: We derive “classes” from section_schedules (your real source).
+  // We keep this array only to show stats and “Total Classes” count.
+  const [classes, setClasses] = useState([]); // unique by section_id + subject_id (per SY+Term)
+  const [studentsAcrossClasses, setStudentsAcrossClasses] = useState(0);
+
+  const [todaysSchedule, setTodaysSchedule] = useState([]);
+  const [nextClassSub, setNextClassSub] = useState("—");
+  const [todaysClassesCount, setTodaysClassesCount] = useState("—");
+  const [upcomingLabel, setUpcomingLabel] = useState({ value: "—", sub: "—" });
+
+  const [announcements, setAnnouncements] = useState([]);
+  const [calendarHighlighted, setCalendarHighlighted] = useState(new Set());
+
+  useEffect(() => {
+    let mounted = true;
+
+    async function load() {
+      setLoading(true);
+      setErr("");
+
+      try {
+        // 1) current user
+        const { data: authData, error: authErr } = await supabase.auth.getUser();
+        if (authErr) throw authErr;
+        const user = authData?.user;
+        if (!user?.id) throw new Error("Not logged in.");
+
+        // 2) profile / role check (resilient)
+        const { data: profile, error: pErr } = await supabase
+          .from("profiles")
+          .select("user_id, full_name, email, role, is_active, is_archived")
+          .eq("user_id", user.id)
+          .maybeSingle();
+
+        if (pErr) throw pErr;
+        if (!profile) throw new Error("Profile not found.");
+        if (String(profile.role).toLowerCase() !== "teacher") throw new Error("This account is not a teacher.");
+        if (profile.is_active === false || profile.is_archived === true)
+          throw new Error("Teacher account is inactive/archived.");
+
+        // 3) teacher record (optional)
+        const { data: teacherRow } = await supabase
+          .from("teachers")
+          .select("user_id, first_name, last_name, employee_number, department, status, is_archived")
+          .eq("user_id", user.id)
+          .maybeSingle();
+
+        // 4) Active school year (optional, but helps when picking data)
+        const { data: activeSY, error: syErr } = await supabase
+          .from("school_years")
+          .select("sy_id, sy_code, status, start_date")
+          .eq("status", "Active")
+          .order("start_date", { ascending: false })
+          .limit(1)
+          .maybeSingle();
+        if (syErr) throw syErr;
+
+        // 5) load ALL schedules for teacher (for class count + current term inference)
+        // If you always want to scope to activeSY, keep the filter.
+        let allSchedQ = supabase
+          .from("section_schedules")
+          .select(
+            `
+            schedule_id,
+            sy_id,
+            term_id,
+            section_id,
+            subject_id,
+            teacher_id,
+            day_of_week,
+            start_time,
+            end_time,
+            room,
+            subjects:subject_id ( subject_id, subject_code, subject_title ),
+            sections:section_id ( section_id, section_name )
+          `
+          )
+          .eq("teacher_id", user.id);
+
+        if (activeSY?.sy_id) allSchedQ = allSchedQ.eq("sy_id", activeSY.sy_id);
+
+        const { data: allSchedRows, error: allSchedErr } = await allSchedQ;
+        if (allSchedErr) throw allSchedErr;
+
+        // infer current term based on schedule frequency (within active SY)
+        const { sy_id: currentSyId, term_id: currentTermId } =
+          chooseCurrentSyTermFromSchedules(allSchedRows || []);
+
+        // 6) build unique “classes” from schedules (section_id + subject_id)
+        const scheduleRows = allSchedRows || [];
+        const classKeyMap = new Map();
+        for (const r of scheduleRows) {
+          const k = `${r.section_id}:${r.subject_id}`;
+          if (!classKeyMap.has(k)) classKeyMap.set(k, r);
+        }
+        const derivedClasses = Array.from(classKeyMap.entries()).map(([k, r]) => ({
+          id: k,
+          section_id: r.section_id,
+          subject_id: r.subject_id,
+          sy_id: r.sy_id,
+          term_id: r.term_id,
+          subject_code: r.subjects?.subject_code ?? "—",
+          subject_title: r.subjects?.subject_title ?? "—",
+          section_name: r.sections?.section_name ?? "—",
+        }));
+
+        // 7) students across teacher’s sections (Enrolled only; scoped to active SY if present)
+        const sectionIds = Array.from(new Set(derivedClasses.map((c) => c.section_id).filter(Boolean)));
+        let studentCount = 0;
+
+        if (sectionIds.length) {
+          let studQ = supabase
+            .from("students")
+            .select("id, section_id, status, sy_id")
+            .in("section_id", sectionIds)
+            .eq("status", "Enrolled");
+
+          if (currentSyId) studQ = studQ.eq("sy_id", currentSyId);
+
+          const { data: studentRows, error: sErr } = await studQ;
+          if (sErr) throw sErr;
+
+          studentCount = new Set((studentRows || []).map((s) => s.id)).size;
+        }
+
+        // 8) today's schedule (scoped to inferred current SY+term if present)
+        const now = new Date();
+        const todayDow = DOW[now.getDay()];
+        const nowMinutes = now.getHours() * 60 + now.getMinutes();
+
+        let todaySchedQ = supabase
+          .from("section_schedules")
+          .select(
+            `
+            schedule_id,
+            sy_id,
+            term_id,
+            section_id,
+            day_of_week,
+            period_no,
+            start_time,
+            end_time,
+            teacher_id,
+            room,
+            subjects:subject_id ( subject_id, subject_title, subject_code ),
+            sections:section_id ( section_id, section_name )
+          `
+          )
+          .eq("teacher_id", user.id)
+          .eq("day_of_week", todayDow)
+          .order("start_time", { ascending: true });
+
+        if (currentSyId) todaySchedQ = todaySchedQ.eq("sy_id", currentSyId);
+        if (currentTermId) todaySchedQ = todaySchedQ.eq("term_id", currentTermId);
+
+        const { data: schedRows, error: scErr } = await todaySchedQ;
+        if (scErr) throw scErr;
+
+        // student count per today sections
+        const todaySectionIds = Array.from(new Set((schedRows || []).map((r) => r.section_id).filter(Boolean)));
+        const sectionStudentCount = new Map();
+
+        if (todaySectionIds.length) {
+          let stQ = supabase
+            .from("students")
+            .select("id, section_id, status, sy_id")
+            .in("section_id", todaySectionIds)
+            .eq("status", "Enrolled");
+
+          if (currentSyId) stQ = stQ.eq("sy_id", currentSyId);
+
+          const { data: todayStudents, error: tsErr } = await stQ;
+          if (tsErr) throw tsErr;
+
+          for (const s of todayStudents || []) {
+            sectionStudentCount.set(s.section_id, (sectionStudentCount.get(s.section_id) || 0) + 1);
+          }
+        }
+
+        const uiSchedule = (schedRows || []).map((r) => ({
+          schedule_id: r.schedule_id,
+          section_id: r.section_id,
+          _start: r.start_time,
+          _end: r.end_time,
+          time: formatTimeRange(r.start_time, r.end_time),
+          subject: r.subjects?.subject_title ?? "Subject",
+          class: sectionLabelFromRow(r.sections),
+          room: r.room || "—",
+          count: sectionStudentCount.get(r.section_id) ?? 0,
+          period_no: r.period_no,
+        }));
+
+        const todayCount = uiSchedule.length;
+        const next = uiSchedule.find((x) => timeToMinutes(x._start) > nowMinutes);
+
+        const nextSub = next ? `Next: ${to12h(next._start)}` : "No more today";
+        const upcoming = next ? { value: to12h(next._start), sub: next.class } : { value: "—", sub: "No more today" };
+
+        // 9) calendar dots: teacher class weekdays + calendar_events (audience All/Teachers)
+        let weekdayQ = supabase.from("section_schedules").select("day_of_week").eq("teacher_id", user.id);
+        if (currentSyId) weekdayQ = weekdayQ.eq("sy_id", currentSyId);
+        if (currentTermId) weekdayQ = weekdayQ.eq("term_id", currentTermId);
+
+        const { data: weekdaysRows, error: wdErr } = await weekdayQ;
+        if (wdErr) throw wdErr;
+
+        const teacherWeekdaysSet = new Set((weekdaysRows || []).map((r) => r.day_of_week));
+        const year = now.getFullYear();
+        const month = now.getMonth();
+        const classDayDots = buildHighlightedDaysForMonth(year, month, teacherWeekdaysSet);
+
+        const monthStart = new Date(year, month, 1).toISOString().slice(0, 10);
+        const monthEnd = new Date(year, month + 1, 0).toISOString().slice(0, 10);
+
+        const { data: calEvents, error: ceErr } = await supabase
+          .from("calendar_events")
+          .select("id, start_date, end_date, is_deleted, audiences")
+          .eq("is_deleted", false)
+          .lte("start_date", monthEnd)
+          .or(`end_date.gte.${monthStart},end_date.is.null`)
+          .order("start_date", { ascending: true });
+
+        if (ceErr) throw ceErr;
+
+        const eventDots = new Set();
+        for (const ev of calEvents || []) {
+          const audiences = ev.audiences || ["All"];
+          const visible =
+            audiences.includes("All") || audiences.includes("Teachers") || audiences.includes("All Teachers");
+          if (!visible) continue;
+
+          const start = new Date(`${ev.start_date}T00:00:00`);
+          const end = new Date(`${(ev.end_date || ev.start_date)}T00:00:00`);
+          const monthStartDate = new Date(year, month, 1);
+          const monthEndDate = new Date(year, month + 1, 0);
+
+          const clampStart = new Date(Math.max(start.getTime(), monthStartDate.getTime()));
+          const clampEnd = new Date(Math.min(end.getTime(), monthEndDate.getTime()));
+
+          for (let d = new Date(clampStart); d <= clampEnd; d.setDate(d.getDate() + 1)) {
+            if (d.getMonth() === month) eventDots.add(d.getDate());
+          }
+        }
+
+        const mergedDots = new Set([...classDayDots, ...eventDots]);
+
+        // 10) announcements (Published teacher-facing)
+        // If you later want section/subject-targeted announcements, we can expand this.
+        const { data: annRows, error: aErr } = await supabase
+          .from("announcements")
+          .select("id, title, content, posted_at, status, is_archived, target_audience")
+          .eq("status", "Published")
+          .eq("is_archived", false)
+          .in("target_audience", ["All Teachers", "Teachers", "All"])
+          .order("posted_at", { ascending: false })
+          .limit(3);
+
+        if (aErr) throw aErr;
+
+        if (!mounted) return;
+
+        setTeacher({ ...profile, ...(teacherRow || {}) });
+        setClasses(derivedClasses);
+        setStudentsAcrossClasses(studentCount);
+
+        setTodaysSchedule(uiSchedule);
+        setTodaysClassesCount(todayCount);
+        setNextClassSub(nextSub);
+        setUpcomingLabel(upcoming);
+
+        setCalendarHighlighted(mergedDots);
+
+        setAnnouncements(
+          (annRows || []).map((a) => ({
+            id: a.id,
+            title: a.title,
+            date: a.posted_at
+              ? new Date(a.posted_at).toLocaleDateString("en-US", { month: "short", day: "2-digit" })
+              : "—",
+            body: a.content,
+          }))
+        );
+      } catch (e) {
+        if (!mounted) return;
+        setErr(e?.message || "Failed to load dashboard.");
+      } finally {
+        if (!mounted) return;
+        setLoading(false);
+      }
+    }
+
+    load();
+    return () => {
+      mounted = false;
+    };
+  }, []);
+
+  // Lessons/activity not provided yet → keep routes, show placeholders
+  const pendingLessons = "—";
+  const activity = [];
+
   const stats = useMemo(
     () => [
-      { label: "Total Classes", value: 6, icon: GraduationCap },
-      { label: "Today's Classes", value: 3, icon: CalendarDays, sub: "Next: 8:00 AM" },
-      { label: "Pending Lessons", value: 2, icon: BookOpen, sub: "Need upload" },
-      { label: "Students", value: 187, icon: Users, sub: "Across classes" },
-      { label: "Upcoming Schedule", value: "8:00 AM", icon: Clock, sub: "STEM 12-A" },
+      { label: "Total Classes", value: loading ? "…" : classes.length, icon: GraduationCap },
+      {
+        label: "Today's Classes",
+        value: loading ? "…" : todaysClassesCount,
+        icon: CalendarDays,
+        sub: loading ? "…" : nextClassSub,
+      },
+      { label: "Pending Lessons", value: pendingLessons, icon: BookOpen, sub: "See Lessons" },
+      { label: "Students", value: loading ? "…" : studentsAcrossClasses, icon: Users, sub: "Across classes" },
+      {
+        label: "Upcoming Schedule",
+        value: loading ? "…" : upcomingLabel.value,
+        icon: Clock,
+        sub: loading ? "…" : upcomingLabel.sub,
+      },
     ],
-    []
+    [loading, classes.length, todaysClassesCount, nextClassSub, pendingLessons, studentsAcrossClasses, upcomingLabel]
   );
-
-  const todaysSchedule = [
-    { time: "8:00–9:00 AM", subject: "Gen Math", class: "STEM 12-A", room: "Room 302", count: 38 },
-    { time: "10:00–11:00 AM", subject: "Research", class: "HUMSS 11-B", room: "Room 214", count: 41 },
-    { time: "1:00–2:00 PM", subject: "Physics", class: "STEM 12-B", room: "Lab 1", count: 36 },
-  ];
-
-  const activity = [
-    { what: "Uploaded lesson: Quadratic Functions", when: "10 minutes ago" },
-    { what: "Posted grades: Gen Math Quiz #2", when: "2 hours ago" },
-    { what: "New student submission: Activity Sheet", when: "Yesterday" },
-    { what: "Updated class announcement", when: "2 days ago" },
-  ];
-
-  const announcements = [
-    { title: "School Event: Foundation Day", date: "Aug 12", body: "Please remind your students about the schedule update." },
-    { title: "Policy Update: ID Requirement", date: "Aug 10", body: "Students must bring their ID at all times within campus." },
-    { title: "Urgent: Room Reassignment", date: "Aug 09", body: "STEM 12-A will temporarily move to Room 305." },
-  ];
 
   return (
     <div className="space-y-6">
+      {err ? (
+        <CardShell>
+          <div className="p-4 md:p-5">
+            <div className="text-sm font-extrabold" style={{ color: BRAND.ink }}>
+              Couldn’t load dashboard
+            </div>
+            <div className="mt-1 text-xs font-semibold" style={{ color: BRAND.muted }}>
+              {err}
+            </div>
+          </div>
+        </CardShell>
+      ) : null}
+
       {/* Overview cards */}
       <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-5">
         {stats.map((s, idx) => {
@@ -120,36 +504,31 @@ export default function TeacherDashboard() {
                 Common actions you can do right now
               </div>
             </div>
+
+            {teacher?.full_name ? (
+              <div className="text-xs font-semibold" style={{ color: BRAND.muted }}>
+                Signed in as {teacher.full_name}
+              </div>
+            ) : null}
           </div>
 
           <div className="mt-4 grid gap-3 md:grid-cols-2 xl:grid-cols-4">
-            <ActionButton
-              icon={Upload}
-              label="Upload New Lesson"
-              primary
-              onClick={() => alert("Open Upload Lesson modal (UI next).")}
-            />
-            <ActionButton
-              icon={Sparkles}
-              label="AI Lesson Planner ✨"
-              primary
-              onClick={() => alert("Open AI planner modal (UI next).")}
-            />
+            <ActionButton icon={Upload} label="Upload New Lesson" primary onClick={() => navigate("/teacher/lessons")} />
+            <ActionButton icon={Sparkles} label="AI Lesson Planner ✨" primary onClick={() => navigate("/teacher/lessons")} />
             <ActionButton
               icon={CalendarDays}
               label="View Today's Schedule"
-              onClick={() => alert("Navigate to /teacher/schedule (wire later).")}
+              onClick={() => {
+                const today = new Date().toISOString().slice(0, 10);
+                navigate(`/teacher/schedule?date=${encodeURIComponent(today)}`);
+              }}
             />
-            <ActionButton
-              icon={Megaphone}
-              label="Create Announcement"
-              onClick={() => alert("Open announcement modal (UI next).")}
-            />
+            <ActionButton icon={Megaphone} label="Create Announcement" onClick={() => navigate("/teacher/announcements")} />
           </div>
         </div>
       </CardShell>
 
-      {/* Main grid: Schedule + Activity + Announcements + Calendar */}
+      {/* Main grid */}
       <div className="grid gap-6 xl:grid-cols-[1.35fr_0.65fr]">
         {/* Left column */}
         <div className="space-y-6">
@@ -165,38 +544,53 @@ export default function TeacherDashboard() {
                     Your classes for today
                   </div>
                 </div>
+
+                <button
+                  className="rounded-2xl px-3 py-2 text-xs font-extrabold hover:bg-black/5"
+                  style={{ color: BRAND.gold }}
+                  onClick={() => {
+                    const today = new Date().toISOString().slice(0, 10);
+                    navigate(`/teacher/schedule?date=${encodeURIComponent(today)}`);
+                  }}
+                  type="button"
+                >
+                  View Full
+                </button>
               </div>
 
               <div className="mt-4 space-y-3">
-                {todaysSchedule.map((c) => (
-                  <div
-                    key={c.time + c.class}
-                    className="rounded-2xl border bg-white p-4"
-                    style={{ borderColor: BRAND.stroke }}
-                  >
-                    <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
-                      <div className="min-w-0">
-                        <div className="text-xs font-semibold" style={{ color: BRAND.muted }}>
-                          {c.time}
+                {todaysSchedule.length ? (
+                  todaysSchedule.map((c) => (
+                    <div key={c.schedule_id} className="rounded-2xl border bg-white p-4" style={{ borderColor: BRAND.stroke }}>
+                      <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+                        <div className="min-w-0">
+                          <div className="text-xs font-semibold" style={{ color: BRAND.muted }}>
+                            {c.time}
+                          </div>
+                          <div className="mt-0.5 text-sm font-extrabold truncate" style={{ color: BRAND.ink }}>
+                            {c.subject} • {c.class}
+                          </div>
+                          <div className="mt-1 text-xs font-semibold" style={{ color: BRAND.muted }}>
+                            {c.room} • {c.count} students
+                          </div>
                         </div>
-                        <div className="mt-0.5 text-sm font-extrabold truncate" style={{ color: BRAND.ink }}>
-                          {c.subject} • {c.class}
-                        </div>
-                        <div className="mt-1 text-xs font-semibold" style={{ color: BRAND.muted }}>
-                          {c.room} • {c.count} students
-                        </div>
-                      </div>
 
-                      <button
-                        className="inline-flex items-center justify-center gap-2 rounded-2xl border bg-white px-3 py-2 text-sm font-semibold hover:bg-black/5"
-                        style={{ borderColor: "rgba(212,166,47,0.55)", color: BRAND.ink }}
-                        onClick={() => alert("Open schedule details panel (UI next).")}
-                      >
-                        View Details <ArrowRight className="h-4 w-4" />
-                      </button>
+                        <button
+                          className="inline-flex items-center justify-center gap-2 rounded-2xl border bg-white px-3 py-2 text-sm font-semibold hover:bg-black/5"
+                          style={{ borderColor: "rgba(212,166,47,0.55)", color: BRAND.ink }}
+                          onClick={() => navigate(`/teacher/schedule?scheduleId=${encodeURIComponent(c.schedule_id)}`)}
+                          type="button"
+                        >
+                          View Details <ArrowRight className="h-4 w-4" />
+                        </button>
+                      </div>
                     </div>
+                  ))
+                ) : (
+                  <div className="rounded-2xl border bg-white p-4 text-sm font-semibold" style={{ borderColor: BRAND.stroke, color: BRAND.muted }}>
+                    {loading ? "Loading schedule…" : "No classes scheduled today."}
                   </div>
-                ))}
+                )}
               </div>
             </div>
           </CardShell>
@@ -204,30 +598,47 @@ export default function TeacherDashboard() {
           {/* Recent activity */}
           <CardShell>
             <div className="p-4 md:p-5">
-              <div>
-                <div className="text-sm font-extrabold" style={{ color: BRAND.ink }}>
-                  Recent Activity
+              <div className="flex items-center justify-between">
+                <div>
+                  <div className="text-sm font-extrabold" style={{ color: BRAND.ink }}>
+                    Recent Activity
+                  </div>
+                  <div className="text-xs font-semibold" style={{ color: BRAND.muted }}>
+                    Latest updates from your work
+                  </div>
                 </div>
-                <div className="text-xs font-semibold" style={{ color: BRAND.muted }}>
-                  Latest updates from your work
-                </div>
+
+                <button
+                  className="rounded-2xl px-3 py-2 text-xs font-extrabold hover:bg-black/5"
+                  style={{ color: BRAND.gold }}
+                  onClick={() => navigate("/teacher/lessons")}
+                  type="button"
+                >
+                  Open Lessons
+                </button>
               </div>
 
               <div className="mt-4 space-y-3">
-                {activity.map((a, idx) => (
-                  <div
-                    key={idx}
-                    className="flex items-start justify-between gap-4 rounded-2xl border bg-white px-4 py-3"
-                    style={{ borderColor: BRAND.stroke }}
-                  >
-                    <div className="text-sm font-semibold" style={{ color: BRAND.ink }}>
-                      {a.what}
+                {activity.length ? (
+                  activity.map((a, idx) => (
+                    <div
+                      key={idx}
+                      className="flex items-start justify-between gap-4 rounded-2xl border bg-white px-4 py-3"
+                      style={{ borderColor: BRAND.stroke }}
+                    >
+                      <div className="text-sm font-semibold" style={{ color: BRAND.ink }}>
+                        {a.what}
+                      </div>
+                      <div className="shrink-0 text-xs font-semibold" style={{ color: BRAND.muted }}>
+                        {a.when}
+                      </div>
                     </div>
-                    <div className="shrink-0 text-xs font-semibold" style={{ color: BRAND.muted }}>
-                      {a.when}
-                    </div>
+                  ))
+                ) : (
+                  <div className="rounded-2xl border bg-white p-4 text-sm font-semibold" style={{ borderColor: BRAND.stroke, color: BRAND.muted }}>
+                    Activity will appear here once lessons/submissions tables are wired.
                   </div>
-                ))}
+                )}
               </div>
             </div>
           </CardShell>
@@ -247,39 +658,59 @@ export default function TeacherDashboard() {
                     Latest from admin
                   </div>
                 </div>
+
                 <button
                   className="rounded-2xl px-3 py-2 text-xs font-extrabold hover:bg-black/5"
                   style={{ color: BRAND.gold }}
-                  onClick={() => alert("Go to /teacher/announcements")}
+                  onClick={() => navigate("/teacher/announcements")}
+                  type="button"
                 >
                   View All
                 </button>
               </div>
 
               <div className="mt-4 space-y-3">
-                {announcements.map((an, idx) => (
-                  <div key={idx} className="rounded-2xl border bg-white p-4" style={{ borderColor: BRAND.stroke }}>
-                    <div className="flex items-start justify-between gap-3">
-                      <div className="min-w-0">
-                        <div className="text-sm font-extrabold truncate" style={{ color: BRAND.ink }}>
-                          {an.title}
+                {announcements.length ? (
+                  announcements.map((an) => (
+                    <button
+                      key={an.id}
+                      className="w-full text-left rounded-2xl border bg-white p-4 hover:bg-black/5"
+                      style={{ borderColor: BRAND.stroke }}
+                      onClick={() => navigate(`/teacher/announcements?announcementId=${encodeURIComponent(an.id)}`)}
+                      type="button"
+                    >
+                      <div className="flex items-start justify-between gap-3">
+                        <div className="min-w-0">
+                          <div className="text-sm font-extrabold truncate" style={{ color: BRAND.ink }}>
+                            {an.title}
+                          </div>
+                          <div className="mt-1 text-xs font-semibold" style={{ color: BRAND.muted }}>
+                            {an.body}
+                          </div>
                         </div>
-                        <div className="mt-1 text-xs font-semibold" style={{ color: BRAND.muted }}>
-                          {an.body}
+                        <div className="shrink-0 text-xs font-semibold" style={{ color: BRAND.muted }}>
+                          {an.date}
                         </div>
                       </div>
-                      <div className="shrink-0 text-xs font-semibold" style={{ color: BRAND.muted }}>
-                        {an.date}
-                      </div>
-                    </div>
+                    </button>
+                  ))
+                ) : (
+                  <div className="rounded-2xl border bg-white p-4 text-sm font-semibold" style={{ borderColor: BRAND.stroke, color: BRAND.muted }}>
+                    {loading ? "Loading announcements…" : "No published announcements."}
                   </div>
-                ))}
+                )}
               </div>
             </div>
           </CardShell>
 
           {/* Calendar widget */}
-          <CalendarWidget />
+          <CalendarWidget
+            highlighted={calendarHighlighted}
+            onDayClick={(dateObj) => {
+              const date = dateObj.toISOString().slice(0, 10);
+              navigate(`/teacher/schedule?date=${encodeURIComponent(date)}`);
+            }}
+          />
         </div>
       </div>
     </div>
@@ -299,6 +730,7 @@ function ActionButton({ icon, label, onClick, primary = false }) {
         borderColor: primary ? "rgba(212,166,47,0.55)" : BRAND.stroke,
         background: primary ? "rgba(212,166,47,0.18)" : "white",
       }}
+      type="button"
     >
       <div>
         <div className="text-sm font-extrabold" style={{ color: BRAND.ink }}>
@@ -317,86 +749,3 @@ function ActionButton({ icon, label, onClick, primary = false }) {
     </button>
   );
 }
-
-function CalendarWidget() {
-  const today = new Date();
-  const year = today.getFullYear();
-  const month = today.getMonth(); // 0-based
-
-  const firstDay = new Date(year, month, 1);
-  const startWeekday = firstDay.getDay(); // 0 Sun
-  const daysInMonth = new Date(year, month + 1, 0).getDate();
-
-  // sample highlight days (classes)
-  const highlighted = new Set([2, 5, 9, 12, 16, 19, 22, 25]);
-
-  const cells = [];
-  for (let i = 0; i < startWeekday; i++) cells.push(null);
-  for (let d = 1; d <= daysInMonth; d++) cells.push(d);
-
-  const monthLabel = today.toLocaleString("en-US", { month: "long", year: "numeric" });
-
-  return (
-    <CardShell>
-      <div className="p-4 md:p-5">
-        <div>
-          <div className="text-sm font-extrabold" style={{ color: BRAND.ink }}>
-            Calendar
-          </div>
-          <div className="text-xs font-semibold" style={{ color: BRAND.muted }}>
-            {monthLabel}
-          </div>
-        </div>
-
-        <div className="mt-4 grid grid-cols-7 gap-1 text-center text-xs font-semibold" style={{ color: BRAND.muted }}>
-          {["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"].map((d) => (
-            <div key={d} className="py-2">
-              {d}
-            </div>
-          ))}
-        </div>
-
-        <div className="grid grid-cols-7 gap-1">
-          {cells.map((d, idx) => {
-            const isToday = d === today.getDate();
-            const isHighlighted = d != null && highlighted.has(d);
-
-            return (
-              <button
-                key={idx}
-                className="aspect-square rounded-2xl border text-sm font-extrabold transition hover:bg-black/5"
-                style={{
-                  borderColor: "rgba(43,26,18,0.12)",
-                  background: isToday ? "rgba(212,166,47,0.20)" : "white",
-                  color: d ? BRAND.ink : "transparent",
-                }}
-                onClick={() => {
-                  if (!d) return;
-                  alert(`Clicked ${monthLabel} ${d} (show schedule list here).`);
-                }}
-              >
-                <div className="grid h-full w-full place-items-center">
-                  <div className="relative">
-                    {d ?? 0}
-                    {isHighlighted ? (
-                      <span
-                        className="absolute -bottom-2 left-1/2 h-1.5 w-1.5 -translate-x-1/2 rounded-full"
-                        style={{ background: BRAND.gold }}
-                      />
-                    ) : null}
-                  </div>
-                </div>
-              </button>
-            );
-          })}
-        </div>
-
-        <div className="mt-3 text-xs font-semibold" style={{ color: BRAND.muted }}>
-          • Gold dot indicates days with classes.
-        </div>
-      </div>
-    </CardShell>
-  );
-}
-
-

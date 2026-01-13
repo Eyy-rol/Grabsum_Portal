@@ -116,9 +116,13 @@ export default function Login() {
       .from("profiles")
       .select("user_id, email, full_name, role, is_active, is_archived, must_change_password")
       .eq("user_id", userId)
-      .single();
+      .maybeSingle();
 
-    if (error || !profile) return null;
+    if (error) {
+      console.error("fetchProfile error:", error);
+      throw error;
+    }
+
     return profile;
   }
 
@@ -273,8 +277,20 @@ export default function Login() {
     }
   }
 
+  const inputBase =
+    "w-full rounded-2xl pl-11 pr-4 py-3.5 text-sm outline-none transition disabled:opacity-70";
+  const inputShell =
+    "relative rounded-2xl bg-white/60 backdrop-blur border transition focus-within:ring-4";
+
   return (
-    <div className="min-h-screen font-[Nunito]" style={{ background: BRAND.bg }}>
+    <div
+      className="min-h-screen font-[Nunito]"
+      style={{
+        background: `radial-gradient(1200px 800px at 20% 10%, rgba(212,166,47,0.10), transparent 55%),
+                     radial-gradient(1200px 800px at 90% 30%, rgba(43,26,18,0.07), transparent 60%),
+                     ${BRAND.bg}`,
+      }}
+    >
       <button
         onClick={() => nav(-1)}
         aria-label="Back"
@@ -283,8 +299,9 @@ export default function Login() {
         <ArrowLeft className="h-5 w-5" style={{ color: BRAND.muted }} />
       </button>
 
-      <div className="mx-auto max-w-6xl px-6">
+      <div className="mx-auto max-w-5xl px-6">
         <div className="min-h-screen grid items-center gap-10 lg:grid-cols-2">
+          {/* Left / Brand */}
           <motion.section
             initial={{ opacity: 0, y: 8 }}
             animate={{ opacity: 1, y: 0 }}
@@ -292,22 +309,49 @@ export default function Login() {
             className="text-center lg:text-left"
           >
             <div className="mx-auto lg:mx-0 w-fit">
-              <img src={logo} alt="Grabsum School logo" className="h-24 w-24 rounded-full object-contain" />
+   <div className="lg:max-w-md">
+  <div className="mx-auto lg:mx-0 lg:flex lg:justify-center lg:translate-x-1">
+    <img
+      src={logo}
+      alt="Grabsum School logo"
+      className="h-28 w-28 md:h-32 md:w-32 object-contain"
+      style={{
+        filter: "drop-shadow(0 8px 18px rgba(43,26,18,0.18))",
+      }}
+    />
+  </div>
+</div>
+
+
             </div>
 
-            <h1 className="mt-7 text-4xl md:text-5xl font-extrabold tracking-tight" style={{ color: BRAND.brown }}>
+            <h1 className="mt-6 text-3xl md:text-4xl font-extrabold tracking-tight" style={{ color: BRAND.brown }}>
               Welcome Angelicos!
             </h1>
 
-            <p className="mt-4 max-w-xl mx-auto lg:mx-0 text-base leading-relaxed" style={{ color: BRAND.muted }}>
-              Sign in using <b>Email</b>, <b>Student Number (S25-0001)</b>, or <b>Teacher Number (T25-0001)</b>.
+            <p className="mt-3 max-w-xl mx-auto lg:mx-0 text-sm leading-relaxed" style={{ color: BRAND.muted }}>
+              Sign in using <b>Email</b>, <b>Student Number</b> (S25-0001), or <b>Teacher Number</b> (T25-0001).
             </p>
 
-            <div className="mt-20 text-xs" style={{ color: "rgba(43,26,18,0.45)" }}>
-              © {new Date().getFullYear()} GRABSUM School, Inc. All rights reserved.
+            <div className="mt-10 hidden lg:block">
+              <div
+                className="inline-flex items-center gap-2 rounded-full px-3 py-1 text-xs"
+                style={{
+                  border: `1px solid ${BRAND.stroke}`,
+                  background: "rgba(255,255,255,0.55)",
+                  color: "rgba(43,26,18,0.65)",
+                }}
+              >
+               Role Based Access • GRABSUM School
+              </div>
+            </div>
+
+            <div className="mt-10 text-xs" style={{ color: "rgba(43,26,18,0.45)" }}>
+              © {new Date().getFullYear()} GRABSUM School, Inc. All righfts reserved.
             </div>
           </motion.section>
 
+          {/* Right / Card */}
           <motion.section
             initial={{ opacity: 0, y: 10 }}
             animate={{ opacity: 1, y: 0 }}
@@ -315,59 +359,84 @@ export default function Login() {
             className="w-full max-w-xl lg:justify-self-end"
           >
             <div
-              className="rounded-3xl bg-white"
+              className="rounded-3xl bg-white/70 backdrop-blur"
               style={{
                 border: `1px solid ${BRAND.stroke}`,
-                boxShadow: "0 14px 34px rgba(43,26,18,0.12)",
+                boxShadow: "0 18px 55px rgba(43,26,18,0.10)",
               }}
             >
-              <form onSubmit={onSubmit} className="p-8 md:p-10">
+              <form onSubmit={onSubmit} className="p-7 md:p-10">
+                <div className="mb-7">
+                  <div className="text-xl font-extrabold tracking-tight" style={{ color: BRAND.brown }}>
+                    Sign in
+                  </div>
+                  <div className="mt-1 text-sm" style={{ color: BRAND.muted }}>
+                    Use your credentials to continue.
+                  </div>
+                </div>
+
                 {authError ? (
                   <div
-                    className="mb-5 rounded-2xl border px-4 py-3 text-sm font-semibold"
+                    className="mb-5 rounded-2xl border px-4 py-3 text-sm"
                     style={{
-                      borderColor: "rgba(239,68,68,0.35)",
+                      borderColor: "rgba(239,68,68,0.28)",
                       background: "rgba(239,68,68,0.06)",
                       color: "#b91c1c",
                     }}
                   >
-                    {authError}
+                    <span className="font-semibold">Sign-in failed.</span> {authError}
                   </div>
                 ) : null}
 
-                <label className="text-sm font-semibold" style={{ color: BRAND.brown }}>
-                  Email / Student Number / Teacher Number
+                {/* Identifier */}
+                <label className="text-xs font-semibold tracking-wide uppercase" style={{ color: "rgba(43,26,18,0.70)" }}>
+                  Email / Student / Teacher No.
                 </label>
 
                 <div className="mt-2">
-                  <div className="relative">
+                  <div
+                    className={`${inputShell}`}
+                    style={{
+                      borderColor: touched.ident && errors.ident ? "rgba(239,68,68,0.40)" : "rgba(43,26,18,0.14)",
+                      ringColor: "rgba(212,166,47,0.25)",
+                    }}
+                  >
                     <Mail className="absolute left-4 top-1/2 -translate-y-1/2 h-4 w-4" style={{ color: BRAND.muted }} />
                     <input
                       value={ident}
                       onChange={(e) => setIdent(e.target.value)}
                       onBlur={() => setTouched((t) => ({ ...t, ident: true }))}
-                      placeholder="your.email@grabsum.edu.ph OR S25-0001 OR T25-0001"
-                      className="w-full rounded-xl pl-11 pr-4 py-3 text-sm outline-none transition"
+                      placeholder="your.email@grabsum.edu.ph or S25-0001 or T25-0001"
+                      className={inputBase}
                       style={{
-                        background: "rgba(251,246,239,0.6)",
-                        border: `1px solid ${
-                          touched.ident && errors.ident ? "rgba(239,68,68,0.55)" : "rgba(43,26,18,0.22)"
-                        }`,
+                        background: "transparent",
+                        color: BRAND.brown,
                       }}
                       disabled={loading}
+                      autoComplete="username"
                     />
                   </div>
+
                   {touched.ident && errors.ident ? (
                     <div className="mt-2 text-xs font-semibold text-red-500">{errors.ident}</div>
                   ) : null}
                 </div>
 
-                <label className="mt-6 block text-sm font-semibold" style={{ color: BRAND.brown }}>
+                {/* Password */}
+                <label
+                  className="mt-5 block text-xs font-semibold tracking-wide uppercase"
+                  style={{ color: "rgba(43,26,18,0.70)" }}
+                >
                   Password
                 </label>
 
                 <div className="mt-2">
-                  <div className="relative">
+                  <div
+                    className={`${inputShell}`}
+                    style={{
+                      borderColor: touched.pw && errors.pw ? "rgba(239,68,68,0.40)" : "rgba(43,26,18,0.14)",
+                    }}
+                  >
                     <Lock className="absolute left-4 top-1/2 -translate-y-1/2 h-4 w-4" style={{ color: BRAND.muted }} />
                     <input
                       value={pw}
@@ -375,20 +444,16 @@ export default function Login() {
                       onBlur={() => setTouched((t) => ({ ...t, pw: true }))}
                       type={show ? "text" : "password"}
                       placeholder="••••••••"
-                      className="w-full rounded-xl pl-11 pr-12 py-3 text-sm outline-none transition"
-                      style={{
-                        background: "rgba(251,246,239,0.6)",
-                        border: `1px solid ${
-                          touched.pw && errors.pw ? "rgba(239,68,68,0.55)" : "rgba(43,26,18,0.22)"
-                        }`,
-                      }}
+                      className={`${inputBase} pr-12`}
+                      style={{ background: "transparent", color: BRAND.brown }}
                       disabled={loading}
+                      autoComplete="current-password"
                     />
 
                     <button
                       type="button"
                       onClick={() => setShow((s) => !s)}
-                      className="absolute right-3 top-1/2 -translate-y-1/2 rounded-lg p-2 hover:bg-black/5 transition"
+                      className="absolute right-3 top-1/2 -translate-y-1/2 rounded-xl p-2 hover:bg-black/5 transition"
                       aria-label={show ? "Hide password" : "Show password"}
                       disabled={loading}
                     >
@@ -405,28 +470,37 @@ export default function Login() {
                   ) : null}
                 </div>
 
-                <div className="mt-4 flex items-center justify-end">
-                  <Link to="/forgot-password" className="text-sm hover:underline" style={{ color: BRAND.link }}>
-                    Forgot password?
-                  </Link>
+                <div className="mt-4 flex items-center justify-between">
+                  <div className="text-xs" style={{ color: "rgba(43,26,18,0.55)" }}>
+                    Tip: S25-0001 / T25-0001
+                  </div>
+
+          
                 </div>
 
                 <button
                   type="submit"
                   disabled={!canSubmit}
-                  className="mt-6 w-full rounded-2xl py-3 text-sm font-semibold transition"
+                  className="mt-6 w-full rounded-2xl py-3.5 text-sm font-semibold transition active:scale-[0.99]"
                   style={{
-                    background: BRAND.gold,
+                    background: canSubmit ? BRAND.gold : "rgba(212,166,47,0.55)",
                     color: BRAND.brown,
-                    boxShadow: "0 10px 18px rgba(212,166,47,0.28)",
-                    opacity: canSubmit ? 1 : 0.65,
+                    boxShadow: canSubmit ? "0 12px 22px rgba(212,166,47,0.22)" : "none",
                     cursor: canSubmit ? "pointer" : "not-allowed",
+                  }}
+                  onMouseEnter={(e) => {
+                    if (!canSubmit) return;
+                    e.currentTarget.style.background = BRAND.goldHover;
+                  }}
+                  onMouseLeave={(e) => {
+                    if (!canSubmit) return;
+                    e.currentTarget.style.background = BRAND.gold;
                   }}
                 >
                   {loading ? "Signing in…" : "Sign In"}
                 </button>
 
-                <div className="mt-8 text-center text-sm" style={{ color: BRAND.muted }}>
+                <div className="mt-7 text-center text-sm" style={{ color: BRAND.muted }}>
                   Don&apos;t have an account?{" "}
                   <Link to="/pre-enroll" className="hover:underline" style={{ color: BRAND.link }}>
                     Pre-enroll here

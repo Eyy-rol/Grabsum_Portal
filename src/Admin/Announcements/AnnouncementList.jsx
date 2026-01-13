@@ -4,7 +4,7 @@ import { Plus, RefreshCcw } from "lucide-react";
 import { supabase } from "../../lib/supabaseClient";
 import { getMyProfile, getActiveSy } from "../../lib/portalCtx";
 
-const STAFF_ROLES = new Set(["admin", "dev", "staff"]); // add roles here if needed
+const STAFF_ROLES = new Set(["admin", "dev", "staff"]);
 
 export default function AdminAnnouncement() {
   const [sy, setSy] = useState(null);
@@ -46,13 +46,13 @@ export default function AdminAnnouncement() {
       const activeSy = await getActiveSy();
       setSy(activeSy);
 
-      // ✅ super_admin = my posts for current SY
       if (r === "super_admin") {
         const { data, error } = await supabase
           .from("announcements")
           .select("id,title,content,priority,target_audience,status,is_archived,posted_at,sy_id")
           .eq("posted_by", user.id)
           .eq("sy_id", activeSy.sy_id)
+          .eq("is_archived", false)
           .order("posted_at", { ascending: false });
 
         if (error) throw error;
@@ -60,14 +60,14 @@ export default function AdminAnnouncement() {
         return;
       }
 
-      // ✅ staff read-only = view published teacher-facing announcements
+      // ✅ staff read-only: view published teacher/student facing announcements
       const { data, error } = await supabase
         .from("announcements")
         .select("id,title,content,priority,target_audience,status,is_archived,posted_at,sy_id,posted_by")
         .eq("sy_id", activeSy.sy_id)
         .eq("status", "Published")
         .eq("is_archived", false)
-        .eq("target_audience", "All Teachers", "All Students")
+        .in("target_audience", ["All Teachers", "All Students"]) // ✅ FIX
         .order("posted_at", { ascending: false });
 
       if (error) throw error;
@@ -101,20 +101,24 @@ export default function AdminAnnouncement() {
       if (!form.title.trim()) throw new Error("Title is required.");
       if (!form.content.trim()) throw new Error("Content is required.");
 
-      // super_admin allowed audience
       if (!["All Teachers", "All Students"].includes(form.target_audience)) {
         throw new Error("Invalid audience for super_admin.");
       }
 
       const payload = {
         posted_by: user.id,
+        posted_by_role: "super_admin", // ✅ IMPORTANT FIX
+        posted_by_teacher_id: null,
+
         title: form.title.trim(),
         content: form.content.trim(),
         priority: form.priority,
         target_audience: form.target_audience,
         status: form.status,
+
         is_archived: false,
         sy_id: sy.sy_id,
+
         section_id: null,
         term_id: null,
       };
@@ -136,6 +140,14 @@ export default function AdminAnnouncement() {
     return `Current SY: ${sy.sy_code}`;
   }, [sy]);
 
+  if (!canView) {
+    return (
+      <div className="rounded-2xl border border-black/10 bg-white p-4 text-sm text-black/60">
+        Forbidden.
+      </div>
+    );
+  }
+
   return (
     <div className="space-y-4">
       <div className="rounded-2xl border border-black/10 bg-white p-4">
@@ -146,10 +158,7 @@ export default function AdminAnnouncement() {
               <span className="ml-2 text-xs font-semibold text-black/40">({role || "—"})</span>
             </div>
             <div className="text-xs font-semibold text-black/50">
-              {canPost
-                ? "Super Admin posts to teachers (and optionally all students)."
-                : "Read-only view for staff (admin/dev)."}{" "}
-              {headerSubtitle}
+              {canPost ? "Super Admin posts to teachers/students." : "Read-only view for staff."} {headerSubtitle}
             </div>
 
             {errMsg ? (
@@ -168,7 +177,6 @@ export default function AdminAnnouncement() {
           </button>
         </div>
 
-        {/* ✅ Only show create form if super_admin */}
         {canPost ? (
           <div className="mt-4 grid gap-3 md:grid-cols-2">
             <div>
@@ -233,9 +241,7 @@ export default function AdminAnnouncement() {
       </div>
 
       <div className="rounded-2xl border border-black/10 bg-white p-4">
-        <div className="text-sm font-extrabold text-[#2b1a12]">
-          {canPost ? "My Posts" : "Announcements"}
-        </div>
+        <div className="text-sm font-extrabold text-[#2b1a12]">{canPost ? "My Posts" : "Announcements"}</div>
 
         <div className="mt-2 space-y-3">
           {loading ? (

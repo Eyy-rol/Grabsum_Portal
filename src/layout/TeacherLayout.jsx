@@ -1,5 +1,5 @@
-// src/layouts/TeacherLayout.tsx
-import React, { useEffect, useMemo, useRef, useState } from "react";
+// src/layouts/TeacherLayout.jsx
+import { useEffect, useMemo, useRef, useState } from "react";
 import { NavLink, Outlet, useLocation, useNavigate } from "react-router-dom";
 import { AnimatePresence, motion } from "framer-motion";
 import {
@@ -21,10 +21,10 @@ import {
 } from "lucide-react";
 
 import logo from "../assets/grabsum-logo.png";
-import { supabase } from "../lib/supabaseClient"; // ✅ add
+import { supabase } from "../lib/supabaseClient";
 
 // -----------------------------------------------------
-// Brand tokens (aligned with your Login aesthetic)
+// Brand tokens (modern, minimalist, aesthetic)
 // -----------------------------------------------------
 const BRAND = {
   pageBg: "bg-[#fbf6ef]",
@@ -36,34 +36,43 @@ const BRAND = {
   cardShadow: "0 14px 34px rgba(43,26,18,0.10)",
 };
 
-type IconType = React.ComponentType<{ className?: string }>;
-
-type NavItem = {
-  key: string;
-  label: string;
-  to: string;
-  icon: IconType;
-};
-
-const TEACHER_NAV: NavItem[] = [
+const TEACHER_NAV = [
   { key: "dash", label: "Dashboard", to: "/teacher/dashboard", icon: LayoutDashboard },
   { key: "lessons", label: "Lessons", to: "/teacher/lessons", icon: BookOpen },
   { key: "classes", label: "My Classes", to: "/teacher/classes", icon: GraduationCap },
   { key: "schedule", label: "Schedule", to: "/teacher/schedule", icon: CalendarDays },
   { key: "ann", label: "Announcements", to: "/teacher/announcements", icon: Megaphone },
   { key: "students", label: "Students", to: "/teacher/students", icon: Users },
-  { key: "settings", label: "Settings", to: "/teacher/settings", icon: Settings },
+  { key: "profile", label: "Profile", to: "/teacher/settings", icon: UserCircle2 },
 ];
 
-function titleFromPath(path: string) {
+function titleFromPath(path) {
   if (path.includes("/teacher/dashboard")) return "Dashboard";
   if (path.includes("/teacher/lessons")) return "Lessons";
   if (path.includes("/teacher/classes")) return "My Classes";
   if (path.includes("/teacher/schedule")) return "Schedule";
   if (path.includes("/teacher/announcements")) return "Announcements";
   if (path.includes("/teacher/students")) return "Students";
-  if (path.includes("/teacher/settings")) return "Settings";
+  if (path.includes("/teacher/settings")) return "Profile";
   return "Teacher";
+}
+
+function getInitials(first, last, fallback = "Teacher") {
+  const f = String(first || "").trim();
+  const l = String(last || "").trim();
+  const base = `${f} ${l}`.trim();
+  const src = base || fallback;
+  const parts = src.split(/\s+/).filter(Boolean);
+  const a = (parts[0]?.[0] || "T").toUpperCase();
+  const b = (parts[1]?.[0] || parts[0]?.[1] || "C").toUpperCase();
+  return `${a}${b}`;
+}
+
+function safeFullName(first, last, fallback = "Teacher") {
+  const f = String(first || "").trim();
+  const l = String(last || "").trim();
+  const name = `${f}${f && l ? " " : ""}${l}`.trim();
+  return name || fallback;
 }
 
 export default function TeacherLayout() {
@@ -72,7 +81,7 @@ export default function TeacherLayout() {
   const title = useMemo(() => titleFromPath(location.pathname), [location.pathname]);
 
   // sidebar collapse state (persist)
-  const [collapsed, setCollapsed] = useState<boolean>(() => {
+  const [collapsed, setCollapsed] = useState(() => {
     const saved = localStorage.getItem("teacher_sidebar_collapsed");
     return saved ? saved === "1" : false;
   });
@@ -81,8 +90,103 @@ export default function TeacherLayout() {
     localStorage.setItem("teacher_sidebar_collapsed", collapsed ? "1" : "0");
   }, [collapsed]);
 
-  // ✅ Logout wired to Supabase
-  async function handleLogout(): Promise<void> {
+  // teacher profile data from Supabase
+  const [me, setMe] = useState({
+    loading: true,
+    err: "",
+    userId: "",
+    email: "",
+    first_name: "",
+    last_name: "",
+    role: "",
+  });
+
+  useEffect(() => {
+    let alive = true;
+
+    (async () => {
+      try {
+        const { data: authData, error: authErr } = await supabase.auth.getUser();
+        if (authErr) throw authErr;
+
+        const user = authData?.user;
+        if (!user) {
+          if (alive) {
+            setMe({
+              loading: false,
+              err: "Not authenticated.",
+              userId: "",
+              email: "",
+              first_name: "",
+              last_name: "",
+              role: "",
+            });
+          }
+          return;
+        }
+
+        // ✅ IMPORTANT:
+        // Your screenshot shows: "column profiles.first_name does not exist"
+        // So we safely query only columns that exist: user_id, email, role
+        // Then we fallback to teachers table for names.
+        const { data: prof, error: pErr } = await supabase
+          .from("profiles")
+          .select("user_id, email, role")
+          .eq("user_id", user.id)
+          .maybeSingle();
+
+        // if profiles is blocked by RLS or missing fields, we still proceed with auth email
+        const role = String(prof?.role || "").toLowerCase();
+
+        // optional: fetch teacher name from teachers table (likely has first_name/last_name)
+        let tFirst = "";
+        let tLast = "";
+
+        const { data: tRow, error: tErr } = await supabase
+          .from("teachers")
+          .select("first_name, last_name")
+          .eq("user_id", user.id)
+          .maybeSingle();
+
+        if (!tErr && tRow) {
+          tFirst = tRow.first_name || "";
+          tLast = tRow.last_name || "";
+        }
+
+        if (!alive) return;
+
+        setMe({
+          loading: false,
+          err: pErr ? "" : "", // keep UI clean; don't block layout
+          userId: user.id,
+          email: prof?.email || user.email || "",
+          first_name: tFirst,
+          last_name: tLast,
+          role,
+        });
+
+        // OPTIONAL ROLE GUARD (uncomment if you want)
+        // if (role && role !== "teacher") nav("/login", { replace: true });
+      } catch (e) {
+        if (!alive) return;
+        setMe({
+          loading: false,
+          err: String(e?.message || e),
+          userId: "",
+          email: "",
+          first_name: "",
+          last_name: "",
+          role: "",
+        });
+      }
+    })();
+
+    return () => {
+      alive = false;
+    };
+  }, [nav]);
+
+  async function handleLogout() {
     try {
       const { error } = await supabase.auth.signOut();
       if (error) console.error("signOut error:", error);
@@ -95,10 +199,15 @@ export default function TeacherLayout() {
     <div className={`min-h-screen font-[Nunito] ${BRAND.pageBg}`}>
       <div className="mx-auto max-w-7xl px-4 py-4 md:px-6 md:py-6">
         <div className="grid grid-cols-1 gap-4 md:grid-cols-[auto_1fr]">
-          <TeacherSidebar collapsed={collapsed} setCollapsed={setCollapsed} onLogout={handleLogout} />
+          <TeacherSidebar
+            collapsed={collapsed}
+            setCollapsed={setCollapsed}
+            onLogout={handleLogout}
+            me={me}
+          />
 
           <main className="space-y-4">
-            <TeacherTopbar title={title} onLogout={handleLogout} />
+            <TeacherTopbar title={title} onLogout={handleLogout} me={me} />
 
             <AnimatePresence mode="wait">
               <motion.div
@@ -108,10 +217,7 @@ export default function TeacherLayout() {
                 exit={{ opacity: 0, y: -6 }}
                 transition={{ duration: 0.18 }}
                 className="rounded-3xl border bg-white/80 p-4 shadow-sm backdrop-blur md:p-6"
-                style={{
-                  borderColor: BRAND.stroke,
-                  boxShadow: BRAND.cardShadow,
-                }}
+                style={{ borderColor: BRAND.stroke, boxShadow: BRAND.cardShadow }}
               >
                 <Outlet />
               </motion.div>
@@ -130,16 +236,12 @@ export default function TeacherLayout() {
 // -----------------------------------------------------
 // Sidebar
 // -----------------------------------------------------
-function TeacherSidebar({
-  collapsed,
-  setCollapsed,
-  onLogout,
-}: {
-  collapsed: boolean;
-  setCollapsed: React.Dispatch<React.SetStateAction<boolean>>;
-  onLogout: () => Promise<void>;
-}) {
+function TeacherSidebar({ collapsed, setCollapsed, onLogout, me }) {
   const nav = useNavigate();
+
+  const name = safeFullName(me.first_name, me.last_name, "Teacher");
+  const initials = getInitials(me.first_name, me.last_name, "Teacher");
+  const avatarUrl = `https://api.dicebear.com/8.x/initials/svg?seed=${encodeURIComponent(initials)}`;
 
   return (
     <aside
@@ -174,7 +276,7 @@ function TeacherSidebar({
 
         <button
           onClick={() => setCollapsed((s) => !s)}
-          className="grid h-10 w-10 place-items-center rounded-2xl border bg-white/70 hover:bg-white transition"
+          className="grid h-10 w-10 place-items-center rounded-2xl border bg-white/70 transition hover:bg-white"
           style={{ borderColor: BRAND.stroke }}
           aria-label={collapsed ? "Expand sidebar" : "Collapse sidebar"}
           title={collapsed ? "Expand" : "Collapse"}
@@ -203,10 +305,13 @@ function TeacherSidebar({
       </div>
 
       {/* Bottom profile */}
-      <div className="mt-5 rounded-3xl border bg-white/70 p-3" style={{ borderColor: "rgba(43,26,18,0.12)" }}>
+      <div
+        className="mt-5 rounded-3xl border bg-white/70 p-3"
+        style={{ borderColor: "rgba(43,26,18,0.12)" }}
+      >
         <div className="flex items-center gap-3">
           <img
-            src="https://api.dicebear.com/8.x/initials/svg?seed=Teacher"
+            src={avatarUrl}
             alt="Teacher avatar"
             className="h-10 w-10 rounded-2xl border bg-white"
             style={{ borderColor: BRAND.stroke }}
@@ -215,11 +320,16 @@ function TeacherSidebar({
           {!collapsed ? (
             <div className="min-w-0">
               <div className="text-sm font-extrabold" style={{ color: BRAND.ink }}>
-                Ms. Teacher
+                {me.loading ? "Loading…" : name}
               </div>
               <div className="text-xs truncate" style={{ color: BRAND.muted }}>
-                teacher@grabsum.edu.ph
+                {me.loading ? "—" : me.email || "—"}
               </div>
+              {me.err ? (
+                <div className="mt-1 text-[11px] font-semibold text-rose-600">
+                  {me.err}
+                </div>
+              ) : null}
             </div>
           ) : null}
         </div>
@@ -227,7 +337,7 @@ function TeacherSidebar({
         <div className={`mt-3 ${collapsed ? "grid gap-2" : "grid grid-cols-2 gap-2"}`}>
           <button
             onClick={() => nav("/teacher/settings")}
-            className="inline-flex items-center justify-center gap-2 rounded-2xl border bg-white/70 px-3 py-2 text-sm font-semibold hover:bg-white transition"
+            className="inline-flex items-center justify-center gap-2 rounded-2xl border bg-white/70 px-3 py-2 text-sm font-semibold transition hover:bg-white"
             style={{ borderColor: "rgba(43,26,18,0.12)", color: BRAND.ink }}
             title="Settings"
           >
@@ -236,8 +346,8 @@ function TeacherSidebar({
           </button>
 
           <button
-            onClick={onLogout} // ✅ wired
-            className="inline-flex items-center justify-center gap-2 rounded-2xl border bg-white/70 px-3 py-2 text-sm font-semibold hover:bg-white transition"
+            onClick={onLogout}
+            className="inline-flex items-center justify-center gap-2 rounded-2xl border bg-white/70 px-3 py-2 text-sm font-semibold transition hover:bg-white"
             style={{ borderColor: "rgba(43,26,18,0.12)", color: "#b91c1c" }}
             title="Logout"
           >
@@ -250,7 +360,7 @@ function TeacherSidebar({
   );
 }
 
-function TeacherSideLink({ item, collapsed }: { item: NavItem; collapsed: boolean }) {
+function TeacherSideLink({ item, collapsed }) {
   const Icon = item.icon;
 
   return (
@@ -283,18 +393,21 @@ function TeacherSideLink({ item, collapsed }: { item: NavItem; collapsed: boolea
 }
 
 // -----------------------------------------------------
-// Topbar (Dashboard title + search + notif + profile dropdown)
+// Topbar
 // -----------------------------------------------------
-function TeacherTopbar({ title, onLogout }: { title: string; onLogout: () => Promise<void> }) {
+function TeacherTopbar({ title, onLogout, me }) {
   const nav = useNavigate();
   const [open, setOpen] = useState(false);
-  const dropdownRef = useRef<HTMLDivElement | null>(null);
-  const notifCount = 3;
+  const dropdownRef = useRef(null);
+
+  const name = safeFullName(me.first_name, me.last_name, "Teacher");
+  const initials = getInitials(me.first_name, me.last_name, "Teacher");
+  const avatarUrl = `https://api.dicebear.com/8.x/initials/svg?seed=${encodeURIComponent(initials)}`;
 
   useEffect(() => {
-    function onDocClick(e: MouseEvent) {
+    function onDocClick(e) {
       if (!dropdownRef.current) return;
-      if (!dropdownRef.current.contains(e.target as Node)) setOpen(false);
+      if (!dropdownRef.current.contains(e.target)) setOpen(false);
     }
     document.addEventListener("mousedown", onDocClick);
     return () => document.removeEventListener("mousedown", onDocClick);
@@ -316,7 +429,7 @@ function TeacherTopbar({ title, onLogout }: { title: string; onLogout: () => Pro
         </div>
 
         <div className="flex items-center gap-2">
-          {/* Search */}
+          {/* Search (UI only) */}
           <div className="relative w-full md:w-[360px]">
             <input
               className="w-full rounded-2xl border bg-white/70 px-4 py-2 text-sm font-semibold outline-none transition focus:bg-white"
@@ -325,55 +438,54 @@ function TeacherTopbar({ title, onLogout }: { title: string; onLogout: () => Pro
             />
           </div>
 
-          {/* AI button */}
+          {/* AI button (UI only) */}
           <button
             onClick={() => alert("AI Lesson Planner modal later.")}
-            className="hidden sm:inline-flex items-center justify-center gap-2 rounded-2xl border bg-white/70 px-3 py-2 text-sm font-semibold hover:bg-white transition"
+            className="hidden sm:inline-flex items-center justify-center gap-2 rounded-2xl border bg-white/70 px-3 py-2 text-sm font-semibold transition hover:bg-white"
             style={{ borderColor: "rgba(212,166,47,0.55)", color: BRAND.ink }}
           >
             <Sparkles className="h-4 w-4" style={{ color: BRAND.gold }} />
             AI Planner
           </button>
 
-          {/* Notifications */}
+          {/* Notifications (UI only) */}
           <button
-            className="relative grid h-10 w-10 place-items-center rounded-2xl border bg-white/70 hover:bg-white transition"
+            className="relative grid h-10 w-10 place-items-center rounded-2xl border bg-white/70 transition hover:bg-white"
             style={{ borderColor: "rgba(43,26,18,0.14)" }}
             aria-label="Notifications"
             onClick={() => alert("Notifications UI (connect later).")}
           >
             <Bell className="h-5 w-5" style={{ color: "rgba(43,26,18,0.65)" }} />
-            {notifCount > 0 ? (
-              <span
-                className="absolute -right-1 -top-1 grid h-5 w-5 place-items-center rounded-full text-[10px] font-black text-black"
-                style={{ background: BRAND.gold }}
-              >
-                {notifCount}
-              </span>
-            ) : null}
+            {/* set to 0 if you want none */}
+            <span
+              className="absolute -right-1 -top-1 grid h-5 w-5 place-items-center rounded-full text-[10px] font-black text-black"
+              style={{ background: BRAND.gold }}
+            >
+              3
+            </span>
           </button>
 
-          {/* Profile */}
+          {/* Profile dropdown */}
           <div className="relative" ref={dropdownRef}>
             <button
               onClick={() => setOpen((s) => !s)}
-              className="inline-flex items-center gap-2 rounded-2xl border bg-white/70 px-2 py-1.5 hover:bg-white transition"
+              className="inline-flex items-center gap-2 rounded-2xl border bg-white/70 px-2 py-1.5 transition hover:bg-white"
               style={{ borderColor: "rgba(43,26,18,0.14)" }}
               aria-haspopup="menu"
               aria-expanded={open}
             >
               <img
-                src="https://api.dicebear.com/8.x/initials/svg?seed=Teacher"
+                src={avatarUrl}
                 alt="Teacher profile"
                 className="h-8 w-8 rounded-xl border bg-white"
                 style={{ borderColor: BRAND.stroke }}
               />
               <div className="hidden sm:block text-left leading-tight">
                 <div className="text-sm font-extrabold" style={{ color: BRAND.ink }}>
-                  Ms. Teacher
+                  {me.loading ? "Loading…" : name}
                 </div>
                 <div className="text-xs" style={{ color: BRAND.muted }}>
-                  teacher@grabsum.edu.ph
+                  {me.loading ? "—" : me.email || "—"}
                 </div>
               </div>
               <ChevronDown className="h-4 w-4" style={{ color: "rgba(43,26,18,0.55)" }} />
@@ -414,7 +526,7 @@ function TeacherTopbar({ title, onLogout }: { title: string; onLogout: () => Pro
                     danger
                     onClick={async () => {
                       setOpen(false);
-                      await onLogout(); // ✅ wired
+                      await onLogout();
                     }}
                   />
                 </motion.div>
@@ -427,17 +539,7 @@ function TeacherTopbar({ title, onLogout }: { title: string; onLogout: () => Pro
   );
 }
 
-function DropdownItem({
-  icon,
-  label,
-  onClick,
-  danger = false,
-}: {
-  icon: IconType;
-  label: string;
-  onClick: () => void;
-  danger?: boolean;
-}) {
+function DropdownItem({ icon, label, onClick, danger = false }) {
   const Icon = icon;
   return (
     <button

@@ -21,7 +21,7 @@ import Login from "./Auth/Login.jsx";
 import PreEnrollment from "./Auth/PreEnroll.jsx";
 import ChangePassword from "./Auth/ChangePassword.jsx";
 
-import TeacherLayout from "./layout/TeacherLayout";
+import TeacherLayout from "./layout/TeacherLayout.jsx";
 import TeacherDashboard from "./Teacher/TeacherDashboard";
 import TeacherLessons from "./Teacher/TeacherLessons";
 import TeacherClasses from "./Teacher/TeacherClasses";
@@ -33,16 +33,17 @@ import TeacherSettings from "./Teacher/TeacherSettings";
 import StudentLayout from "./layout/StudentLayout";
 import StudentDashboard from "./student/StudentDashboard";
 import StudentCourses from "./student/StudentCourses";
-import StudentSchedule from "./student/StudentSchedule";
-import StudentAnnouncements from "./student/StudentAnnouncements";
+import StudentSchedule from "./Student/StudentSchedule";
+import StudentAnnouncements from "./Student/StudentAnnouncements";
 import StudentProfile from "./student/StudentProfile";
 import StudentSettings from "./student/StudentSettings";
 
-import DevLayout from "./layout/DevLayout.js";
+import DevLayout from "./layout/DevLayout";
 import DevDashboard from "./dev/pages/Dashboard.jsx";
 import AdminManagement from "./dev/pages/AdminManagement.jsx";
 import ActivityLogs from "./dev/pages/ActivityLogs.jsx";
 import AuditReports from "./dev/pages/AuditReports.jsx";
+
 
 export default function App() {
   return (
@@ -54,19 +55,14 @@ export default function App() {
         <Route path="/login" element={<Login />} />
         <Route path="/pre-enroll" element={<PreEnrollment />} />
 
-          <Route path="students/enrollment" element={<Enrollment />} />
-          <Route path="students/classes" element={<Classes />} />
-          <Route path="students/schedule" element={<Schedule />} />
-          <Route path="students/section" element={<Section />} />
-          <Route path="students/subject" element={<Subject />} />
-          <Route path="students/school-year" element={<SchoolYear />} />
-          <Route path="teacher/manage" element={<TeacherManage />} />
-          <Route path="teacher/schedule" element={<TeacherSchedule />} />
+
         {/* ===========================
             ADMIN (protected)
            =========================== */}
         <Route element={<RequireRole allow={["admin", "super_admin"]} />}>
+        
           <Route path="/admin" element={<AdminLayout />}>
+          
             <Route index element={<AdminHome />} />
             <Route path="students/enrollment" element={<Enrollment />} />
             <Route path="students/classes" element={<Classes />} />
@@ -74,6 +70,14 @@ export default function App() {
             <Route path="teacher/schedule" element={<TeacherSchedule />} />
             <Route path="calendar" element={<CalendarView />} />
             <Route path="announcement" element={<AnnouncementList />} />
+                   <Route path="students/enrollment" element={<Enrollment />} />
+          <Route path="students/classes" element={<Classes />} />
+          <Route path="students/schedule" element={<Schedule />} />
+          <Route path="students/section" element={<Section />} />
+          <Route path="students/subject" element={<Subject />} />
+          <Route path="students/school-year" element={<SchoolYear />} />
+          <Route path="teacher/manage" element={<TeacherManage />} />
+          <Route path="teacher/schedule" element={<TeacherSchedule />} />
 
             {/* ✅ admin change password route */}
             <Route path="change-password" element={<ChangePassword />} />

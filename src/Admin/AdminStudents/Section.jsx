@@ -1,3 +1,4 @@
+// Admin/AdminStudents/Sections.jsx
 import React, { useMemo, useState, useEffect } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { supabase } from "../../lib/supabaseClient";
@@ -9,34 +10,33 @@ import {
   Users,
   X,
   Save,
-  Filter,
   Shuffle,
   RotateCcw,
   UserCheck,
   Download,
   Undo2,
   ArchiveRestore,
+  Filter,
 } from "lucide-react";
 
 import jsPDF from "jspdf";
 import autoTable from "jspdf-autotable";
 
-// ====== UI THEME (match Enrollment.jsx: White + Gold, minimal brown) ======
+/* ===================== UI (match Enrollment.jsx) ===================== */
+
 const UI = {
   pageBg: "bg-white",
   panel: "bg-white",
   border: "border-black/10",
   text: "text-[#1F1A14]",
   muted: "text-black/55",
-  gold: "text-[#C9A227]",
   goldBg: "bg-[#C9A227]",
-  goldSoft: "bg-[#C9A227]/10",
-  brown: "text-[#6B4E2E]",
 };
 
 const MAX_CAPACITY = 40;
 
-// --- Helpers ---
+/* ===================== Helpers ===================== */
+
 function norm(s) {
   return String(s || "").trim().toLowerCase();
 }
@@ -109,7 +109,117 @@ function pickBestSection({ sections, desiredGender, currentCounts }) {
   return best;
 }
 
-/* ====================== PDF (programmatic, no HTML capture) ====================== */
+/* ===================== Toast (same pattern as Enrollment.jsx) ===================== */
+
+function ToastHost({ toasts, onDismiss }) {
+  return (
+    <div className="fixed top-4 right-4 z-[9999] flex w-[360px] max-w-[92vw] flex-col gap-2">
+      {toasts.map((t) => (
+        <div
+          key={t.id}
+          className={`rounded-2xl border bg-white p-4 shadow-xl ${
+            t.tone === "danger"
+              ? "border-rose-200"
+              : t.tone === "success"
+              ? "border-emerald-200"
+              : "border-black/10"
+          }`}
+        >
+          <div className="flex items-start justify-between gap-3">
+            <div className="min-w-0">
+              <div className="text-sm font-extrabold text-[#1F1A14]">{t.title}</div>
+              {t.message ? <div className="mt-1 text-xs font-semibold text-black/60">{t.message}</div> : null}
+
+              {t.actions?.length ? (
+                <div className="mt-3 flex flex-wrap gap-2">
+                  {t.actions.map((a) => (
+                    <button
+                      key={a.label}
+                      onClick={a.onClick}
+                      className={`rounded-xl px-3 py-2 text-xs font-extrabold ${
+                        a.variant === "danger"
+                          ? "bg-rose-600 text-white"
+                          : a.variant === "primary"
+                          ? "bg-[#C9A227] text-black"
+                          : "border border-black/10 bg-white text-black/70"
+                      }`}
+                      type="button"
+                    >
+                      {a.label}
+                    </button>
+                  ))}
+                </div>
+              ) : null}
+            </div>
+
+            <button
+              onClick={() => onDismiss(t.id)}
+              className="grid h-8 w-8 place-items-center rounded-xl hover:bg-black/5"
+              title="Close"
+              type="button"
+            >
+              <X className="h-4 w-4 text-black/50" />
+            </button>
+          </div>
+        </div>
+      ))}
+    </div>
+  );
+}
+
+function useToasts() {
+  const [toasts, setToasts] = useState([]);
+
+  const push = (toast) => {
+    const id = crypto.randomUUID?.() || String(Date.now() + Math.random());
+    const item = { id, tone: "info", ...toast };
+    setToasts((p) => [item, ...p]);
+
+    if (!item.actions?.length) {
+      setTimeout(() => setToasts((p) => p.filter((x) => x.id !== id)), 3200);
+    }
+    return id;
+  };
+
+  const dismiss = (id) => setToasts((p) => p.filter((x) => x.id !== id));
+
+  const confirm = ({
+    title,
+    message,
+    confirmText = "Confirm",
+    cancelText = "Cancel",
+    tone = "danger",
+  }) =>
+    new Promise((resolve) => {
+      const id = push({
+        title,
+        message,
+        tone,
+        actions: [
+          {
+            label: cancelText,
+            variant: "secondary",
+            onClick: () => {
+              dismiss(id);
+              resolve(false);
+            },
+          },
+          {
+            label: confirmText,
+            variant: tone === "danger" ? "danger" : "primary",
+            onClick: () => {
+              dismiss(id);
+              resolve(true);
+            },
+          },
+        ],
+      });
+    });
+
+  return { toasts, push, dismiss, confirm };
+}
+
+/* ====================== PDF ====================== */
 
 function formatSyLabel(sy) {
   if (!sy) return "SY (Active)";
@@ -126,18 +236,11 @@ function sectionMetaLine(section) {
   return `Grade: ${grade}   Track: ${track}   Strand: ${strand}   Adviser: ${adviser || "—"}`;
 }
 
-/**
- * FIXED:
- * - Cover page is page 1 internally, but roster pages should start "Page 1" visually.
- * - We render cover page WITHOUT table footer hooks.
- * - Then we addPage() before first roster page.
- * - Footer shows roster page number = (internalPageNumber - 1)
- */
 function buildSectionsPdf({ title, sy, sections, rosters }) {
   const doc = new jsPDF({ unit: "pt", format: "a4" });
   const left = 40;
 
-  // ===== COVER PAGE (clean) =====
+  // Cover
   doc.setFont("helvetica", "bold");
   doc.setFontSize(18);
   doc.text(title, left, 72);
@@ -148,7 +251,6 @@ function buildSectionsPdf({ title, sy, sections, rosters }) {
   doc.setFontSize(10);
   doc.text("Includes roster pages per section.", left, 116);
 
-  // Start roster pages on the next page (so roster pages start at Page 1)
   doc.addPage();
 
   let rosterIndex = 0;
@@ -187,15 +289,11 @@ function buildSectionsPdf({ title, sy, sections, rosters }) {
         cellPadding: 6,
         overflow: "linebreak",
       },
-      headStyles: {
-        fontStyle: "bold",
-      },
+      headStyles: { fontStyle: "bold" },
       margin: { left, right: left },
       didDrawPage: () => {
-        // Internal pages: cover=1, first roster=2...
-        const internalPage = doc.getCurrentPageInfo().pageNumber;
+        const internalPage = doc.getCurrentPageInfo().pageNumber; // cover=1
         const rosterPage = Math.max(1, internalPage - 1);
-
         doc.setFontSize(9);
         doc.setFont("helvetica", "normal");
         doc.text(
@@ -214,6 +312,7 @@ function buildSectionsPdf({ title, sy, sections, rosters }) {
 
 export default function Sections() {
   const qc = useQueryClient();
+  const toast = useToasts();
 
   // UI state
   const [q, setQ] = useState("");
@@ -228,6 +327,31 @@ export default function Sections() {
 
   // Auto-assign report modal
   const [autoAssignReport, setAutoAssignReport] = useState({ open: false, data: null });
+
+  // ===== Role (admin vs super_admin) =====
+  const roleQ = useQuery({
+    queryKey: ["my_role"],
+    queryFn: async () => {
+      const { data: auth } = await supabase.auth.getUser();
+      const uid = auth?.user?.id;
+      if (!uid) return "anonymous";
+
+      const { data, error } = await supabase.from("profiles").select("role").eq("user_id", uid).single();
+      if (error) throw error;
+      return data?.role || "anonymous";
+    },
+  });
+
+  const myRole = roleQ.data || "anonymous";
+  const canWrite = myRole === "super_admin";
+
+  function softBlock() {
+    toast.push({
+      tone: "danger",
+      title: "Not allowed",
+      message: "Super Admin only.",
+    });
+  }
 
   // Lookups
   const gradesQ = useQuery({
@@ -278,7 +402,7 @@ export default function Sections() {
     },
   });
 
-  // ✅ Active SY (use .single() so we don't deal with array indexing)
+  // ✅ Active SY
   const activeSYQ = useQuery({
     queryKey: ["active_school_year"],
     queryFn: async () => {
@@ -294,7 +418,7 @@ export default function Sections() {
     },
   });
 
-  // ✅ Unclassified section (active SY only) (use .single())
+  // ✅ Unclassified section (active SY only)
   const unclassifiedQ = useQuery({
     queryKey: ["unclassified_section", activeSYQ.data?.sy_id],
     enabled: !!activeSYQ.data?.sy_id,
@@ -311,73 +435,6 @@ export default function Sections() {
       return data ?? null;
     },
   });
-
-  // ✅ Optional debug (remove later)
-  useEffect(() => {
-    console.log("ACTIVE SY:", activeSYQ.data);
-    console.log("UNCLASSIFIED:", unclassifiedQ.data);
-  }, [activeSYQ.data, unclassifiedQ.data]);
-
-  useEffect(() => {
-  const run = async () => {
-    const syId = activeSYQ.data?.sy_id;
-    const ucId = unclassifiedQ.data?.section_id;
-
-    if (!syId || !ucId) return;
-
-    const logCount = async (label, q) => {
-      const { count, error } = await q;
-      console.log(label, { count, error });
-    };
-
-    // 1) Just SY
-    await logCount(
-      "TEST 1 (sy only)",
-      supabase.from("students").select("id", { count: "exact", head: true }).eq("sy_id", syId)
-    );
-
-    // 2) SY + status
-    await logCount(
-      "TEST 2 (sy + status Enrolled)",
-      supabase.from("students").select("id", { count: "exact", head: true }).eq("sy_id", syId).eq("status", "Enrolled")
-    );
-
-    // 3) SY + section only (uc or null)
-    await logCount(
-      "TEST 3 (sy + uc/null)",
-      supabase
-        .from("students")
-        .select("id", { count: "exact", head: true })
-        .eq("sy_id", syId)
-        .or(`section_id.is.null,section_id.eq.${ucId}`)
-    );
-
-    // 4) SY + status + uc/null (your real logic)
-    await logCount(
-      "TEST 4 (sy + status + uc/null)",
-      supabase
-        .from("students")
-        .select("id", { count: "exact", head: true })
-        .eq("sy_id", syId)
-        .eq("status", "Enrolled")
-        .or(`section_id.is.null,section_id.eq.${ucId}`)
-    );
-
-    // 5) sanity: exact uc only
-    await logCount(
-      "TEST 5 (sy + status + exact uc only)",
-      supabase
-        .from("students")
-        .select("id", { count: "exact", head: true })
-        .eq("sy_id", syId)
-        .eq("status", "Enrolled")
-        .eq("section_id", ucId)
-    );
-  };
-
-  run();
-}, [activeSYQ.data?.sy_id, unclassifiedQ.data?.section_id]);
-
 
   // Sections list + joins (active SY)
   const sectionsQ = useQuery({
@@ -415,10 +472,7 @@ export default function Sections() {
   const rows = sectionsQ.data ?? [];
 
   // Hide Unclassified always
-  const notUnclassified = useMemo(
-    () => rows.filter((r) => norm(r.section_name) !== "unclassified"),
-    [rows]
-  );
+  const notUnclassified = useMemo(() => rows.filter((r) => norm(r.section_name) !== "unclassified"), [rows]);
 
   // Tab filtering (active/archived)
   const visibleRows = useMemo(() => {
@@ -432,11 +486,7 @@ export default function Sections() {
     enabled: !!activeSYQ.data?.sy_id,
     queryFn: async () => {
       const sy = activeSYQ.data;
-      const { data, error } = await supabase
-        .from("students")
-        .select("id, section_id, gender")
-        .eq("sy_id", sy.sy_id)
-        .eq("status", "Enrolled");
+      const { data, error } = await supabase.from("students").select("id, section_id, gender").eq("sy_id", sy.sy_id).eq("status", "Enrolled");
       if (error) throw error;
 
       const map = new Map();
@@ -454,31 +504,24 @@ export default function Sections() {
     },
   });
 
-  // ✅ FIXED: Unclassified students list (active SY, Enrolled only)
-  // IMPORTANT: only run when BOTH sy_id and unclassified section_id exist
+  // ✅ Unclassified students list (active SY, Enrolled only)
   const unclassifiedStudentsQ = useQuery({
     queryKey: ["unclassified_students", activeSYQ.data?.sy_id, unclassifiedQ.data?.section_id],
     enabled: !!activeSYQ.data?.sy_id && !!unclassifiedQ.data?.section_id,
     queryFn: async () => {
       const sy = activeSYQ.data;
       const ucId = unclassifiedQ.data?.section_id;
-
-      // extra safety (shouldn't happen due to enabled)
       if (!sy?.sy_id || !ucId) return [];
 
       const { data, error } = await supabase
         .from("students")
-        .select(
-          "id, student_number, first_name, last_name, middle_initial, extension, gender, status, updated_at, grade_id, track_id, strand_id, sy_id, section_id"
-        )
+        .select("id, student_number, first_name, last_name, middle_initial, extension, gender, status, updated_at, grade_id, track_id, strand_id, sy_id, section_id")
         .eq("sy_id", sy.sy_id)
         .eq("status", "Enrolled")
-        // include legacy null section_id AND explicit Unclassified section_id
         .or(`section_id.is.null,section_id.eq.${ucId}`)
         .order("last_name", { ascending: true });
 
       if (error) throw error;
-
       return data ?? [];
     },
   });
@@ -509,18 +552,28 @@ export default function Sections() {
     const totalStudents = Array.from((countsQ.data ?? new Map()).values()).reduce((a, b) => a + (b?.total ?? 0), 0);
     const unclassifiedCount = (unclassifiedStudentsQ.data ?? []).length;
 
-    return {
-      activeSections: activeCount,
-      archivedSections: archivedCount,
-      totalStudents,
-      unclassifiedCount,
-    };
+    return { activeSections: activeCount, archivedSections: archivedCount, totalStudents, unclassifiedCount };
   }, [notUnclassified, countsQ.data, unclassifiedStudentsQ.data]);
+
+  /**
+   * ✅ Sync adviser assignment into section_advisers (active SY).
+   */
+  async function syncSectionAdviser({ section_id, adviser_id }) {
+    const sy = activeSYQ.data;
+    if (!sy?.sy_id) throw new Error("No active school year found.");
+    if (!section_id) throw new Error("Missing section_id for adviser sync.");
+
+    const payload = { sy_id: sy.sy_id, section_id, adviser_id: adviser_id || null };
+
+    const { error } = await supabase.from("section_advisers").upsert(payload, { onConflict: "sy_id,section_id" });
+    if (error) throw error;
+  }
 
   /* ====================== CRUD + ARCHIVE ====================== */
 
   const createM = useMutation({
     mutationFn: async (values) => {
+      if (!canWrite) throw new Error("Not allowed. Super Admin only.");
       const sy = activeSYQ.data;
       if (!sy?.sy_id) throw new Error("No active school year found.");
 
@@ -534,16 +587,23 @@ export default function Sections() {
         is_archived: false,
       };
 
-      const { error } = await supabase.from("sections").insert(payload);
+      const { data, error } = await supabase.from("sections").insert(payload).select("section_id, adviser_id").single();
       if (error) throw error;
+
+      await syncSectionAdviser({ section_id: data.section_id, adviser_id: data.adviser_id });
+      return true;
     },
     onSuccess: async () => {
       await qc.invalidateQueries({ queryKey: ["sections", activeSYQ.data?.sy_id] });
+      toast.push({ tone: "success", title: "Created", message: "Section added." });
     },
+    onError: (e) => toast.push({ tone: "danger", title: "Create failed", message: sbErrorMessage(e) }),
   });
 
   const updateM = useMutation({
     mutationFn: async ({ section_id, values }) => {
+      if (!canWrite) throw new Error("Not allowed. Super Admin only.");
+
       const patch = {
         section_name: values.section_name,
         grade_id: values.grade_id || null,
@@ -551,32 +611,43 @@ export default function Sections() {
         strand_id: values.strand_id || null,
         adviser_id: values.adviser_id || null,
       };
+
       const { error } = await supabase.from("sections").update(patch).eq("section_id", section_id);
       if (error) throw error;
-    },
-    onSuccess: async () => {
-      await qc.invalidateQueries({ queryKey: ["sections", activeSYQ.data?.sy_id] });
-    },
-  });
 
-  const toggleArchiveM = useMutation({
-    mutationFn: async ({ section, nextArchived }) => {
-      const { error } = await supabase
-        .from("sections")
-        .update({ is_archived: !!nextArchived })
-        .eq("section_id", section.section_id);
-      if (error) throw error;
+      await syncSectionAdviser({ section_id, adviser_id: patch.adviser_id });
       return true;
     },
     onSuccess: async () => {
       await qc.invalidateQueries({ queryKey: ["sections", activeSYQ.data?.sy_id] });
+      toast.push({ tone: "success", title: "Saved", message: "Section updated." });
     },
+    onError: (e) => toast.push({ tone: "danger", title: "Update failed", message: sbErrorMessage(e) }),
+  });
+
+  const toggleArchiveM = useMutation({
+    mutationFn: async ({ section, nextArchived }) => {
+      if (!canWrite) throw new Error("Not allowed. Super Admin only.");
+      const { error } = await supabase.from("sections").update({ is_archived: !!nextArchived }).eq("section_id", section.section_id);
+      if (error) throw error;
+      return { nextArchived: !!nextArchived };
+    },
+    onSuccess: async ({ nextArchived }) => {
+      await qc.invalidateQueries({ queryKey: ["sections", activeSYQ.data?.sy_id] });
+      toast.push({
+        tone: "success",
+        title: nextArchived ? "Archived" : "Restored",
+        message: nextArchived ? "Section moved to Archived." : "Section restored to Active.",
+      });
+    },
+    onError: (e) => toast.push({ tone: "danger", title: "Action failed", message: sbErrorMessage(e) }),
   });
 
   /* ====================== ASSIGNMENT ====================== */
 
   const autoAssignM = useMutation({
     mutationFn: async () => {
+      if (!canWrite) throw new Error("Not allowed. Super Admin only.");
       const sy = activeSYQ.data;
       if (!sy?.sy_id) throw new Error("No active school year found.");
 
@@ -586,24 +657,14 @@ export default function Sections() {
 
       const { data: stData, error: stErr } = await supabase
         .from("students")
-        .select(
-          "id, student_number, first_name, last_name, middle_initial, extension, gender, status, sy_id, grade_id, track_id, strand_id, section_id"
-        )
+        .select("id, student_number, first_name, last_name, middle_initial, extension, gender, status, sy_id, grade_id, track_id, strand_id, section_id")
         .eq("sy_id", sy.sy_id)
         .eq("status", "Enrolled");
-
       if (stErr) throw stErr;
 
-      const candidates = (stData ?? []).filter((s) => {
-        if (!s.section_id) return true; // legacy
-        return s.section_id === unclassifiedId;
-      });
+      const candidates = (stData ?? []).filter((s) => (!s.section_id ? true : s.section_id === unclassifiedId));
+      if (candidates.length === 0) return { assigned: 0, skipped: 0, reason: "No unclassified enrolled students found." };
 
-      if (candidates.length === 0) {
-        return { assigned: 0, skipped: 0, reason: "No unclassified enrolled students found." };
-      }
-
-      // Only assign into NON-unclassified & NON-archived sections
       const usableSections = rows
         .filter((sec) => sec.sy_id === sy.sy_id)
         .filter((sec) => norm(sec.section_name) !== "unclassified")
@@ -617,10 +678,8 @@ export default function Sections() {
         sectionsByKey.set(key, arr);
       }
 
-      // local counts from query
       const counts = new Map(countsQ.data ?? new Map());
 
-      // shuffle for randomness
       const shuffled = [...candidates];
       for (let i = shuffled.length - 1; i > 0; i--) {
         const j = Math.floor(Math.random() * (i + 1));
@@ -664,17 +723,10 @@ export default function Sections() {
         counts.set(best.section_id, c);
       }
 
-      if (updates.length === 0) {
-        return { assigned: 0, skipped, reason: "No valid assignments found (capacity/match constraints)." };
-      }
+      if (updates.length === 0) return { assigned: 0, skipped, reason: "No valid assignments found (capacity/match constraints)." };
 
-      // Execute updates
       for (const u of updates) {
-        const { error } = await supabase
-          .from("students")
-          .update({ section_id: u.section_id })
-          .eq("id", u.id)
-          .eq("sy_id", sy.sy_id);
+        const { error } = await supabase.from("students").update({ section_id: u.section_id }).eq("id", u.id).eq("sy_id", sy.sy_id);
         if (error) throw error;
 
         const { error: upErr } = await supabase
@@ -705,13 +757,21 @@ export default function Sections() {
       await qc.invalidateQueries({ queryKey: ["sections", activeSYQ.data?.sy_id] });
       await qc.invalidateQueries({ queryKey: ["unclassified_students", activeSYQ.data?.sy_id] });
 
+      toast.push({
+        tone: "success",
+        title: "Auto-Assign completed",
+        message: `Assigned ${data?.assigned ?? 0} · Skipped ${data?.skipped ?? 0}${data?.reason ? ` (${data.reason})` : ""}`,
+      });
+
       if (data?.assignments?.length) setAutoAssignReport({ open: true, data });
       else setAutoAssignReport({ open: false, data: null });
     },
+    onError: (e) => toast.push({ tone: "danger", title: "Auto-Assign failed", message: sbErrorMessage(e) }),
   });
 
   const resetAssignM = useMutation({
     mutationFn: async () => {
+      if (!canWrite) throw new Error("Not allowed. Super Admin only.");
       const sy = activeSYQ.data;
       if (!sy?.sy_id) throw new Error("No active school year found.");
 
@@ -719,9 +779,13 @@ export default function Sections() {
       if (!uc?.section_id) throw new Error('"Unclassified" section not found for the active school year.');
       const unclassifiedId = uc.section_id;
 
-      const ok = window.confirm(
-        `Reset section assignments for ALL Enrolled students in SY ${sy.sy_code || "(active)"}?\n\nThis will set section back to "Unclassified".`
-      );
+      const ok = await toast.confirm({
+        title: "Reset assignments?",
+        message: `Reset section assignments for ALL Enrolled students in SY ${sy.sy_code || "(active)"}?\n\nThis will set section back to "Unclassified".`,
+        confirmText: "Reset",
+        cancelText: "Cancel",
+        tone: "danger",
+      });
       if (!ok) return { cancelled: true };
 
       const { error: upErr } = await supabase
@@ -736,15 +800,21 @@ export default function Sections() {
 
       return { ok: true };
     },
-    onSuccess: async () => {
+    onSuccess: async (res) => {
+      if (res?.cancelled) return;
+
       await qc.invalidateQueries({ queryKey: ["students_counts_by_section", activeSYQ.data?.sy_id] });
       await qc.invalidateQueries({ queryKey: ["sections", activeSYQ.data?.sy_id] });
       await qc.invalidateQueries({ queryKey: ["unclassified_students", activeSYQ.data?.sy_id] });
+
+      toast.push({ tone: "success", title: "Reset complete", message: "All enrolled students moved to Unclassified." });
     },
+    onError: (e) => toast.push({ tone: "danger", title: "Reset failed", message: sbErrorMessage(e) }),
   });
 
   const assignOneM = useMutation({
     mutationFn: async ({ student, section_id }) => {
+      if (!canWrite) throw new Error("Not allowed. Super Admin only.");
       const sy = activeSYQ.data;
       if (!sy?.sy_id) throw new Error("No active school year found.");
       const ucId = unclassifiedQ.data?.section_id;
@@ -760,11 +830,7 @@ export default function Sections() {
       const c = (countsQ.data ?? new Map()).get(section_id) || { total: 0 };
       if ((c.total ?? 0) >= MAX_CAPACITY) throw new Error(`This section is at maximum capacity (${MAX_CAPACITY}).`);
 
-      const { error } = await supabase
-        .from("students")
-        .update({ section_id })
-        .eq("id", student.id)
-        .eq("sy_id", sy.sy_id);
+      const { error } = await supabase.from("students").update({ section_id }).eq("id", student.id).eq("sy_id", sy.sy_id);
       if (error) throw error;
 
       const { error: upErr } = await supabase
@@ -775,10 +841,8 @@ export default function Sections() {
       return { student_id: student.id, section_id };
     },
     onSuccess: async ({ student_id, section_id }) => {
-      // Instant UX: remove from unclassified list immediately
-      qc.setQueryData(
-        ["unclassified_students", activeSYQ.data?.sy_id, unclassifiedQ.data?.section_id],
-        (old) => (Array.isArray(old) ? old.filter((s) => s.id !== student_id) : old)
+      qc.setQueryData(["unclassified_students", activeSYQ.data?.sy_id, unclassifiedQ.data?.section_id], (old) =>
+        Array.isArray(old) ? old.filter((s) => s.id !== student_id) : old
       );
 
       await qc.invalidateQueries({ queryKey: ["students_counts_by_section", activeSYQ.data?.sy_id] });
@@ -786,49 +850,53 @@ export default function Sections() {
       await qc.invalidateQueries({ queryKey: ["unclassified_students", activeSYQ.data?.sy_id] });
       await qc.invalidateQueries({ queryKey: ["students_in_section", activeSYQ.data?.sy_id, section_id] });
       await qc.invalidateQueries({ queryKey: ["students_in_section"] });
+
+      toast.push({ tone: "success", title: "Assigned", message: "Student assigned to section." });
     },
+    onError: (e) => toast.push({ tone: "danger", title: "Assign failed", message: sbErrorMessage(e) }),
   });
 
   const removeFromSectionM = useMutation({
     mutationFn: async ({ student_id }) => {
+      if (!canWrite) throw new Error("Not allowed. Super Admin only.");
       const sy = activeSYQ.data;
       if (!sy?.sy_id) throw new Error("No active school year found.");
       const ucId = unclassifiedQ.data?.section_id;
       if (!ucId) throw new Error('"Unclassified" section not found for the active school year.');
 
-      const ok = window.confirm("Remove this student from this section?\n\nThey will be moved back to Unclassified.");
+      const ok = await toast.confirm({
+        title: "Unclassify student?",
+        message: 'Remove this student from the section and move back to "Unclassified"?',
+        confirmText: "Unclassify",
+        cancelText: "Cancel",
+        tone: "danger",
+      });
       if (!ok) return { cancelled: true };
 
-      const { error } = await supabase
-        .from("students")
-        .update({ section_id: ucId })
-        .eq("id", student_id)
-        .eq("sy_id", sy.sy_id);
-
+      const { error } = await supabase.from("students").update({ section_id: ucId }).eq("id", student_id).eq("sy_id", sy.sy_id);
       if (error) throw error;
 
-      const { error: delErr } = await supabase
-        .from("student_school_years")
-        .delete()
-        .eq("sy_id", sy.sy_id)
-        .eq("student_id", student_id);
-
+      const { error: delErr } = await supabase.from("student_school_years").delete().eq("sy_id", sy.sy_id).eq("student_id", student_id);
       if (delErr) throw delErr;
 
       return { ok: true };
     },
-    onSuccess: async () => {
+    onSuccess: async (res) => {
+      if (res?.cancelled) return;
+
       await qc.invalidateQueries({ queryKey: ["students_counts_by_section", activeSYQ.data?.sy_id] });
       await qc.invalidateQueries({ queryKey: ["unclassified_students", activeSYQ.data?.sy_id] });
       await qc.invalidateQueries({ queryKey: ["students_in_section"] });
+
+      toast.push({ tone: "success", title: "Unclassified", message: "Student moved back to Unclassified." });
     },
+    onError: (e) => toast.push({ tone: "danger", title: "Action failed", message: sbErrorMessage(e) }),
   });
 
   /* ====================== PDF DOWNLOADS ====================== */
 
   const downloadPdfM = useMutation({
     mutationFn: async ({ mode, section }) => {
-      // mode: "ONE_ACTIVE" | "ONE_ARCHIVED" | "ALL_ACTIVE" | "ALL_ARCHIVED"
       const sy = activeSYQ.data;
       if (!sy?.sy_id) throw new Error("No active school year found.");
 
@@ -854,7 +922,6 @@ export default function Sections() {
         throw new Error("Unknown download mode.");
       }
 
-      // Fetch rosters per section
       const rosters = new Map();
       await Promise.all(
         targetSections.map(async (sec) => {
@@ -878,11 +945,14 @@ export default function Sections() {
 
       return true;
     },
+    onSuccess: () => toast.push({ tone: "success", title: "Downloaded", message: "PDF generated successfully." }),
+    onError: (e) => toast.push({ tone: "danger", title: "PDF failed", message: sbErrorMessage(e) }),
   });
 
   /* ====================== UI HANDLERS ====================== */
 
   function openCreate() {
+    if (!canWrite) return softBlock();
     setModal({
       open: true,
       mode: "create",
@@ -891,6 +961,7 @@ export default function Sections() {
   }
 
   function openEdit(row) {
+    if (!canWrite) return softBlock();
     setModal({
       open: true,
       mode: "edit",
@@ -910,7 +981,6 @@ export default function Sections() {
     setStudentsModal({ open: true, row });
   }
 
-  // Options
   const gradeOptions = gradesQ.data ?? [];
   const trackOptions = tracksQ.data ?? [];
   const strandOptions = strandsQ.data ?? [];
@@ -919,108 +989,93 @@ export default function Sections() {
   const syLabel = activeSYQ.data ? `${activeSYQ.data.sy_code} (Active)` : "No active SY";
   const unclassifiedLabel = unclassifiedQ.data?.section_id ? "Ready" : "Missing";
 
+  const busy =
+    createM.isPending ||
+    updateM.isPending ||
+    toggleArchiveM.isPending ||
+    autoAssignM.isPending ||
+    resetAssignM.isPending ||
+    assignOneM.isPending ||
+    removeFromSectionM.isPending ||
+    downloadPdfM.isPending;
+
   return (
     <div className={`${UI.pageBg} ${UI.text} space-y-4`}>
+      <ToastHost toasts={toast.toasts} onDismiss={toast.dismiss} />
+
       {/* Header */}
       <div className="flex flex-col gap-3 md:flex-row md:items-end md:justify-between">
         <div>
           <div className="text-lg font-extrabold">Sections</div>
           <div className={`text-sm ${UI.muted}`}>Manage sections and view student lists per section.</div>
+
           <div className="mt-1 text-xs text-black/60">
             Active School Year: <span className="font-extrabold text-black">{syLabel}</span>
+            <span className="mx-2 text-black/30">•</span>
+            Role: <span className="font-extrabold text-black">{myRole || "—"}</span>
             <span className="ml-2 rounded-full border border-black/10 bg-black/[0.02] px-2 py-0.5 text-[11px] font-semibold text-black/60">
               Unclassified: {unclassifiedLabel}
             </span>
           </div>
+
+          {!canWrite ? (
+            <div className="mt-2 rounded-xl border border-black/10 bg-[#C9A227]/5 px-3 py-2 text-xs text-black/70">
+              You are in <span className="font-extrabold">Admin/Teacher view</span>. Editing, assigning, archiving, and reset actions are disabled.
+            </div>
+          ) : null}
         </div>
 
         <div className="flex flex-col gap-2 sm:flex-row">
           <button
             onClick={() => setUnclassifiedModal(true)}
-            disabled={!activeSYQ.data || !unclassifiedQ.data?.section_id}
+            disabled={!activeSYQ.data || !unclassifiedQ.data?.section_id || busy}
             className="inline-flex items-center justify-center gap-2 rounded-xl border border-black/10 bg-white px-4 py-2 text-sm font-extrabold hover:bg-black/[0.02] disabled:opacity-60"
-            title="View and assign unclassified students"
+            title="View unclassified students"
+            type="button"
           >
             <Users className="h-4 w-4 text-black/60" />
             Unclassified ({stats.unclassifiedCount})
           </button>
 
-          <button
-            onClick={() => autoAssignM.mutate()}
-            disabled={autoAssignM.isPending || !activeSYQ.data || !unclassifiedQ.data?.section_id}
-            className="inline-flex items-center justify-center gap-2 rounded-xl border border-black/10 bg-white px-4 py-2 text-sm font-extrabold hover:bg-black/[0.02] disabled:opacity-60"
-            title="Randomly assign enrolled unclassified students to matching non-archived sections (max 40; balanced gender)."
-          >
-            <Shuffle className="h-4 w-4 text-black/60" />
-            Auto-Assign
-          </button>
+          {canWrite ? (
+            <>
+              <button
+                onClick={() => autoAssignM.mutate()}
+                disabled={busy || !activeSYQ.data || !unclassifiedQ.data?.section_id}
+                className="inline-flex items-center justify-center gap-2 rounded-xl border border-black/10 bg-white px-4 py-2 text-sm font-extrabold hover:bg-black/[0.02] disabled:opacity-60"
+                title="Assign enrolled unclassified students to matching non-archived sections (max 40; balanced gender)."
+                type="button"
+              >
+                <Shuffle className="h-4 w-4 text-black/60" />
+                Auto-Assign
+              </button>
 
-          <button
-            onClick={() => resetAssignM.mutate()}
-            disabled={resetAssignM.isPending || !activeSYQ.data || !unclassifiedQ.data?.section_id}
-            className="inline-flex items-center justify-center gap-2 rounded-xl border border-black/10 bg-white px-4 py-2 text-sm font-extrabold hover:bg-black/[0.02] disabled:opacity-60"
-            title='Reset all section assignments for enrolled students in the active school year (set back to "Unclassified").'
-          >
-            <RotateCcw className="h-4 w-4 text-black/60" />
-            Reset
-          </button>
+              <button
+                onClick={() => resetAssignM.mutate()}
+                disabled={busy || !activeSYQ.data || !unclassifiedQ.data?.section_id}
+                className="inline-flex items-center justify-center gap-2 rounded-xl border border-black/10 bg-white px-4 py-2 text-sm font-extrabold hover:bg-black/[0.02] disabled:opacity-60"
+                title='Reset all assignments (set back to "Unclassified").'
+                type="button"
+              >
+                <RotateCcw className="h-4 w-4 text-black/60" />
+                Reset
+              </button>
 
-          <button
-            onClick={openCreate}
-            className={`inline-flex items-center justify-center gap-2 rounded-xl px-4 py-2 text-sm font-extrabold ${UI.goldBg} text-black hover:opacity-95`}
-          >
-            <Plus className="h-4 w-4" />
-            Add Section
-          </button>
+              <button
+                onClick={openCreate}
+                disabled={busy}
+                className={`inline-flex items-center justify-center gap-2 rounded-xl px-4 py-2 text-sm font-extrabold ${UI.goldBg} text-black hover:opacity-95 disabled:opacity-60`}
+                type="button"
+              >
+                <Plus className="h-4 w-4" />
+                Add Section
+              </button>
+            </>
+          ) : null}
         </div>
       </div>
 
-      {/* Action feedback */}
-      {autoAssignM.isSuccess ? (
-        <div className={`rounded-2xl border ${UI.border} bg-[#C9A227]/5 p-4 text-sm`}>
-          <div className="flex items-start justify-between gap-3">
-            <div>
-              <div className="font-extrabold">Auto-Assign completed</div>
-              <div className="mt-1 text-black/70">
-                Assigned: <span className="font-extrabold text-black">{autoAssignM.data?.assigned ?? 0}</span> · Skipped:{" "}
-                <span className="font-extrabold text-black">{autoAssignM.data?.skipped ?? 0}</span>
-                {autoAssignM.data?.reason ? <span className="ml-2 text-black/60">({autoAssignM.data.reason})</span> : null}
-              </div>
-            </div>
-
-            {autoAssignM.data?.assignments?.length ? (
-              <button
-                type="button"
-                onClick={() => setAutoAssignReport({ open: true, data: autoAssignM.data })}
-                className="inline-flex items-center justify-center gap-2 rounded-xl border border-black/10 bg-white px-3 py-2 text-xs font-extrabold hover:bg-black/[0.02]"
-              >
-                <Users className="h-4 w-4 text-black/60" />
-                View list
-              </button>
-            ) : null}
-          </div>
-        </div>
-      ) : null}
-
-      {autoAssignM.isError ? (
-        <div className="rounded-2xl border border-rose-200 bg-rose-50 p-4 text-sm text-rose-700">
-          Auto-Assign Error: {sbErrorMessage(autoAssignM.error)}
-        </div>
-      ) : null}
-
-      {resetAssignM.isError ? (
-        <div className="rounded-2xl border border-rose-200 bg-rose-50 p-4 text-sm text-rose-700">
-          Reset Error: {sbErrorMessage(resetAssignM.error)}
-        </div>
-      ) : null}
-
-      {downloadPdfM.isError ? (
-        <div className="rounded-2xl border border-rose-200 bg-rose-50 p-4 text-sm text-rose-700">
-          PDF Error: {sbErrorMessage(downloadPdfM.error)}
-        </div>
-      ) : null}
-
-      {/* Quick stats */}
+      {/* Quick stats + downloads */}
       <div className={`rounded-2xl border ${UI.border} ${UI.panel} p-4`}>
         <div className="grid gap-3 md:grid-cols-4">
           <Stat label="Active sections" value={stats.activeSections} />
@@ -1032,9 +1087,10 @@ export default function Sections() {
         <div className="mt-3 flex flex-col gap-2 sm:flex-row">
           <button
             onClick={() => downloadPdfM.mutate({ mode: "ALL_ACTIVE" })}
-            disabled={downloadPdfM.isPending || !activeSYQ.data}
+            disabled={busy || !activeSYQ.data}
             className="inline-flex items-center justify-center gap-2 rounded-xl border border-black/10 bg-white px-4 py-2 text-sm font-extrabold hover:bg-black/[0.02] disabled:opacity-60"
             title="Download PDF for all ACTIVE sections (with roster)"
+            type="button"
           >
             <Download className="h-4 w-4 text-black/60" />
             Download Active (All)
@@ -1042,9 +1098,10 @@ export default function Sections() {
 
           <button
             onClick={() => downloadPdfM.mutate({ mode: "ALL_ARCHIVED" })}
-            disabled={downloadPdfM.isPending || !activeSYQ.data}
+            disabled={busy || !activeSYQ.data}
             className="inline-flex items-center justify-center gap-2 rounded-xl border border-black/10 bg-white px-4 py-2 text-sm font-extrabold hover:bg-black/[0.02] disabled:opacity-60"
             title="Download PDF for all ARCHIVED sections (with roster)"
+            type="button"
           >
             <Download className="h-4 w-4 text-black/60" />
             Download Archived (All)
@@ -1052,7 +1109,7 @@ export default function Sections() {
         </div>
       </div>
 
-      {/* Tabs */}
+      {/* Tabs (Enrollment-style pills) */}
       <div className={`rounded-2xl border ${UI.border} ${UI.panel} p-3`}>
         <div className="flex flex-wrap gap-2">
           {["Active", "Archived"].map((t) => {
@@ -1061,18 +1118,20 @@ export default function Sections() {
               <button
                 key={t}
                 onClick={() => setTab(t)}
-                className={`rounded-xl border px-4 py-2 text-sm font-extrabold transition ${
+                className={`inline-flex items-center gap-2 rounded-xl border px-4 py-2 text-sm font-extrabold transition ${
                   active ? "bg-[#C9A227]/15 border-[#C9A227]/40" : "bg-white border-black/10 hover:bg-black/[0.02]"
                 }`}
+                type="button"
               >
-                <span className={active ? "text-[#1F1A14]" : "text-black/70"}>{t}</span>
+                {t === "Active" ? <Users className="h-4 w-4" /> : <Archive className="h-4 w-4" />}
+                {t}
               </button>
             );
           })}
         </div>
       </div>
 
-      {/* Filters */}
+      {/* Filters (Enrollment-style) */}
       <div className={`rounded-2xl border ${UI.border} ${UI.panel} p-4`}>
         <div className="grid gap-3 md:grid-cols-4">
           <Field label="Search section">
@@ -1134,10 +1193,10 @@ export default function Sections() {
         </div>
       </div>
 
-      {/* Table */}
+      {/* Table (Enrollment-style wrapper header) */}
       <div className={`overflow-hidden rounded-2xl border ${UI.border} ${UI.panel}`}>
         <div className="flex items-center justify-between border-b border-black/10 px-4 py-3">
-          <div className="text-sm font-extrabold">Section List</div>
+          <div className="text-sm font-extrabold">{tab === "Archived" ? "Archived Sections" : "Active Sections"}</div>
           <div className={`text-xs ${UI.muted}`}>Showing {filtered.length} sections</div>
         </div>
 
@@ -1158,15 +1217,14 @@ export default function Sections() {
                 <th className="px-4 py-3 font-semibold text-right">Actions</th>
               </tr>
             </thead>
+
             <tbody>
               {filtered.map((r) => {
                 const c = (countsQ.data ?? new Map()).get(r.section_id) || { total: 0, male: 0, female: 0 };
                 const grade = r.grade_levels?.grade_level ?? "—";
                 const track = r.tracks?.track_code ?? "—";
                 const strand = r.strands?.strand_code ?? "—";
-                const adviser = r.teachers
-                  ? `${r.teachers.last_name || ""}, ${r.teachers.first_name || ""}`.trim()
-                  : "—";
+                const adviser = r.teachers ? `${r.teachers.last_name || ""}, ${r.teachers.first_name || ""}`.trim() : "—";
 
                 const rowMode = r.is_archived ? "ONE_ARCHIVED" : "ONE_ACTIVE";
 
@@ -1174,16 +1232,13 @@ export default function Sections() {
                   <tr key={r.section_id} className="border-t border-black/10 hover:bg-black/[0.01]">
                     <td className="px-4 py-3">
                       <div className="font-extrabold">{r.section_name || "—"}</div>
-                      <div className="mt-1 text-xs text-black/55">
-                        <span className="text-black/70">Updated:</span>{" "}
-                        {r.updated_at ? new Date(r.updated_at).toLocaleString() : "—"}
-                      </div>
+            
                     </td>
 
                     <td className="px-4 py-3 text-black/70">{grade}</td>
 
                     <td className="px-4 py-3">
-                      <span className={`inline-flex rounded-full px-3 py-1 text-xs font-semibold ${UI.goldSoft} ${UI.gold}`}>
+                      <span className="inline-flex rounded-full bg-[#C9A227]/10 px-3 py-1 text-xs font-semibold text-[#C9A227]">
                         {track}
                       </span>
                     </td>
@@ -1196,6 +1251,7 @@ export default function Sections() {
                         <button
                           onClick={() => openStudents(r)}
                           className="inline-flex items-center gap-2 rounded-xl border border-black/10 bg-white px-3 py-2 text-sm font-semibold hover:bg-black/[0.02]"
+                          type="button"
                         >
                           <Users className="h-4 w-4 text-black/60" />
                           {c.total}
@@ -1216,33 +1272,60 @@ export default function Sections() {
                         <button
                           title="Download section PDF"
                           onClick={() => downloadPdfM.mutate({ mode: rowMode, section: r })}
-                          disabled={downloadPdfM.isPending}
+                          disabled={busy}
                           className="grid h-9 w-9 place-items-center rounded-xl border border-black/10 bg-white hover:bg-black/[0.02] disabled:opacity-60"
+                          type="button"
                         >
                           <Download className="h-5 w-5 text-black/70" />
                         </button>
 
-                        <IconBtn title="Edit" onClick={() => openEdit(r)} tone="gold">
-                          <Pencil className="h-5 w-5" />
-                        </IconBtn>
+                        {canWrite ? (
+                          <>
+                            <IconBtn title="Edit" onClick={() => openEdit(r)} tone="gold" disabled={busy}>
+                              <Pencil className="h-5 w-5" />
+                            </IconBtn>
 
-                        {!r.is_archived ? (
-                          <IconBtn
-                            title="Archive section"
-                            onClick={() => toggleArchiveM.mutate({ section: r, nextArchived: true })}
-                            tone="neutral"
-                          >
-                            <Archive className="h-5 w-5" />
-                          </IconBtn>
-                        ) : (
-                          <IconBtn
-                            title="Restore section"
-                            onClick={() => toggleArchiveM.mutate({ section: r, nextArchived: false })}
-                            tone="neutral"
-                          >
-                            <ArchiveRestore className="h-5 w-5" />
-                          </IconBtn>
-                        )}
+                            {!r.is_archived ? (
+                              <IconBtn
+                                title="Archive section"
+                                onClick={async () => {
+                                  const ok = await toast.confirm({
+                                    title: "Archive section?",
+                                    message: "This will move the section to Archived. Students are not removed automatically.",
+                                    confirmText: "Archive",
+                                    cancelText: "Cancel",
+                                    tone: "danger",
+                                  });
+                                  if (!ok) return;
+                                  toggleArchiveM.mutate({ section: r, nextArchived: true });
+                                }}
+                                tone="neutral"
+                                disabled={busy}
+                              >
+                                <Archive className="h-5 w-5" />
+                              </IconBtn>
+                            ) : (
+                              <IconBtn
+                                title="Restore section"
+                                onClick={async () => {
+                                  const ok = await toast.confirm({
+                                    title: "Restore section?",
+                                    message: "This will restore the section to Active.",
+                                    confirmText: "Restore",
+                                    cancelText: "Cancel",
+                                    tone: "info",
+                                  });
+                                  if (!ok) return;
+                                  toggleArchiveM.mutate({ section: r, nextArchived: false });
+                                }}
+                                tone="neutral"
+                                disabled={busy}
+                              >
+                                <ArchiveRestore className="h-5 w-5" />
+                              </IconBtn>
+                            )}
+                          </>
+                        ) : null}
                       </div>
                     </td>
                   </tr>
@@ -1285,7 +1368,8 @@ export default function Sections() {
           activeSY={activeSYQ.data}
           counts={countsQ.data ?? new Map()}
           unclassifiedSectionId={unclassifiedQ.data?.section_id}
-          allSections={rows}
+          canWrite={canWrite}
+          toast={toast}
           onClose={() => setStudentsModal({ open: false, row: null })}
           onRemove={(student_id) => removeFromSectionM.mutate({ student_id })}
           removing={removeFromSectionM.isPending}
@@ -1302,9 +1386,9 @@ export default function Sections() {
           error={unclassifiedStudentsQ.isError ? unclassifiedStudentsQ.error : null}
           allSections={rows}
           counts={countsQ.data ?? new Map()}
-          onAssign={(student, section_id) => assignOneM.mutate({ student, section_id })}
+          canWrite={canWrite}
           assigning={assignOneM.isPending}
-          assignError={assignOneM.isError ? assignOneM.error : null}
+          onAssign={(student, section_id) => assignOneM.mutate({ student, section_id })}
           onClose={() => setUnclassifiedModal(false)}
         />
       ) : null}
@@ -1319,8 +1403,8 @@ export default function Sections() {
       ) : null}
 
       <div className="text-xs text-black/55">
-        Wired: <span className="font-mono">sections</span>, <span className="font-mono">students</span>,{" "}
-        <span className="font-mono">school_years</span>, and <span className="font-mono">student_school_years</span>.
+        Wired: <span className="font-mono">sections</span>, <span className="font-mono">students</span>, <span className="font-mono">school_years</span>,{" "}
+        <span className="font-mono">student_school_years</span>. <span className="font-mono">section_advisers</span> is auto-synced on create/update.
       </div>
     </div>
   );
@@ -1331,6 +1415,10 @@ export default function Sections() {
 function SectionModal({ mode, row, onClose, onCreate, onUpdate, busy, grades, tracks, strands, teachers, allSections }) {
   const isEdit = mode === "edit";
   const [draft, setDraft] = useState(() => ({ ...row }));
+
+  useEffect(() => {
+    setDraft({ ...row });
+  }, [row]);
 
   const lastUpdatedAt = useMemo(() => {
     const raw = draft?.updated_at || null;
@@ -1346,7 +1434,6 @@ function SectionModal({ mode, row, onClose, onCreate, onUpdate, busy, grades, tr
     return strands.filter((s) => s.track_id === tid);
   }, [strands, draft.track_id]);
 
-  // Adviser unique per section
   const usedAdvisers = useMemo(() => {
     const set = new Set();
     for (const s of allSections ?? []) {
@@ -1356,9 +1443,10 @@ function SectionModal({ mode, row, onClose, onCreate, onUpdate, busy, grades, tr
     return set;
   }, [allSections, isEdit, row?.adviser_id]);
 
-  const availableTeachers = useMemo(() => {
-    return (teachers ?? []).filter((t) => !usedAdvisers.has(t.user_id));
-  }, [teachers, usedAdvisers]);
+  const availableTeachers = useMemo(
+    () => (teachers ?? []).filter((t) => !usedAdvisers.has(t.user_id)),
+    [teachers, usedAdvisers]
+  );
 
   const canSave = !!draft.section_name?.trim();
 
@@ -1389,35 +1477,33 @@ function SectionModal({ mode, row, onClose, onCreate, onUpdate, busy, grades, tr
           <div className="flex items-start justify-between gap-4 border-b border-black/10 p-4">
             <div>
               <div className="text-base font-extrabold">{isEdit ? "Edit Section" : "Add Section"}</div>
-              <div className={`text-xs ${UI.muted}`}>
-                Only Section Name is required. Grade/Track/Strand are optional but used for sectioning rules.
-              </div>
-            </div>
-
-            <div className="text-right">
+              <div className={`text-xs ${UI.muted}`}>Only Section Name is required. Grade/Track/Strand are optional but used for sectioning rules.</div>
               {isEdit ? (
-                <div className="rounded-xl border border-black/10 bg-[#C9A227]/5 px-3 py-2">
-                  <div className="text-[11px] font-semibold text-black/60">Last updated at:</div>
-                  <div className="text-xs font-extrabold text-black">{lastUpdatedAt || "—"}</div>
+                <div className="mt-1 text-xs font-bold text-black/60">
+                  Last updated: <span className="text-black">{lastUpdatedAt || "—"}</span>
                 </div>
               ) : null}
-
-              <button onClick={onClose} className="mt-2 ml-auto grid h-9 w-9 place-items-center rounded-xl hover:bg-black/5">
-                <X className="h-5 w-5 text-black/60" />
-              </button>
             </div>
+
+            <button onClick={onClose} className="grid h-9 w-9 place-items-center rounded-xl hover:bg-black/5" type="button">
+              <X className="h-5 w-5 text-black/60" />
+            </button>
           </div>
 
           <form onSubmit={submit} className="p-4 space-y-4 max-h-[75vh] overflow-auto">
-            <CardSection title="Section Details">
+            <Section title="Section Details">
               <div className="grid gap-3 md:grid-cols-2">
                 <Input
                   label="Section Name *"
-                  value={draft.section_name}
+                  value={draft.section_name || ""}
                   onChange={(e) => setDraft((d) => ({ ...d, section_name: e.target.value }))}
                 />
 
-                <Select label="Grade Level (optional)" value={draft.grade_id} onChange={(e) => setDraft((d) => ({ ...d, grade_id: e.target.value }))}>
+                <Select
+                  label="Grade Level (optional)"
+                  value={draft.grade_id || ""}
+                  onChange={(e) => setDraft((d) => ({ ...d, grade_id: e.target.value }))}
+                >
                   <option value="">—</option>
                   {grades.map((g) => (
                     <option key={g.grade_id} value={g.grade_id}>
@@ -1428,7 +1514,7 @@ function SectionModal({ mode, row, onClose, onCreate, onUpdate, busy, grades, tr
 
                 <Select
                   label="Track (optional)"
-                  value={draft.track_id}
+                  value={draft.track_id || ""}
                   onChange={(e) => {
                     const nextTrack = e.target.value;
                     setDraft((d) => ({ ...d, track_id: nextTrack, strand_id: "" }));
@@ -1442,7 +1528,11 @@ function SectionModal({ mode, row, onClose, onCreate, onUpdate, busy, grades, tr
                   ))}
                 </Select>
 
-                <Select label="Strand (optional)" value={draft.strand_id || ""} onChange={(e) => setDraft((d) => ({ ...d, strand_id: e.target.value }))}>
+                <Select
+                  label="Strand (optional)"
+                  value={draft.strand_id || ""}
+                  onChange={(e) => setDraft((d) => ({ ...d, strand_id: e.target.value }))}
+                >
                   <option value="">—</option>
                   {availableStrands.map((s) => (
                     <option key={s.strand_id} value={s.strand_id}>
@@ -1451,7 +1541,11 @@ function SectionModal({ mode, row, onClose, onCreate, onUpdate, busy, grades, tr
                   ))}
                 </Select>
 
-                <Select label="Adviser (optional, unique per section)" value={draft.adviser_id || ""} onChange={(e) => setDraft((d) => ({ ...d, adviser_id: e.target.value }))}>
+                <Select
+                  label="Adviser (optional, unique per section)"
+                  value={draft.adviser_id || ""}
+                  onChange={(e) => setDraft((d) => ({ ...d, adviser_id: e.target.value }))}
+                >
                   <option value="">—</option>
                   {availableTeachers.map((t) => (
                     <option key={t.user_id} value={t.user_id}>
@@ -1462,15 +1556,17 @@ function SectionModal({ mode, row, onClose, onCreate, onUpdate, busy, grades, tr
 
                 <div className="rounded-xl border border-black/10 bg-black/[0.01] p-3">
                   <div className="text-xs font-semibold text-black/60">Capacity rule</div>
-                  <div className="mt-1 text-xs text-black/55">
-                    Auto-assign respects max {MAX_CAPACITY} students/section and balances gender.
-                  </div>
+                  <div className="mt-1 text-xs text-black/55">Auto-assign respects max {MAX_CAPACITY} students/section and balances gender.</div>
                 </div>
               </div>
-            </CardSection>
+            </Section>
 
             <div className="flex items-center justify-end gap-2">
-              <button type="button" onClick={onClose} className="rounded-xl border border-black/10 bg-white px-4 py-2 text-sm font-semibold hover:bg-black/[0.02]">
+              <button
+                type="button"
+                onClick={onClose}
+                className="rounded-xl border border-black/10 bg-white px-4 py-2 text-sm font-semibold hover:bg-black/[0.02]"
+              >
                 Cancel
               </button>
               <button
@@ -1489,9 +1585,7 @@ function SectionModal({ mode, row, onClose, onCreate, onUpdate, busy, grades, tr
   );
 }
 
-// (rest of your modals + components unchanged)
-
-function StudentsModal({ section, activeSY, counts, unclassifiedSectionId, onClose, onRemove, removing }) {
+function StudentsModal({ section, activeSY, counts, unclassifiedSectionId, canWrite, toast, onClose, onRemove, removing }) {
   const [q, setQ] = useState("");
 
   const studentsQ = useQuery({
@@ -1503,6 +1597,7 @@ function StudentsModal({ section, activeSY, counts, unclassifiedSectionId, onClo
         .select("id, student_number, first_name, last_name, middle_initial, extension, gender, status, updated_at")
         .eq("sy_id", activeSY.sy_id)
         .eq("section_id", section.section_id)
+        .eq("status", "Enrolled")
         .order("last_name", { ascending: true });
       if (error) throw error;
       return data ?? [];
@@ -1538,7 +1633,7 @@ function StudentsModal({ section, activeSY, counts, unclassifiedSectionId, onClo
               </div>
             </div>
 
-            <button onClick={onClose} className="ml-auto grid h-9 w-9 place-items-center rounded-xl hover:bg-black/5">
+            <button onClick={onClose} className="ml-auto grid h-9 w-9 place-items-center rounded-xl hover:bg-black/5" type="button">
               <X className="h-5 w-5 text-black/60" />
             </button>
           </div>
@@ -1598,15 +1693,26 @@ function StudentsModal({ section, activeSY, counts, unclassifiedSectionId, onClo
                         <td className="px-4 py-3 text-black/70">{s.updated_at ? new Date(s.updated_at).toLocaleString() : "—"}</td>
                         <td className="px-4 py-3">
                           <div className="flex justify-end">
-                            <button
-                              title="Delete from section (move back to Unclassified)"
-                              onClick={() => onRemove(s.id)}
-                              disabled={removing || !unclassifiedSectionId}
-                              className="inline-flex items-center gap-2 rounded-xl border border-black/10 bg-white px-3 py-2 text-xs font-extrabold hover:bg-black/[0.02] disabled:opacity-60"
-                            >
-                              <Undo2 className="h-4 w-4 text-black/60" />
-                              Unclassify
-                            </button>
+                            {canWrite ? (
+                              <button
+                                title='Move back to "Unclassified"'
+                                onClick={async () => {
+                                  if (!unclassifiedSectionId) {
+                                    toast.push({ tone: "danger", title: "Missing Unclassified", message: "Unclassified section is missing for this SY." });
+                                    return;
+                                  }
+                                  onRemove(s.id);
+                                }}
+                                disabled={removing || !unclassifiedSectionId}
+                                className="inline-flex items-center gap-2 rounded-xl border border-black/10 bg-white px-3 py-2 text-xs font-extrabold hover:bg-black/[0.02] disabled:opacity-60"
+                                type="button"
+                              >
+                                <Undo2 className="h-4 w-4 text-black/60" />
+                                Unclassify
+                              </button>
+                            ) : (
+                              <span className="text-xs text-black/45">—</span>
+                            )}
                           </div>
                         </td>
                       </tr>
@@ -1640,7 +1746,19 @@ function StudentsModal({ section, activeSY, counts, unclassifiedSectionId, onClo
   );
 }
 
-function UnclassifiedModal({ activeSY, unclassifiedSectionId, students, loading, error, allSections, counts, onAssign, assigning, assignError, onClose }) {
+function UnclassifiedModal({
+  activeSY,
+  unclassifiedSectionId,
+  students,
+  loading,
+  error,
+  allSections,
+  counts,
+  canWrite,
+  onAssign,
+  assigning,
+  onClose,
+}) {
   const [q, setQ] = useState("");
   const [pick, setPick] = useState({ student: null, section_id: "" });
 
@@ -1677,7 +1795,7 @@ function UnclassifiedModal({ activeSY, unclassifiedSectionId, students, loading,
               <div className="text-base font-extrabold">Unclassified Students</div>
               <div className={`text-xs ${UI.muted}`}>Active SY: {activeSY?.sy_code || "—"} · Enrolled only</div>
             </div>
-            <button onClick={onClose} className="ml-auto grid h-9 w-9 place-items-center rounded-xl hover:bg-black/5">
+            <button onClick={onClose} className="ml-auto grid h-9 w-9 place-items-center rounded-xl hover:bg-black/5" type="button">
               <X className="h-5 w-5 text-black/60" />
             </button>
           </div>
@@ -1686,6 +1804,12 @@ function UnclassifiedModal({ activeSY, unclassifiedSectionId, students, loading,
             {!unclassifiedSectionId ? (
               <div className="rounded-2xl border border-rose-200 bg-rose-50 p-4 text-sm text-rose-700">
                 "Unclassified" section is missing for this active school year.
+              </div>
+            ) : null}
+
+            {!canWrite ? (
+              <div className="rounded-2xl border border-black/10 bg-[#C9A227]/5 p-4 text-sm text-black/70">
+                You can view the list, but only <span className="font-extrabold">Super Admin</span> can assign students.
               </div>
             ) : null}
 
@@ -1715,9 +1839,7 @@ function UnclassifiedModal({ activeSY, unclassifiedSectionId, students, loading,
             {loading ? (
               <div className={`rounded-2xl border ${UI.border} bg-white p-6 text-sm ${UI.muted}`}>Loading…</div>
             ) : error ? (
-              <div className="rounded-2xl border border-rose-200 bg-rose-50 p-4 text-sm text-rose-700">
-                Error: {sbErrorMessage(error)}
-              </div>
+              <div className="rounded-2xl border border-rose-200 bg-rose-50 p-4 text-sm text-rose-700">Error: {sbErrorMessage(error)}</div>
             ) : (
               <div className={`overflow-hidden rounded-2xl border ${UI.border} ${UI.panel}`}>
                 <table className="w-full text-left text-sm">
@@ -1740,7 +1862,8 @@ function UnclassifiedModal({ activeSY, unclassifiedSectionId, students, loading,
                           <td className="px-4 py-3 text-black/70">{s.gender || "—"}</td>
                           <td className="px-4 py-3">
                             <select
-                              className="w-full rounded-xl border border-black/10 bg-white px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-[#C9A227]/40"
+                              disabled={!canWrite}
+                              className="w-full rounded-xl border border-black/10 bg-white px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-[#C9A227]/40 disabled:opacity-60"
                               value={isPicked ? pick.section_id : ""}
                               onFocus={() => setPick({ student: s, section_id: "" })}
                               onChange={(e) => setPick({ student: s, section_id: e.target.value })}
@@ -1758,14 +1881,19 @@ function UnclassifiedModal({ activeSY, unclassifiedSectionId, students, loading,
                           </td>
                           <td className="px-4 py-3">
                             <div className="flex justify-end">
-                              <button
-                                disabled={!isPicked || !pick.section_id || assigning}
-                                onClick={() => onAssign(s, pick.section_id)}
-                                className={`inline-flex items-center gap-2 rounded-xl px-3 py-2 text-xs font-extrabold ${UI.goldBg} text-black hover:opacity-95 disabled:opacity-60`}
-                              >
-                                <UserCheck className="h-4 w-4" />
-                                Assign
-                              </button>
+                              {canWrite ? (
+                                <button
+                                  disabled={!isPicked || !pick.section_id || assigning}
+                                  onClick={() => onAssign(s, pick.section_id)}
+                                  className={`inline-flex items-center gap-2 rounded-xl px-3 py-2 text-xs font-extrabold ${UI.goldBg} text-black hover:opacity-95 disabled:opacity-60`}
+                                  type="button"
+                                >
+                                  <UserCheck className="h-4 w-4" />
+                                  Assign
+                                </button>
+                              ) : (
+                                <span className="text-xs text-black/45">—</span>
+                              )}
                             </div>
                           </td>
                         </tr>
@@ -1783,12 +1911,6 @@ function UnclassifiedModal({ activeSY, unclassifiedSectionId, students, loading,
                 </table>
               </div>
             )}
-
-            {assignError ? (
-              <div className="rounded-2xl border border-rose-200 bg-rose-50 p-4 text-sm text-rose-700">
-                {sbErrorMessage(assignError)}
-              </div>
-            ) : null}
 
             <div className="flex items-center justify-end">
               <button
@@ -1844,7 +1966,7 @@ function AutoAssignReportModal({ sy, data, onClose }) {
               </div>
             </div>
 
-            <button onClick={onClose} className="ml-auto grid h-9 w-9 place-items-center rounded-xl hover:bg-black/5">
+            <button onClick={onClose} className="ml-auto grid h-9 w-9 place-items-center rounded-xl hover:bg-black/5" type="button">
               <X className="h-5 w-5 text-black/60" />
             </button>
           </div>
@@ -1927,7 +2049,7 @@ function AutoAssignReportModal({ sy, data, onClose }) {
   );
 }
 
-/* ================= Small Components ================= */
+/* ================= Small Components (Enrollment-style) ================= */
 
 function Stat({ label, value }) {
   return (
@@ -1941,16 +2063,16 @@ function Stat({ label, value }) {
 function Field({ label, children }) {
   return (
     <label className="block">
-      <span className={`text-xs font-semibold ${UI.muted}`}>{label}</span>
+      <span className="text-xs font-semibold text-black/55">{label}</span>
       {children}
     </label>
   );
 }
 
-function CardSection({ title, children }) {
+function Section({ title, children }) {
   return (
-    <div className={`rounded-2xl border ${UI.border} bg-white p-4`}>
-      <div className={`text-sm font-extrabold ${UI.brown}`}>{title}</div>
+    <div className="rounded-2xl border border-black/10 bg-white p-4">
+      <div className="text-sm font-extrabold text-[#6B4E2E]">{title}</div>
       <div className="mt-3">{children}</div>
     </div>
   );
@@ -1959,7 +2081,7 @@ function CardSection({ title, children }) {
 function Input({ label, error, type = "text", ...rest }) {
   return (
     <label className="block">
-      <span className={`text-xs font-semibold ${UI.muted}`}>{label}</span>
+      <span className="text-xs font-semibold text-black/55">{label}</span>
       <input
         type={type}
         {...rest}
@@ -1973,7 +2095,7 @@ function Input({ label, error, type = "text", ...rest }) {
 function Select({ label, error, children, ...rest }) {
   return (
     <label className="block">
-      <span className={`text-xs font-semibold ${UI.muted}`}>{label}</span>
+      <span className="text-xs font-semibold text-black/55">{label}</span>
       <select
         {...rest}
         className="mt-1 w-full rounded-xl border border-black/10 bg-white px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-[#C9A227]/40"
@@ -1985,14 +2107,20 @@ function Select({ label, error, children, ...rest }) {
   );
 }
 
-function IconBtn({ title, onClick, tone, children }) {
+function IconBtn({ title, onClick, tone, disabled, children }) {
   const cls =
     tone === "neutral"
       ? "bg-black/5 text-black/70 hover:bg-black/10"
       : "bg-[#C9A227]/10 text-[#C9A227] hover:opacity-90";
 
   return (
-    <button title={title} onClick={onClick} className={`grid h-9 w-9 place-items-center rounded-xl border border-black/10 ${cls}`}>
+    <button
+      title={title}
+      onClick={onClick}
+      type="button"
+      disabled={disabled}
+      className={`grid h-9 w-9 place-items-center rounded-xl border border-black/10 ${cls} disabled:opacity-60`}
+    >
       {children}
     </button>
   );

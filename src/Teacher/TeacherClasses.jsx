@@ -13,8 +13,12 @@ import {
   ClipboardList,
   Megaphone,
   BarChart3,
+  Plus,
+  Save,
+  RefreshCcw,
+  AlertTriangle,
 } from "lucide-react";
-import { supabase } from "../lib/supabaseClient"; // ✅ you said: src/lib/supabaseClient.js
+import { supabase } from "../lib/supabaseClient";
 
 const BRAND = {
   brown: "#2b1a12",
@@ -34,19 +38,16 @@ const fadeUp = {
 
 const TERM_CODES = ["1st Sem", "2nd Sem"];
 const DEFAULT_TERM_CODE = "1st Sem";
+const DAY_ORDER = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
 
 function formatTimeHHMM(timeStr) {
   if (!timeStr) return "";
-  return String(timeStr).slice(0, 5); // "HH:MM"
+  return String(timeStr).slice(0, 5);
 }
 
-const DAY_ORDER = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
-
-// Option 1: "Mon/Wed • 1:00 PM" (we'll do 24h unless you want AM/PM later)
 function buildGroupedScheduleLabel(scheduleRows) {
   if (!scheduleRows?.length) return "—";
 
-  // key: "HH:MM-HH:MM" -> Set(days)
   const map = new Map();
   for (const r of scheduleRows) {
     const start = formatTimeHHMM(r.start_time);
@@ -65,7 +66,6 @@ function buildGroupedScheduleLabel(scheduleRows) {
     parts.push(`${days.join("/")} • ${timeRange}`);
   }
 
-  // Stable sort
   parts.sort((a, b) => a.localeCompare(b));
   return parts.join(" | ");
 }
@@ -167,17 +167,18 @@ export default function TeacherClasses() {
   // Data
   const [loading, setLoading] = useState(true);
   const [err, setErr] = useState(null);
+
   const [activeSY, setActiveSY] = useState(null); // { sy_id, sy_code }
+  const [termRow, setTermRow] = useState(null); // { term_id, term_code }
   const [classes, setClasses] = useState([]);
 
-  // Static options
   const days = useMemo(() => ["All", ...DAY_ORDER], []);
 
-  // Load active school year once
+  // ---- Load active school year
   useEffect(() => {
     let alive = true;
 
-    async function loadActiveSY() {
+    (async () => {
       setErr(null);
 
       const { data: authData, error: authErr } = await supabase.auth.getUser();
@@ -208,71 +209,87 @@ export default function TeacherClasses() {
       }
 
       if (alive) setActiveSY({ sy_id: data.sy_id, sy_code: data.sy_code });
-    }
+    })();
 
-    loadActiveSY();
     return () => {
       alive = false;
     };
   }, []);
 
-  // Load classes whenever active SY or term changes
+  // ---- Load termRow (term_id) whenever termCode changes
   useEffect(() => {
     let alive = true;
 
-    async function load() {
-      if (!activeSY?.sy_id || !termCode) return;
+    async function loadTerm() {
+      if (!termCode) return;
 
-      setLoading(true);
       setErr(null);
 
-      const { data: authData, error: authErr } = await supabase.auth.getUser();
-      if (authErr) {
-        if (alive) setErr(authErr.message);
-        if (alive) setLoading(false);
-        return;
-      }
-      const user = authData?.user;
-      if (!user) {
-        if (alive) setErr("Not authenticated.");
-        if (alive) setLoading(false);
-        return;
-      }
-
-      // term_id from term_code
-      const { data: termRow, error: termErr } = await supabase
+      const { data, error } = await supabase
         .from("terms")
         .select("term_id, term_code")
         .eq("term_code", termCode)
         .limit(1)
         .maybeSingle();
 
-      if (termErr) {
-        if (alive) setErr(termErr.message);
+      if (error) {
+        if (alive) setErr(error.message);
+        return;
+      }
+      if (!data?.term_id) {
+        if (alive) setErr(`Term not found: ${termCode}`);
+        return;
+      }
+
+      if (alive) setTermRow(data);
+    }
+
+    loadTerm();
+    return () => {
+      alive = false;
+    };
+  }, [termCode]);
+
+  // ---- Load teacher classes from section_schedules ONLY (SY + Term)
+  useEffect(() => {
+    let alive = true;
+
+    async function load() {
+      if (!activeSY?.sy_id || !termRow?.term_id) return;
+
+      setLoading(true);
+      setErr(null);
+
+      const { data: authData, error: authErr } = await supabase.auth.getUser();
+      const user = authData?.user;
+
+      if (authErr) {
+        if (alive) setErr(authErr.message);
         if (alive) setLoading(false);
         return;
       }
-      if (!termRow?.term_id) {
-        if (alive) setErr(`Term not found: ${termCode}`);
+      if (!user) {
+        if (alive) setErr("Not authenticated.");
         if (alive) setLoading(false);
         return;
       }
 
-      // 1) classes + joins (grade + strand through sections)
-      const { data: rows, error } = await supabase
-        .from("classes")
+      // 1) schedule rows (join subjects + sections + grade_levels + strands)
+      const { data: schedRows, error: schedErr } = await supabase
+        .from("section_schedules")
         .select(
           `
-          class_id,
-          class_code,
-          subject_id,
-          section_id,
+          schedule_id,
           sy_id,
           term_id,
+          section_id,
+          subject_id,
+          teacher_id,
+          day_of_week,
+          period_no,
+          start_time,
+          end_time,
           room,
-          notes,
-          is_archived,
-          teacher_user_id,
           subjects:subject_id (
             subject_id,
             subject_code,
@@ -283,144 +300,87 @@ export default function TeacherClasses() {
             section_name,
             grade_id,
             strand_id,
-            grade_levels:grade_id (
-              grade_id,
-              grade_level
-            ),
-            strands:strand_id (
-              strand_id,
-              strand_code
-            )
-          ),
-          school_years:sy_id (
-            sy_id,
-            sy_code,
-            status
-          ),
-          terms:term_id (
-            term_id,
-            term_code
+            grade_levels:grade_id ( grade_level ),
+            strands:strand_id ( strand_code )
           )
         `
         )
-        .eq("teacher_user_id", user.id)
-        .eq("is_archived", false)
+        .eq("teacher_id", user.id)
         .eq("sy_id", activeSY.sy_id)
         .eq("term_id", termRow.term_id);
 
-      if (error) {
-        if (alive) setErr(error.message);
+      if (schedErr) {
+        if (alive) setErr(schedErr.message);
         if (alive) setLoading(false);
         return;
       }
 
-      const classList = rows ?? [];
+      const sched = schedRows || [];
+      if (!sched.length) {
+        if (alive) setClasses([]);
+        if (alive) setLoading(false);
+        return;
+      }
+
+      // 2) student counts per section (roster count) in active SY
       const sectionIds = Array.from(
-        new Set(classList.map((r) => r.section_id).filter(Boolean))
+        new Set(sched.map((r) => r.section_id).filter(Boolean))
       );
 
-      // 2) schedules: teacher slot + active sy + term
-      const { data: schedRows, error: schedErr } = await supabase
-        .from("section_schedules")
-        .select(
-          `
-          schedule_id,
-          sy_id,
-          term_id,
-          section_id,
-          day_of_week,
-          period_no,
-          start_time,
-          end_time,
-          subject_id,
-          teacher_id,
-          room
-        `
-        )
-        .in("section_id", sectionIds)
-        .eq("sy_id", activeSY.sy_id)
-        .eq("term_id", termRow.term_id)
-        .eq("teacher_id", user.id);
-
-      if (schedErr) {
-        // not fatal
-        console.warn("schedule fetch error:", schedErr.message);
-      }
-
-      // 3) students: Enrolled only
-      const { data: studentRows, error: studErr } = await supabase
+      const { data: studRows, error: studErr } = await supabase
         .from("students")
-        .select("section_id, status, grade_id, strand_id")
-        .in("section_id", sectionIds)
-        .eq("status", "Enrolled");
+        .select("section_id")
+        .eq("sy_id", activeSY.sy_id)
+        .in("section_id", sectionIds);
 
       if (studErr) {
-        console.warn("students fetch error:", studErr.message);
+        // non-fatal
+        console.warn("students count fetch error:", studErr.message);
       }
 
-      // Rule B: enrolled AND matches section grade_id AND (if section has strand_id) matches strand_id
-      const enrolledCountBySection = new Map();
-      for (const s of studentRows ?? []) {
-        if (!s.section_id) continue;
-        enrolledCountBySection.set(
+      const studentCountBySection = new Map();
+      (studRows || []).forEach((s) => {
+        if (!s.section_id) return;
+        studentCountBySection.set(
           s.section_id,
-          (enrolledCountBySection.get(s.section_id) ?? 0) + 1
+          (studentCountBySection.get(s.section_id) || 0) + 1
         );
+      });
+
+      // 3) group schedule rows into unique "class cards" by section_id + subject_id
+      const schedulesByKey = new Map();
+      for (const r of sched) {
+        const k = `${r.section_id}:${r.subject_id}`;
+        if (!schedulesByKey.has(k)) schedulesByKey.set(k, []);
+        schedulesByKey.get(k).push(r);
       }
 
-      // For Rule B we need section metadata, so compute per class during mapping with filtering
-      const mapped = classList.map((r) => {
-        const subj = r.subjects;
-        const sec = r.sections;
-        const sy = r.school_years;
-        const term = r.terms;
-
-        const relatedSched = (schedRows ?? []).filter(
-          (x) =>
-            x.section_id === r.section_id &&
-            x.sy_id === r.sy_id &&
-            x.term_id === r.term_id &&
-            x.subject_id === r.subject_id
-        );
-
-        const scheduleLabel = buildGroupedScheduleLabel(relatedSched);
+      const mapped = Array.from(schedulesByKey.entries()).map(([k, rows]) => {
+        const anyRow = rows[0];
+        const sec = anyRow.sections;
+        const subj = anyRow.subjects;
 
         const gradeLevel = sec?.grade_levels?.grade_level;
         const gradeLabel = gradeLevel ? `Grade ${gradeLevel}` : "—";
         const strandCode = sec?.strands?.strand_code ?? "—";
 
-        // Rule B student counting:
-        // enrolled AND section match, plus grade match, plus strand match if section.strand_id is not null
-        const secGradeId = sec?.grade_id ?? null;
-        const secStrandId = sec?.strand_id ?? null;
-
-        const enrolledInThisSection = (studentRows ?? []).filter((s) => {
-          if (s.section_id !== r.section_id) return false;
-          if (secGradeId && s.grade_id && s.grade_id !== secGradeId) return false;
-          if (secStrandId) {
-            // if section requires a strand, student must match it
-            if (!s.strand_id) return false;
-            if (s.strand_id !== secStrandId) return false;
-          }
-          return true;
-        }).length;
-
         return {
-          id: r.class_id,
-          code: subj?.subject_code ?? r.class_code,
-          subject: subj?.subject_title ?? r.class_code,
+          id: k, // composite key
+          code: subj?.subject_code ?? "—",
+          subject: subj?.subject_title ?? "—",
           strand: strandCode,
           grade: gradeLabel,
           section: sec?.section_name ?? "—",
-          schedule: scheduleLabel,
-          room: r.room ?? (relatedSched?.[0]?.room ?? "—"),
-          students: enrolledInThisSection ?? enrolledCountBySection.get(r.section_id) ?? 0,
-          year: sy?.sy_code ?? activeSY.sy_code ?? "—",
-          semester: term?.term_code ?? termCode,
-          desc: r.notes ?? "—",
-          objectives: [],
-          _raw: r,
-          _schedules: relatedSched,
+          schedule: buildGroupedScheduleLabel(rows),
+          room: anyRow.room ?? "—",
+          students: studentCountBySection.get(anyRow.section_id) ?? 0,
+          year: activeSY?.sy_code ?? "—",
+          semester: termCode,
+          _schedules: rows,
+          _section_id: anyRow.section_id,
+          _subject_id: anyRow.subject_id,
+          _term_id: termRow.term_id,
+          _sy_id: activeSY.sy_id,
         };
       });
 
@@ -429,13 +389,12 @@ export default function TeacherClasses() {
     }
 
     load();
-
     return () => {
       alive = false;
     };
-  }, [activeSY?.sy_id, termCode]);
+  }, [activeSY?.sy_id, termRow?.term_id, termCode]);
 
-  // Filter options from fetched classes
+  // Filter options
   const subjects = useMemo(
     () => ["All", ...Array.from(new Set(classes.map((c) => c.code)))],
     [classes]
@@ -464,7 +423,8 @@ export default function TeacherClasses() {
 
     list.sort((a, b) => {
       if (sort === "Name") return a.subject.localeCompare(b.subject);
-      if (sort === "Schedule") return (a.schedule ?? "").localeCompare(b.schedule ?? "");
+      if (sort === "Schedule")
+        return (a.schedule ?? "").localeCompare(b.schedule ?? "");
       if (sort === "Student Count") return (b.students ?? 0) - (a.students ?? 0);
       return 0;
     });
@@ -481,24 +441,29 @@ export default function TeacherClasses() {
       >
         <div className="flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
           <div>
-            <div className="text-sm font-extrabold" style={{ color: BRAND.brown }}>
+            <div
+              className="text-sm font-extrabold"
+              style={{ color: BRAND.brown }}
+            >
               My Classes
             </div>
             <div className="text-xs font-semibold" style={{ color: BRAND.muted }}>
-              View and manage your assigned classes
+              Derived from <code>section_schedules</code>
               {activeSY?.sy_code ? ` • SY ${activeSY.sy_code}` : ""}
               {termCode ? ` • ${termCode}` : ""}
             </div>
             {err ? (
-              <div className="mt-2 text-xs font-semibold text-red-600">Error: {err}</div>
+              <div className="mt-2 text-xs font-semibold text-red-600">
+                Error: {err}
+              </div>
             ) : null}
           </div>
+
           <div className="text-xs font-semibold" style={{ color: BRAND.muted }}>
             {loading ? "Loading…" : `${filtered.length} class(es)`}
           </div>
         </div>
 
-        {/* Filters */}
         <div className="mt-4 grid gap-3 md:grid-cols-[1fr_180px_180px_160px_160px_160px]">
           <div className="relative">
             <Search
@@ -508,17 +473,34 @@ export default function TeacherClasses() {
             <input
               value={q}
               onChange={(e) => setQ(e.target.value)}
-              placeholder="Search by class, subject, strand…"
+              placeholder="Search by subject, section, strand…"
               className="w-full rounded-2xl border bg-white/70 px-11 py-3 text-sm font-semibold outline-none transition focus:bg-white"
               style={{ borderColor: BRAND.stroke, color: BRAND.brown }}
             />
           </div>
 
-          <Select value={grade} onChange={setGrade} icon={Filter} options={grades} label="Grade" />
-          <Select value={subject} onChange={setSubject} icon={Filter} options={subjects} label="Subject" />
-          <Select value={day} onChange={setDay} icon={Filter} options={days} label="Day" />
+          <Select
+            value={grade}
+            onChange={setGrade}
+            icon={Filter}
+            options={grades}
+            label="Grade"
+          />
+          <Select
+            value={subject}
+            onChange={setSubject}
+            icon={Filter}
+            options={subjects}
+            label="Subject"
+          />
+          <Select
+            value={day}
+            onChange={setDay}
+            icon={Filter}
+            options={["All", ...DAY_ORDER]}
+            label="Day"
+          />
 
-          {/* ✅ Term combobox (1st/2nd sem) */}
           <Select
             value={termCode}
             onChange={setTermCode}
@@ -543,78 +525,79 @@ export default function TeacherClasses() {
         className="rounded-3xl border bg-white p-5"
         style={{ borderColor: BRAND.stroke, boxShadow: BRAND.cardShadow }}
       >
-        <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-3">
-          {filtered.map((c) => (
-            <div
-              key={c.id}
-              className="rounded-3xl border bg-white p-5 transition hover:-translate-y-[1px]"
-              style={{ borderColor: BRAND.stroke }}
-            >
-              <div className="flex items-start justify-between gap-3">
-                <div>
-                  <div className="text-sm font-extrabold" style={{ color: BRAND.brown }}>
-                    {c.subject}
-                  </div>
-                  <div className="mt-1 text-xs font-semibold" style={{ color: BRAND.muted }}>
-                    {c.code} • {c.grade} {c.section} • {c.strand}
-                  </div>
-                </div>
-                <Chip>{c.year}</Chip>
-              </div>
-
-              <div className="mt-4 grid gap-2 text-xs font-semibold" style={{ color: BRAND.muted }}>
-                <div className="flex items-center gap-2">
-                  <CalendarDays className="h-4 w-4" />
-                  <span>{c.schedule}</span>
-                </div>
-                <div className="flex items-center gap-2">
-                  <MapPin className="h-4 w-4" />
-                  <span>{c.room}</span>
-                </div>
-                <div className="flex items-center gap-2">
-                  <Users className="h-4 w-4" />
-                  <span>{c.students} students</span>
-                </div>
-              </div>
-
-              <div className="mt-5 grid gap-2 md:grid-cols-2">
-                <button
-                  onClick={() => setSelected(c)}
-                  className="rounded-2xl px-4 py-2 text-sm font-semibold transition"
-                  style={{ background: BRAND.gold, color: BRAND.brown }}
-                  onMouseEnter={(e) => (e.currentTarget.style.background = BRAND.goldHover)}
-                  onMouseLeave={(e) => (e.currentTarget.style.background = BRAND.gold)}
-                >
-                  View Class
-                </button>
-                <button
-                  onClick={() => alert("Upload lesson (navigate to lessons + modal)")}
-                  className="rounded-2xl border bg-white/70 px-4 py-2 text-sm font-semibold hover:bg-white"
-                  style={{ borderColor: BRAND.stroke, color: BRAND.brown }}
-                >
-                  Upload Lesson
-                </button>
-              </div>
-
-              <div className="mt-2 grid gap-2 md:grid-cols-2">
-                <button
-                  onClick={() => alert("View Students (wire to route)")}
-                  className="rounded-2xl border bg-white/70 px-4 py-2 text-sm font-semibold hover:bg-white"
-                  style={{ borderColor: BRAND.stroke, color: BRAND.brown }}
-                >
-                  View Students
-                </button>
-                <button
-                  onClick={() => alert("Post Announcement (wire later)")}
-                  className="rounded-2xl border bg-white/70 px-4 py-2 text-sm font-semibold hover:bg-white"
-                  style={{ borderColor: BRAND.stroke, color: BRAND.brown }}
-                >
-                  Post Announcement
-                </button>
-              </div>
+        {!loading && filtered.length === 0 ? (
+          <div
+            className="rounded-3xl border p-6 text-center"
+            style={{ borderColor: BRAND.stroke }}
+          >
+            <div className="text-sm font-extrabold" style={{ color: BRAND.brown }}>
+              No classes found
             </div>
-          ))}
-        </div>
+            <div className="mt-2 text-sm" style={{ color: BRAND.muted }}>
+              Make sure teacher has rows in <code>section_schedules</code> for this
+              SY + Term.
+            </div>
+          </div>
+        ) : (
+          <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-3">
+            {filtered.map((c) => (
+              <div
+                key={c.id}
+                className="rounded-3xl border bg-white p-5 transition hover:-translate-y-[1px]"
+                style={{ borderColor: BRAND.stroke }}
+              >
+                <div className="flex items-start justify-between gap-3">
+                  <div>
+                    <div
+                      className="text-sm font-extrabold"
+                      style={{ color: BRAND.brown }}
+                    >
+                      {c.subject}
+                    </div>
+                    <div className="mt-1 text-xs font-semibold" style={{ color: BRAND.muted }}>
+                      {c.code} • {c.grade} {c.section} • {c.strand}
+                    </div>
+                  </div>
+                  <Chip>{c.year}</Chip>
+                </div>
+
+                <div className="mt-4 grid gap-2 text-xs font-semibold" style={{ color: BRAND.muted }}>
+                  <div className="flex items-center gap-2">
+                    <CalendarDays className="h-4 w-4" />
+                    <span>{c.schedule}</span>
+                  </div>
+                  <div className="flex items-center gap-2">
+                    <MapPin className="h-4 w-4" />
+                    <span>{c.room}</span>
+                  </div>
+                  <div className="flex items-center gap-2">
+                    <Users className="h-4 w-4" />
+                    <span>{c.students} students</span>
+                  </div>
+                </div>
+
+                <div className="mt-5 grid gap-2 md:grid-cols-2">
+                  <button
+                    onClick={() => setSelected(c)}
+                    className="rounded-2xl px-4 py-2 text-sm font-semibold transition"
+                    style={{ background: BRAND.gold, color: BRAND.brown }}
+                    onMouseEnter={(e) => (e.currentTarget.style.background = BRAND.goldHover)}
+                    onMouseLeave={(e) => (e.currentTarget.style.background = BRAND.gold)}
+                  >
+                    View Class
+                  </button>
+                  <button
+                    onClick={() => setSelected({ ...c, _openTab: "Announcements" })}
+                    className="rounded-2xl border bg-white/70 px-4 py-2 text-sm font-semibold hover:bg-white"
+                    style={{ borderColor: BRAND.stroke, color: BRAND.brown }}
+                  >
+                    Post Announcement
+                  </button>
+                </div>
+              </div>
+            ))}
+          </div>
+        )}
       </motion.div>
 
       <Modal
@@ -622,27 +605,37 @@ export default function TeacherClasses() {
         title={selected ? `${selected.subject} • ${selected.code}` : ""}
         onClose={() => setSelected(null)}
       >
-        {selected ? <ClassDetailsTabs c={selected} /> : null}
+        {selected ? (
+          <ClassDetailsTabs
+            c={selected}
+            defaultTab={selected._openTab || "Overview"}
+            sy={activeSY}
+            term={termRow}
+          />
+        ) : null}
       </Modal>
     </div>
   );
 }
 
-function ClassDetailsTabs({ c }) {
-  const [tab, setTab] = useState("Overview");
+function ClassDetailsTabs({ c, defaultTab, sy, term }) {
+  const [tab, setTab] = useState(defaultTab || "Overview");
 
   const tabs = [
     { key: "Overview", icon: ClipboardList },
-    { key: "Lessons", icon: BookOpen },
     { key: "Students", icon: Users },
-    { key: "Grades", icon: BarChart3 },
     { key: "Announcements", icon: Megaphone },
     { key: "Schedule", icon: CalendarDays },
+    { key: "Lessons", icon: BookOpen },
+    { key: "Grades", icon: BarChart3 },
   ];
+
+  useEffect(() => {
+    setTab(defaultTab || "Overview");
+  }, [defaultTab]);
 
   return (
     <div className="space-y-4">
-      {/* Class header */}
       <div className="rounded-3xl border bg-white p-4" style={{ borderColor: BRAND.stroke }}>
         <div className="flex flex-col gap-3 md:flex-row md:items-start md:justify-between">
           <div>
@@ -693,7 +686,6 @@ function ClassDetailsTabs({ c }) {
         </div>
       </div>
 
-      {/* Tab content */}
       <AnimatePresence mode="wait">
         <motion.div
           key={tab}
@@ -705,116 +697,17 @@ function ClassDetailsTabs({ c }) {
           style={{ borderColor: BRAND.stroke }}
         >
           {tab === "Overview" ? (
-            <div>
-              <div className="text-sm font-extrabold" style={{ color: BRAND.brown }}>
-                Class Description
-              </div>
-              <div className="mt-2 text-sm" style={{ color: BRAND.muted }}>
-                {c.desc}
-              </div>
-
-              <div className="mt-4 text-sm font-extrabold" style={{ color: BRAND.brown }}>
-                Learning Objectives
-              </div>
-              {c.objectives?.length ? (
-                <ul className="mt-2 list-disc pl-5 text-sm" style={{ color: BRAND.muted }}>
-                  {c.objectives.map((o) => (
-                    <li key={o}>{o}</li>
-                  ))}
-                </ul>
-              ) : (
-                <div className="mt-2 text-sm" style={{ color: BRAND.muted }}>
-                  —
-                </div>
-              )}
-
-              <div className="mt-4 grid gap-2 md:grid-cols-2">
-                <button
-                  className="rounded-2xl px-4 py-3 text-sm font-semibold transition"
-                  style={{ background: BRAND.gold, color: BRAND.brown }}
-                  onMouseEnter={(e) => (e.currentTarget.style.background = BRAND.goldHover)}
-                  onMouseLeave={(e) => (e.currentTarget.style.background = BRAND.gold)}
-                  onClick={() => alert("Download syllabus (wire later)")}
-                >
-                  Download Syllabus
-                </button>
-                <button
-                  className="rounded-2xl border bg-white/70 px-4 py-3 text-sm font-semibold hover:bg-white"
-                  style={{ borderColor: BRAND.stroke, color: BRAND.brown }}
-                  onClick={() => alert("View recent activity (wire later)")}
-                >
-                  View Recent Activity
-                </button>
-              </div>
-            </div>
-          ) : tab === "Lessons" ? (
-            <EmptyState title="Lessons Tab UI Ready" desc="List uploaded lessons for this class here." />
+            <OverviewPanel c={c} sy={sy} term={term} />
           ) : tab === "Students" ? (
-            <EmptyState title="Students Tab UI Ready" desc="Show student list, performance, attendance, contact." />
-          ) : tab === "Grades" ? (
-            <EmptyState title="Grades Tab UI Ready" desc="Gradebook table + analytics can go here." />
+            <StudentsPanel c={c} sy={sy} />
           ) : tab === "Announcements" ? (
-            <EmptyState title="Class Announcements UI Ready" desc="Post announcements and list history here." />
+            <AnnouncementsPanel c={c} sy={sy} term={term} />
           ) : tab === "Schedule" ? (
-            <div className="space-y-3">
-              <div className="text-sm font-extrabold" style={{ color: BRAND.brown }}>
-                Schedule Slots
-              </div>
-
-              {!c._schedules || c._schedules.length === 0 ? (
-                <div className="text-sm font-semibold" style={{ color: BRAND.muted }}>
-                  No schedule rows found for this class.
-                </div>
-              ) : (
-                <div className="overflow-auto rounded-2xl border" style={{ borderColor: BRAND.stroke }}>
-                  <table className="min-w-full text-left text-sm">
-                    <thead>
-                      <tr className="border-b" style={{ borderColor: BRAND.stroke }}>
-                        <th className="px-4 py-3 font-extrabold" style={{ color: BRAND.brown }}>
-                          Day
-                        </th>
-                        <th className="px-4 py-3 font-extrabold" style={{ color: BRAND.brown }}>
-                          Period
-                        </th>
-                        <th className="px-4 py-3 font-extrabold" style={{ color: BRAND.brown }}>
-                          Time
-                        </th>
-                        <th className="px-4 py-3 font-extrabold" style={{ color: BRAND.brown }}>
-                          Room
-                        </th>
-                      </tr>
-                    </thead>
-                    <tbody>
-                      {c._schedules
-                        .slice()
-                        .sort(
-                          (a, b) =>
-                            (DAY_ORDER.indexOf(a.day_of_week) - DAY_ORDER.indexOf(b.day_of_week)) ||
-                            (a.period_no - b.period_no)
-                        )
-                        .map((s) => (
-                          <tr key={s.schedule_id} className="border-b" style={{ borderColor: BRAND.stroke }}>
-                            <td className="px-4 py-3 font-semibold" style={{ color: BRAND.muted }}>
-                              {s.day_of_week}
-                            </td>
-                            <td className="px-4 py-3 font-semibold" style={{ color: BRAND.muted }}>
-                              {s.period_no}
-                            </td>
-                            <td className="px-4 py-3 font-semibold" style={{ color: BRAND.muted }}>
-                              {formatTimeHHMM(s.start_time)}–{formatTimeHHMM(s.end_time)}
-                            </td>
-                            <td className="px-4 py-3 font-semibold" style={{ color: BRAND.muted }}>
-                              {s.room ?? "—"}
-                            </td>
-                          </tr>
-                        ))}
-                    </tbody>
-                  </table>
-                </div>
-              )}
-            </div>
+            <SchedulePanel c={c} />
+          ) : tab === "Lessons" ? (
+            <Placeholder title="Lessons" note="No lessons table wired yet." />
           ) : (
-            <EmptyState title="UI Ready" desc="This tab is ready to be wired." />
+            <Placeholder title="Grades" note="No grades table wired yet." />
           )}
         </motion.div>
       </AnimatePresence>
@@ -822,17 +715,494 @@ function ClassDetailsTabs({ c }) {
   );
 }
 
-function EmptyState({ title, desc }) {
+function Placeholder({ title, note }) {
   return (
     <div className="rounded-3xl border p-6 text-center" style={{ borderColor: BRAND.stroke }}>
       <div className="text-sm font-extrabold" style={{ color: BRAND.brown }}>
         {title}
       </div>
       <div className="mt-2 text-sm" style={{ color: BRAND.muted }}>
-        {desc}
+        {note}
       </div>
-      <div className="mt-4 text-xs font-semibold" style={{ color: BRAND.muted }}>
-        (Wire with Supabase tables later.)
+    </div>
+  );
+}
+
+function OverviewPanel({ c, sy, term }) {
+  return (
+    <div className="space-y-3">
+      <div className="text-sm font-extrabold" style={{ color: BRAND.brown }}>
+        Overview
+      </div>
+      <div className="text-sm font-semibold" style={{ color: BRAND.muted }}>
+        SY: <span style={{ color: BRAND.brown }}>{sy?.sy_code || "—"}</span> • Term:{" "}
+        <span style={{ color: BRAND.brown }}>{term?.term_code || "—"}</span>
+      </div>
+
+      <div className="rounded-2xl border p-4" style={{ borderColor: BRAND.stroke }}>
+        <div className="text-xs font-extrabold" style={{ color: BRAND.brown }}>
+          Internal identifiers
+        </div>
+        <div className="mt-2 text-xs font-semibold" style={{ color: BRAND.muted }}>
+          <div>section_id: {c._section_id}</div>
+          <div>subject_id: {c._subject_id}</div>
+          <div>term_id: {c._term_id}</div>
+          <div>sy_id: {c._sy_id}</div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function SchedulePanel({ c }) {
+  return (
+    <div className="space-y-3">
+      <div className="text-sm font-extrabold" style={{ color: BRAND.brown }}>
+        Schedule Slots
+      </div>
+
+      {!c._schedules || c._schedules.length === 0 ? (
+        <div className="text-sm font-semibold" style={{ color: BRAND.muted }}>
+          No schedule rows found.
+        </div>
+      ) : (
+        <div className="overflow-auto rounded-2xl border" style={{ borderColor: BRAND.stroke }}>
+          <table className="min-w-full text-left text-sm">
+            <thead>
+              <tr className="border-b" style={{ borderColor: BRAND.stroke }}>
+                <th className="px-4 py-3 font-extrabold" style={{ color: BRAND.brown }}>
+                  Day
+                </th>
+                <th className="px-4 py-3 font-extrabold" style={{ color: BRAND.brown }}>
+                  Period
+                </th>
+                <th className="px-4 py-3 font-extrabold" style={{ color: BRAND.brown }}>
+                  Time
+                </th>
+                <th className="px-4 py-3 font-extrabold" style={{ color: BRAND.brown }}>
+                  Room
+                </th>
+              </tr>
+            </thead>
+            <tbody>
+              {c._schedules
+                .slice()
+                .sort(
+                  (a, b) =>
+                    DAY_ORDER.indexOf(a.day_of_week) - DAY_ORDER.indexOf(b.day_of_week) ||
+                    a.period_no - b.period_no
+                )
+                .map((s) => (
+                  <tr key={s.schedule_id} className="border-b" style={{ borderColor: BRAND.stroke }}>
+                    <td className="px-4 py-3 font-semibold" style={{ color: BRAND.muted }}>
+                      {s.day_of_week}
+                    </td>
+                    <td className="px-4 py-3 font-semibold" style={{ color: BRAND.muted }}>
+                      {s.period_no}
+                    </td>
+                    <td className="px-4 py-3 font-semibold" style={{ color: BRAND.muted }}>
+                      {formatTimeHHMM(s.start_time)}–{formatTimeHHMM(s.end_time)}
+                    </td>
+                    <td className="px-4 py-3 font-semibold" style={{ color: BRAND.muted }}>
+                      {s.room ?? "—"}
+                    </td>
+                  </tr>
+                ))}
+            </tbody>
+          </table>
+        </div>
+      )}
+    </div>
+  );
+}
+
+function StudentsPanel({ c, sy }) {
+  const [loading, setLoading] = useState(true);
+  const [err, setErr] = useState("");
+  const [rows, setRows] = useState([]);
+
+  useEffect(() => {
+    let alive = true;
+
+    async function load() {
+      setLoading(true);
+      setErr("");
+
+      try {
+        if (!sy?.sy_id) throw new Error("Missing active school year.");
+        if (!c?._section_id) throw new Error("Missing section_id.");
+
+        // NOTE: if your students table has more fields, add them here.
+        const { data, error } = await supabase
+          .from("students")
+          .select("id, user_id, student_number, section_id, sy_id")
+          .eq("sy_id", sy.sy_id)
+          .eq("section_id", c._section_id)
+          .order("student_number", { ascending: true });
+
+        if (error) throw error;
+
+        if (alive) setRows(data || []);
+      } catch (e) {
+        if (alive) setErr(String(e?.message || e));
+      } finally {
+        if (alive) setLoading(false);
+      }
+    }
+
+    load();
+    return () => {
+      alive = false;
+    };
+  }, [c?._section_id, sy?.sy_id]);
+
+  return (
+    <div className="space-y-3">
+      <div className="flex items-center justify-between gap-2">
+        <div className="text-sm font-extrabold" style={{ color: BRAND.brown }}>
+          Students
+        </div>
+        <div className="text-xs font-semibold" style={{ color: BRAND.muted }}>
+          {loading ? "Loading…" : `${rows.length} student(s)`}
+        </div>
+      </div>
+
+      {err ? (
+        <div className="rounded-2xl border border-rose-200 bg-rose-50 p-3 text-xs font-semibold text-rose-800">
+          {err}
+        </div>
+      ) : null}
+
+      {loading ? (
+        <div className="text-sm font-semibold" style={{ color: BRAND.muted }}>
+          Loading…
+        </div>
+      ) : rows.length === 0 ? (
+        <div className="rounded-2xl border p-4 text-sm font-semibold" style={{ borderColor: BRAND.stroke, color: BRAND.muted }}>
+          No students found in this section.
+        </div>
+      ) : (
+        <div className="overflow-auto rounded-2xl border" style={{ borderColor: BRAND.stroke }}>
+          <table className="min-w-full text-left text-sm">
+            <thead>
+              <tr className="border-b" style={{ borderColor: BRAND.stroke }}>
+                <th className="px-4 py-3 font-extrabold" style={{ color: BRAND.brown }}>
+                  Student #
+                </th>
+                <th className="px-4 py-3 font-extrabold" style={{ color: BRAND.brown }}>
+                  user_id
+                </th>
+              </tr>
+            </thead>
+            <tbody>
+              {rows.map((s) => (
+                <tr key={s.id} className="border-b" style={{ borderColor: BRAND.stroke }}>
+                  <td className="px-4 py-3 font-semibold" style={{ color: BRAND.muted }}>
+                    {s.student_number || "—"}
+                  </td>
+                  <td className="px-4 py-3 font-mono text-xs" style={{ color: BRAND.muted }}>
+                    {s.user_id}
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
+    </div>
+  );
+}
+
+function AnnouncementsPanel({ c, sy, term }) {
+  const [loading, setLoading] = useState(true);
+  const [err, setErr] = useState("");
+  const [items, setItems] = useState([]);
+
+  const [posting, setPosting] = useState(false);
+  const [form, setForm] = useState({
+    title: "",
+    content: "",
+    priority: "Medium",
+    target_audience: "Section Students", // default for class context
+    status: "Published",
+  });
+
+  function patch(k, v) {
+    setForm((s) => ({ ...s, [k]: v }));
+  }
+
+  async function load() {
+    setLoading(true);
+    setErr("");
+
+    try {
+      if (!sy?.sy_id) throw new Error("Missing active school year.");
+      if (!term?.term_id) throw new Error("Missing term.");
+      if (!c?._section_id) throw new Error("Missing section_id.");
+
+      const { data: authData, error: authErr } = await supabase.auth.getUser();
+      if (authErr) throw authErr;
+      const user = authData?.user;
+      if (!user) throw new Error("Not authenticated.");
+
+      // Teacher's announcements for this class context
+      // - Scope: SY + term + section
+      const { data, error } = await supabase
+        .from("announcements")
+        .select(
+          `
+          id,
+          title,
+          content,
+          priority,
+          target_audience,
+          status,
+          is_archived,
+          posted_at,
+          posted_by,
+          posted_by_role,
+          posted_by_teacher_id,
+          sy_id,
+          term_id,
+          section_id
+        `
+        )
+        .eq("sy_id", sy.sy_id)
+        .eq("term_id", term.term_id)
+        .eq("section_id", c._section_id)
+        .eq("posted_by", user.id)
+        .eq("is_archived", false)
+        .order("posted_at", { ascending: false });
+
+      if (error) throw error;
+
+      setItems(data || []);
+    } catch (e) {
+      setErr(String(e?.message || e));
+      setItems([]);
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  useEffect(() => {
+    load();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [c?._section_id, sy?.sy_id, term?.term_id]);
+
+  async function post() {
+    setPosting(true);
+    setErr("");
+
+    try {
+      if (!sy?.sy_id) throw new Error("Missing active school year.");
+      if (!term?.term_id) throw new Error("Missing term.");
+      if (!c?._section_id) throw new Error("Missing section_id.");
+
+      const { data: authData, error: authErr } = await supabase.auth.getUser();
+      if (authErr) throw authErr;
+      const user = authData?.user;
+      if (!user) throw new Error("Not authenticated.");
+
+      if (!form.title.trim()) throw new Error("Title is required.");
+      if (!form.content.trim()) throw new Error("Content is required.");
+
+      // ✅ IMPORTANT: set posted_by_role + posted_by_teacher_id so StudentAnnouncements can filter correctly
+      const payload = {
+        posted_by: user.id,
+        posted_by_role: "teacher",
+        posted_by_teacher_id: user.id,
+
+        title: form.title.trim(),
+        content: form.content.trim(),
+        priority: form.priority,
+        target_audience: form.target_audience,
+        status: form.status,
+        is_archived: false,
+
+        sy_id: sy.sy_id,
+        term_id: term.term_id,
+
+        // Class context:
+        // - Section Students: needs section_id
+        // - My Students: keep section_id null (optional)
+        section_id: form.target_audience === "Section Students" ? c._section_id : null,
+      };
+
+      const { error } = await supabase.from("announcements").insert(payload);
+      if (error) throw error;
+
+      setForm((s) => ({ ...s, title: "", content: "" }));
+      await load();
+    } catch (e) {
+      setErr(String(e?.message || e));
+    } finally {
+      setPosting(false);
+    }
+  }
+
+  return (
+    <div className="space-y-4">
+      <div className="flex items-center justify-between gap-2">
+        <div className="text-sm font-extrabold" style={{ color: BRAND.brown }}>
+          Announcements
+        </div>
+        <button
+          onClick={load}
+          className="inline-flex items-center gap-2 rounded-2xl border bg-white px-3 py-2 text-xs font-extrabold hover:bg-black/5"
+          style={{ borderColor: BRAND.stroke, color: BRAND.brown }}
+          disabled={loading || posting}
+        >
+          <RefreshCcw className="h-4 w-4" style={{ color: BRAND.muted }} />
+          Refresh
+        </button>
+      </div>
+
+      {err ? (
+        <div className="rounded-2xl border border-rose-200 bg-rose-50 p-3 text-xs font-semibold text-rose-800">
+          <div className="flex items-center gap-2">
+            <AlertTriangle className="h-4 w-4" />
+            {err}
+          </div>
+        </div>
+      ) : null}
+
+      {/* Create */}
+      <div className="rounded-3xl border bg-white p-4" style={{ borderColor: BRAND.stroke }}>
+        <div className="grid gap-3 md:grid-cols-2">
+          <div className="md:col-span-2">
+            <div className="text-xs font-semibold" style={{ color: BRAND.muted }}>
+              Title
+            </div>
+            <input
+              value={form.title}
+              onChange={(e) => patch("title", e.target.value)}
+              className="mt-1 w-full rounded-2xl border bg-white/70 px-4 py-2 text-sm font-semibold outline-none transition focus:bg-white"
+              style={{ borderColor: BRAND.stroke, color: BRAND.brown }}
+              placeholder="e.g., Quiz tomorrow"
+              disabled={posting}
+            />
+          </div>
+
+          <div>
+            <div className="text-xs font-semibold" style={{ color: BRAND.muted }}>
+              Priority
+            </div>
+            <select
+              value={form.priority}
+              onChange={(e) => patch("priority", e.target.value)}
+              className="mt-1 w-full rounded-2xl border bg-white/70 px-4 py-2 text-sm font-semibold outline-none transition focus:bg-white"
+              style={{ borderColor: BRAND.stroke, color: BRAND.brown }}
+              disabled={posting}
+            >
+              <option>High</option>
+              <option>Medium</option>
+              <option>Low</option>
+            </select>
+          </div>
+
+          <div>
+            <div className="text-xs font-semibold" style={{ color: BRAND.muted }}>
+              Status
+            </div>
+            <select
+              value={form.status}
+              onChange={(e) => patch("status", e.target.value)}
+              className="mt-1 w-full rounded-2xl border bg-white/70 px-4 py-2 text-sm font-semibold outline-none transition focus:bg-white"
+              style={{ borderColor: BRAND.stroke, color: BRAND.brown }}
+              disabled={posting}
+            >
+              <option value="Published">Published</option>
+              <option value="Draft">Draft</option>
+            </select>
+          </div>
+
+          <div className="md:col-span-2">
+            <div className="text-xs font-semibold" style={{ color: BRAND.muted }}>
+              Audience
+            </div>
+            <select
+              value={form.target_audience}
+              onChange={(e) => patch("target_audience", e.target.value)}
+              className="mt-1 w-full rounded-2xl border bg-white/70 px-4 py-2 text-sm font-semibold outline-none transition focus:bg-white"
+              style={{ borderColor: BRAND.stroke, color: BRAND.brown }}
+              disabled={posting}
+            >
+              <option value="Section Students">Section Students</option>
+              <option value="My Students">My Students</option>
+            </select>
+
+            <div className="mt-2 text-[11px] font-semibold" style={{ color: BRAND.muted }}>
+              Note: “Section Students” will attach section_id = this class section. “My Students” will not.
+            </div>
+          </div>
+
+          <div className="md:col-span-2">
+            <div className="text-xs font-semibold" style={{ color: BRAND.muted }}>
+              Content
+            </div>
+            <textarea
+              value={form.content}
+              onChange={(e) => patch("content", e.target.value)}
+              className="mt-1 h-28 w-full rounded-2xl border bg-white/70 px-4 py-3 text-sm font-semibold outline-none transition focus:bg-white"
+              style={{ borderColor: BRAND.stroke, color: BRAND.brown }}
+              placeholder="Write the announcement…"
+              disabled={posting}
+            />
+          </div>
+
+          <div className="md:col-span-2 flex justify-end gap-2">
+            <button
+              onClick={post}
+              disabled={posting}
+              className="inline-flex items-center gap-2 rounded-2xl px-4 py-2 text-xs font-extrabold transition"
+              style={{ background: BRAND.gold, color: BRAND.brown }}
+              onMouseEnter={(e) => (e.currentTarget.style.background = BRAND.goldHover)}
+              onMouseLeave={(e) => (e.currentTarget.style.background = BRAND.gold)}
+            >
+              <Plus className="h-4 w-4" />
+              {posting ? "Posting…" : "Post"}
+            </button>
+          </div>
+        </div>
+      </div>
+
+      {/* List */}
+      <div className="space-y-3">
+        {loading ? (
+          <div className="text-sm font-semibold" style={{ color: BRAND.muted }}>
+            Loading…
+          </div>
+        ) : items.length === 0 ? (
+          <div className="rounded-2xl border p-4 text-sm font-semibold" style={{ borderColor: BRAND.stroke, color: BRAND.muted }}>
+            No announcements yet for this class section.
+          </div>
+        ) : (
+          items.map((a) => (
+            <div
+              key={a.id}
+              className="rounded-3xl border bg-white p-4"
+              style={{ borderColor: BRAND.stroke }}
+            >
+              <div className="flex items-start justify-between gap-3">
+                <div>
+                  <div className="text-sm font-extrabold" style={{ color: BRAND.brown }}>
+                    {a.title}
+                  </div>
+                  <div className="mt-1 text-xs font-semibold" style={{ color: BRAND.muted }}>
+                    {a.status} • {a.priority} • {a.target_audience} •{" "}
+                    {a.posted_at ? new Date(a.posted_at).toLocaleString() : "—"}
+                  </div>
+                </div>
+                <Chip>{sy?.sy_code || "SY"}</Chip>
+              </div>
+
+              <div className="mt-3 whitespace-pre-wrap text-sm" style={{ color: "rgba(0,0,0,0.68)" }}>
+                {a.content}
+              </div>
+            </div>
+          ))
+        )}
       </div>
     </div>
   );
