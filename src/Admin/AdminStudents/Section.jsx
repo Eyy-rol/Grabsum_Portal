@@ -411,10 +411,9 @@ export default function Sections() {
         .select("sy_id, sy_code, status, start_date, end_date")
         .eq("status", "Active")
         .order("start_date", { ascending: false })
-        .limit(1)
-        .single();
+        .limit(1);
       if (error) throw error;
-      return data ?? null;
+      return data?.[0] ?? null;
     },
   });
 
@@ -426,13 +425,12 @@ export default function Sections() {
       const sy = activeSYQ.data;
       const { data, error } = await supabase
         .from("sections")
-        .select("section_id, section_name, sy_id")
+        .select("section_id, section_name")
         .eq("sy_id", sy.sy_id)
         .eq("section_name", "Unclassified")
-        .limit(1)
-        .single();
+        .limit(1);
       if (error) throw error;
-      return data ?? null;
+      return data?.[0] ?? null;
     },
   });
 
@@ -507,7 +505,7 @@ export default function Sections() {
   // ✅ Unclassified students list (active SY, Enrolled only)
   const unclassifiedStudentsQ = useQuery({
     queryKey: ["unclassified_students", activeSYQ.data?.sy_id, unclassifiedQ.data?.section_id],
-    enabled: !!activeSYQ.data?.sy_id && !!unclassifiedQ.data?.section_id,
+    enabled: !!activeSYQ.data?.sy_id,
     queryFn: async () => {
       const sy = activeSYQ.data;
       const ucId = unclassifiedQ.data?.section_id;

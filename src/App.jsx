@@ -23,7 +23,10 @@ import ChangePassword from "./Auth/ChangePassword.jsx";
 
 import TeacherLayout from "./layout/TeacherLayout.jsx";
 import TeacherDashboard from "./Teacher/TeacherDashboard";
-import TeacherLessons from "./Teacher/TeacherLessons";
+import TeacherLessons from "./Teacher/Lesson/TeacherLessons.jsx";
+import LessonSampler from "./Teacher/Lesson/LessonSampler.jsx";
+import LessonLibrary from "./Teacher/Lesson/LessonLibrary.jsx";
+import AssignLesson from "./Teacher/Lesson/AssignLesson.jsx";
 import TeacherClasses from "./Teacher/TeacherClasses";
 import TeacherSchedules from "./Teacher/TeacherSchedule";
 import TeacherAnnouncements from "./Teacher/TeacherAnnouncements";
@@ -80,6 +83,15 @@ export default function App() {
           <Route path="teacher/manage" element={<TeacherManage />} />
           <Route path="teacher/schedule" element={<TeacherSchedule />} />
 
+          <Route path="students/enrollment" element={<Enrollment />} />
+          <Route path="students/classes" element={<Classes />} />
+          <Route path="students/schedule" element={<Schedule />} />
+          <Route path="students/section" element={<Section />} />
+          <Route path="students/subject" element={<Subject />} />
+          <Route path="students/school-year" element={<SchoolYear />} />
+          <Route path="teacher/manage" element={<TeacherManage />} />
+          <Route path="teacher/schedule" element={<TeacherSchedule />} />
+
             {/* ✅ admin change password route */}
             <Route path="change-password" element={<ChangePassword />} />
           </Route>
@@ -93,11 +105,16 @@ export default function App() {
             <Route index element={<Navigate to="dashboard" replace />} />
             <Route path="dashboard" element={<TeacherDashboard />} />
             <Route path="lessons" element={<TeacherLessons />} />
+            <Route path="lesson-library" element={<LessonLibrary />} />
+            <Route path="lesson-sampler" element={<LessonSampler />} />
+            <Route path="assign-lesson" element={<AssignLesson />} />
             <Route path="classes" element={<TeacherClasses />} />
             <Route path="schedule" element={<TeacherSchedules />} />
             <Route path="announcements" element={<TeacherAnnouncements />} />
             <Route path="students" element={<TeacherStudents />} />
             <Route path="settings" element={<TeacherSettings />} />
+            <Route path="lesson/edit/:lessonId" element={<LessonSampler />} />
+            <Route path="lesson/edit/new" element={<LessonSampler />} />
 
             {/* ✅ teacher change password route */}
             <Route path="change-password" element={<ChangePassword />} />
