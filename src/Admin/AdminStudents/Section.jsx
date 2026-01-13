@@ -1,5 +1,9 @@
+<<<<<<< HEAD
 // Admin/AdminStudents/Sections.jsx
 import React, { useMemo, useState, useEffect } from "react";
+=======
+import React, { useMemo, useState } from "react";
+>>>>>>> parent of 178c498 (Revert "[FEAT-0003B] Add Teacher Lesson")
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { supabase } from "../../lib/supabaseClient";
 import {
@@ -402,7 +406,11 @@ export default function Sections() {
     },
   });
 
+<<<<<<< HEAD
   // ✅ Active SY
+=======
+  // Active SY
+>>>>>>> parent of 178c498 (Revert "[FEAT-0003B] Add Teacher Lesson")
   const activeSYQ = useQuery({
     queryKey: ["active_school_year"],
     queryFn: async () => {
@@ -411,14 +419,17 @@ export default function Sections() {
         .select("sy_id, sy_code, status, start_date, end_date")
         .eq("status", "Active")
         .order("start_date", { ascending: false })
-        .limit(1)
-        .single();
+        .limit(1);
       if (error) throw error;
-      return data ?? null;
+      return data?.[0] ?? null;
     },
   });
 
+<<<<<<< HEAD
   // ✅ Unclassified section (active SY only)
+=======
+  // Unclassified section (active SY only)
+>>>>>>> parent of 178c498 (Revert "[FEAT-0003B] Add Teacher Lesson")
   const unclassifiedQ = useQuery({
     queryKey: ["unclassified_section", activeSYQ.data?.sy_id],
     enabled: !!activeSYQ.data?.sy_id,
@@ -426,13 +437,12 @@ export default function Sections() {
       const sy = activeSYQ.data;
       const { data, error } = await supabase
         .from("sections")
-        .select("section_id, section_name, sy_id")
+        .select("section_id, section_name")
         .eq("sy_id", sy.sy_id)
         .eq("section_name", "Unclassified")
-        .limit(1)
-        .single();
+        .limit(1);
       if (error) throw error;
-      return data ?? null;
+      return data?.[0] ?? null;
     },
   });
 
@@ -504,25 +514,45 @@ export default function Sections() {
     },
   });
 
+<<<<<<< HEAD
   // ✅ Unclassified students list (active SY, Enrolled only)
+=======
+  // Unclassified students list (active SY, Enrolled only)
+>>>>>>> parent of 178c498 (Revert "[FEAT-0003B] Add Teacher Lesson")
   const unclassifiedStudentsQ = useQuery({
     queryKey: ["unclassified_students", activeSYQ.data?.sy_id, unclassifiedQ.data?.section_id],
-    enabled: !!activeSYQ.data?.sy_id && !!unclassifiedQ.data?.section_id,
+    enabled: !!activeSYQ.data?.sy_id,
     queryFn: async () => {
       const sy = activeSYQ.data;
+<<<<<<< HEAD
       const ucId = unclassifiedQ.data?.section_id;
       if (!sy?.sy_id || !ucId) return [];
+=======
+      const ucId = unclassifiedQ.data?.section_id || null;
+>>>>>>> parent of 178c498 (Revert "[FEAT-0003B] Add Teacher Lesson")
 
       const { data, error } = await supabase
         .from("students")
         .select("id, student_number, first_name, last_name, middle_initial, extension, gender, status, updated_at, grade_id, track_id, strand_id, sy_id, section_id")
         .eq("sy_id", sy.sy_id)
         .eq("status", "Enrolled")
+<<<<<<< HEAD
         .or(`section_id.is.null,section_id.eq.${ucId}`)
         .order("last_name", { ascending: true });
 
       if (error) throw error;
       return data ?? [];
+=======
+        .order("last_name", { ascending: true });
+
+      if (error) throw error;
+
+      return (data ?? []).filter((s) => {
+        if (!s.section_id) return true; // legacy
+        if (!ucId) return false;
+        return s.section_id === ucId;
+      });
+>>>>>>> parent of 178c498 (Revert "[FEAT-0003B] Add Teacher Lesson")
     },
   });
 
@@ -1585,7 +1615,11 @@ function SectionModal({ mode, row, onClose, onCreate, onUpdate, busy, grades, tr
   );
 }
 
+<<<<<<< HEAD
 function StudentsModal({ section, activeSY, counts, unclassifiedSectionId, canWrite, toast, onClose, onRemove, removing }) {
+=======
+function StudentsModal({ section, activeSY, counts, unclassifiedSectionId, onClose, onRemove, removing }) {
+>>>>>>> parent of 178c498 (Revert "[FEAT-0003B] Add Teacher Lesson")
   const [q, setQ] = useState("");
 
   const studentsQ = useQuery({

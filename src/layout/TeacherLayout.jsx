@@ -39,6 +39,9 @@ const BRAND = {
 const TEACHER_NAV = [
   { key: "dash", label: "Dashboard", to: "/teacher/dashboard", icon: LayoutDashboard },
   { key: "lessons", label: "Lessons", to: "/teacher/lessons", icon: BookOpen },
+  { key: "lesson-sampler", label: "Lesson Sampler", to: "/teacher/lesson-sampler", icon: Sparkles },
+  { key: "lesson-library", label: "Lesson Library", to: "/teacher/lesson-library", icon: BookOpen },
+  { key: "assign-lesson", label: "Assign Lesson", to: "/teacher/assign-lesson", icon: BookOpen },
   { key: "classes", label: "My Classes", to: "/teacher/classes", icon: GraduationCap },
   { key: "schedule", label: "Schedule", to: "/teacher/schedule", icon: CalendarDays },
   { key: "ann", label: "Announcements", to: "/teacher/announcements", icon: Megaphone },
@@ -49,11 +52,17 @@ const TEACHER_NAV = [
 function titleFromPath(path) {
   if (path.includes("/teacher/dashboard")) return "Dashboard";
   if (path.includes("/teacher/lessons")) return "Lessons";
+  if (path.includes("/teacher/lesson-sampler")) return "Lesson Sampler";
   if (path.includes("/teacher/classes")) return "My Classes";
   if (path.includes("/teacher/schedule")) return "Schedule";
   if (path.includes("/teacher/announcements")) return "Announcements";
   if (path.includes("/teacher/students")) return "Students";
+<<<<<<< HEAD:src/layout/TeacherLayout.jsx
   if (path.includes("/teacher/settings")) return "Profile";
+=======
+  if (path.includes("/teacher/settings")) return "Settings";
+  if (path.includes("/teacher/lesson-library")) return "Lesson Library";
+>>>>>>> parent of 178c498 (Revert "[FEAT-0003B] Add Teacher Lesson"):src/layout/TeacherLayout.tsx
   return "Teacher";
 }
 
