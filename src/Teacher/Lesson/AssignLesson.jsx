@@ -1,484 +1,419 @@
+// Teacher/Lesson/AssignLesson.jsx
+//
+// Assign Lesson (Teacher)
+// - Expects query param: /teacher/assign-lesson?lessonId=...
+// - Teacher can only assign a Published lesson
+// - Teacher can only assign to SECTIONS they teach (via section_schedules.teacher_id = auth.uid())
+// - The selectable section/schedule must be aligned to the lesson's:
+//    - grade_id
+//    - track_id
+//    - strand_id
+//   (Alignment rule: if lesson field is NULL => it's not a constraint; if NOT NULL => must match section field)
+//
+// Inserts into lesson_assignments.
+//
+// Tables used:
+// - lessons (validate Published + get grade_id/track_id/strand_id)
+// - school_years (get Active sy)
+// - section_schedules (teacher's schedules in Active sy)
+// - sections (to check grade/track/strand alignment)
+// - lesson_assignments (insert)
+//
+// Notes:
+// - This page does NOT create lesson_instances; it only creates the assignment row.
+// - RLS should enforce: assigned_by = auth.uid() and teacher_can_access_section(section_id)
+
 import React, { useEffect, useMemo, useState } from "react";
-import { useLocation, useNavigate, useParams } from "react-router-dom";
+import { useNavigate, useSearchParams } from "react-router-dom";
 import { supabase } from "../../lib/supabaseClient";
-
-import {
-  ChevronLeft,
-  Info,
-  RefreshCcw,
-  Send,
-  X,
-  Search,
-  BookOpen,
-  Clock,
-} from "lucide-react";
-
-/**
- * ============================================================
- * AssignLesson.jsx (Option A)
- *
- * Route:
- *   /teacher/assign-lesson/:lessonId
- *
- * Rules:
- * ✅ If lessonId is missing/invalid -> redirect to /teacher/lesson-library
- * ✅ Teacher can assign only if lesson exists
- * ============================================================
- */
+import { ArrowLeft, CheckCircle2, BookOpen, CalendarDays } from "lucide-react";
 
 const UI = {
   pageBg: "bg-white",
-  panel: "bg-white",
-  border: "border-black/10",
   text: "text-[#1F1A14]",
   muted: "text-black/55",
+  border: "border-black/10",
   goldBg: "bg-[#C9A227]",
-  goldSoft: "bg-[#C9A227]/10",
 };
 
-function norm(s) {
-  return String(s || "").trim().toLowerCase();
-}
-
-function fmtDateTime(iso) {
-  try {
-    return new Date(iso).toLocaleString();
-  } catch {
-    return String(iso || "");
-  }
-}
-
-function ErrorBlock({ title, message }) {
-  return (
-    <div className={`rounded-2xl border ${UI.border} ${UI.panel} p-4`}>
-      <div className="flex items-start gap-3">
-        <div className={`grid h-9 w-9 place-items-center rounded-xl ${UI.goldSoft}`}>
-          <Info className="h-5 w-5 text-[#6B4E2E]" />
-        </div>
-
-        <div className="min-w-0">
-          <div className="text-sm font-extrabold">{title}</div>
-          <div className={`mt-1 text-sm ${UI.muted} whitespace-pre-wrap`}>{message}</div>
-        </div>
-      </div>
-    </div>
+function isUuid(v) {
+  return /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(
+    String(v || "")
   );
 }
 
-function LoadingBlock() {
-  return (
-    <div className="grid gap-3">
-      {Array.from({ length: 4 }).map((_, i) => (
-        <div
-          key={i}
-          className={`h-[84px] rounded-2xl border ${UI.border} bg-black/[0.02] animate-pulse`}
-        />
-      ))}
-    </div>
-  );
+function fmtTime(v) {
+  if (!v) return "—";
+  return String(v).slice(0, 5) || "—";
 }
 
-function Pill({ children, tone = "gold" }) {
-  const cls =
-    tone === "gold"
-      ? `${UI.goldSoft} text-[#6B4E2E]`
-      : tone === "outline"
-      ? "bg-white border border-black/10 text-black/70"
-      : "bg-black/5 text-black/70";
-
-  return (
-    <span className={`inline-flex items-center rounded-full px-3 py-1 text-xs font-semibold ${cls}`}>
-      {children}
-    </span>
-  );
+function matchesConstraint(sectionValue, lessonValue) {
+  // If lessonValue is null => no constraint, allow any
+  if (lessonValue == null) return true;
+  return sectionValue === lessonValue;
 }
-
-function Card({ children }) {
-  return <div className={`rounded-2xl border ${UI.border} ${UI.panel}`}>{children}</div>;
-}
-
-function CardHeader({ title, right }) {
-  return (
-    <div className={`border-b ${UI.border} px-4 py-3 flex items-center justify-between gap-2`}>
-      <div className="text-sm font-extrabold">{title}</div>
-      {right ? <div>{right}</div> : null}
-    </div>
-  );
-}
-
-function CardBody({ children }) {
-  return <div className="px-4 py-4">{children}</div>;
-}
-
-/* ============================================================
-   Main Page
-============================================================ */
 
 export default function AssignLesson() {
   const navigate = useNavigate();
-  const location = useLocation();
-  const { lessonId } = useParams();
+  const [sp] = useSearchParams();
+  const lessonId = sp.get("lessonId");
 
-  const [loading, setLoading] = useState(true);
-  const [error, setError] = useState("");
+  const [loading, setLoading] = useState(false);
+  const [me, setMe] = useState(null);
 
+  // lesson
   const [lesson, setLesson] = useState(null);
 
-  // ✅ assignments UI (basic version)
-  const [q, setQ] = useState("");
-  const [selected, setSelected] = useState(new Set());
+  // active school year
+  const [activeSY, setActiveSY] = useState(null);
 
-  const [students, setStudents] = useState([]);
+  // schedule slots teacher can assign to (active sy only, aligned to lesson grade/track/strand)
+  const [slots, setSlots] = useState([]);
 
-  const invalidLessonId = !lessonId || lessonId === "undefined" || lessonId === "null";
+  // form state
+  const [selectedScheduleId, setSelectedScheduleId] = useState("");
+  const [scheduledDate, setScheduledDate] = useState(""); // YYYY-MM-DD optional
 
-  /* ============================================================
-     Redirect rule (Option A)
-  ============================================================ */
   useEffect(() => {
-    if (invalidLessonId) {
-      navigate("/teacher/lesson-library", {
-        replace: true,
-        state: {
-          from: location.pathname,
-          reason: "missing_lesson_id",
-        },
-      });
-    }
-  }, [invalidLessonId, navigate, location.pathname]);
-
-  // ✅ Prevent render while redirecting
-  if (invalidLessonId) return null;
-
-  /* ============================================================
-     Load: Lesson + Teacher class students
-  ============================================================ */
-  useEffect(() => {
-    let alive = true;
-
-    async function loadData() {
-      try {
-        setLoading(true);
-        setError("");
-        setLesson(null);
-
-        // ✅ Lesson info
-        const { data: l, error: lErr } = await supabase
-          .from("lessons")
-          .select("lesson_id, title, duration_minutes, audience, status, created_at, updated_at, subject_id")
-          .eq("lesson_id", lessonId)
-          .limit(1)
-          .maybeSingle();
-
-        if (lErr) throw lErr;
-        if (!l) throw new Error("Lesson not found.");
-
-        // ✅ Optional: if lesson is draft, still allow assignment only if you want
-        // Here we allow assignment regardless, but show a badge.
-        // If you want to block Draft/Archived, uncomment below:
-        // if (l.status !== "Published") throw new Error("Only Published lessons can be assigned.");
-
-        // ✅ Teacher user
-        const { data: auth, error: authErr } = await supabase.auth.getUser();
-        if (authErr) throw authErr;
-
-        const teacherId = auth?.user?.id;
-        if (!teacherId) throw new Error("Not signed in.");
-
-        // ✅ Pull teacher students via section_schedules -> section -> students
-        // Your DB structure doesn’t have a direct teacher->section table, so we use schedules.
-
-        const { data: schedules, error: schedErr } = await supabase
-          .from("section_schedules")
-          .select("section_id")
-          .eq("teacher_id", teacherId);
-
-        if (schedErr) throw schedErr;
-
-        const sectionIds = Array.from(
-          new Set((schedules || []).map((x) => x.section_id).filter(Boolean))
-        );
-
-        if (sectionIds.length === 0) {
-          // teacher has no schedules -> no students
-          if (!alive) return;
-          setLesson(l);
-          setStudents([]);
-          return;
-        }
-
-        const { data: studs, error: studsErr } = await supabase
-          .from("students")
-          .select("id, user_id, student_number, first_name, last_name, email, section_id")
-          .in("section_id", sectionIds)
-          .order("last_name", { ascending: true });
-
-        if (studsErr) throw studsErr;
-
-        if (!alive) return;
-        setLesson(l);
-        setStudents(studs || []);
-      } catch (e) {
-        if (!alive) return;
-        setError(String(e?.message || e));
-      } finally {
-        if (!alive) return;
-        setLoading(false);
-      }
-    }
-
-    loadData();
-
-    return () => {
-      alive = false;
-    };
+    if (!isUuid(lessonId)) return;
+    init();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [lessonId]);
 
-  /* ============================================================
-     Filtering
-  ============================================================ */
-  const filteredStudents = useMemo(() => {
-    const needle = q.trim().toLowerCase();
-    if (!needle) return students;
-
-    return (students || []).filter((s) => {
-      const hay = `${s.student_number || ""} ${s.first_name || ""} ${s.last_name || ""} ${
-        s.email || ""
-      }`.toLowerCase();
-      return hay.includes(needle);
-    });
-  }, [students, q]);
-
-  function toggleSelect(id) {
-    setSelected((prev) => {
-      const next = new Set(prev);
-      if (next.has(id)) next.delete(id);
-      else next.add(id);
-      return next;
-    });
-  }
-
-  function clearSelection() {
-    setSelected(new Set());
-  }
-
-  async function assignNow() {
+  async function init() {
+    setLoading(true);
     try {
-      if (!lesson?.lesson_id) throw new Error("Lesson not loaded.");
-      if (selected.size === 0) throw new Error("Select at least 1 student.");
+      // 0) auth user
+      const { data: userRes, error: userErr } = await supabase.auth.getUser();
+      if (userErr) throw userErr;
+      const user = userRes?.user;
+      if (!user?.id) throw new Error("Not authenticated.");
+      setMe(user);
 
-      // ✅ IMPORTANT:
-      // You did not provide the table where assignments are saved.
-      // So for now, we only show the payload that you should insert.
-      //
-      // Suggested table name example: lesson_assignments
-      // Fields example:
-      // - assignment_id uuid
-      // - lesson_id uuid
-      // - student_id bigint (students.id)
-      // - assigned_at timestamp
-      // - assigned_by uuid (teacher user_id)
-      //
-      // You can paste your assignment table schema and I will wire it fully.
+      // 1) load lesson (need grade_id/track_id/strand_id for alignment)
+      const { data: l, error: lErr } = await supabase
+        .from("lessons")
+        .select("lesson_id, title, status, grade_id, track_id, strand_id")
+        .eq("lesson_id", lessonId)
+        .single();
 
-      const payload = Array.from(selected).map((studentDbId) => ({
-        lesson_id: lesson.lesson_id,
-        student_id: studentDbId,
-      }));
+      if (lErr) throw lErr;
 
-      console.log("Assign payload:", payload);
+      if (String(l.status || "") !== "Published") {
+        alert("Only Published lessons can be assigned.");
+        navigate("/teacher/lesson-library", { replace: true });
+        return;
+      }
+      setLesson(l);
 
-      alert(
-        `✅ Assignment prepared!\n\nLesson: ${lesson.title}\nStudents selected: ${
-          selected.size
-        }\n\n(Insert logic not yet wired because assignment table was not provided.)`
+      // 2) get Active school year
+      const { data: sy, error: syErr } = await supabase
+        .from("school_years")
+        .select("sy_id, sy_code, start_date, end_date, status")
+        .eq("status", "Active")
+        .single();
+
+      if (syErr) throw syErr;
+      setActiveSY(sy);
+
+      // 3) load teacher schedule slots in active sy (teacher-only)
+      const { data: sched, error: schedErr } = await supabase
+        .from("section_schedules")
+        .select(
+          `
+          schedule_id,
+          sy_id,
+          term_id,
+          section_id,
+          day_of_week,
+          period_no,
+          start_time,
+          end_time,
+          subjects:subject_id ( subject_title, subject_code ),
+          sections:section_id ( section_name, grade_id, track_id, strand_id ),
+          terms:term_id ( term_code )
+        `
+        )
+        .eq("sy_id", sy.sy_id)
+        .eq("teacher_id", user.id)
+        .order("section_id", { ascending: true })
+        .order("day_of_week", { ascending: true })
+        .order("period_no", { ascending: true });
+
+      if (schedErr) throw schedErr;
+
+      // 4) filter schedules by alignment:
+      //    lesson.grade_id/track_id/strand_id must match section.* when lesson value is NOT NULL
+      const aligned =
+        (sched || []).filter((row) => {
+          const sec = row?.sections || {};
+          return (
+            matchesConstraint(sec.grade_id, l.grade_id) &&
+            matchesConstraint(sec.track_id, l.track_id) &&
+            matchesConstraint(sec.strand_id, l.strand_id)
+          );
+        }) || [];
+
+      setSlots(aligned);
+
+      // If previously selected schedule is no longer valid, clear it
+      setSelectedScheduleId((prev) =>
+        aligned.some((x) => x.schedule_id === prev) ? prev : ""
       );
     } catch (e) {
-      alert(String(e?.message || e));
+      console.error("AssignLesson init error:", e);
+      alert(`Failed to load assign screen: ${e?.message || e}`);
+      navigate("/teacher/lesson-library", { replace: true });
+    } finally {
+      setLoading(false);
     }
   }
+
+  const slotOptions = useMemo(() => {
+    return (slots || []).map((r) => {
+      const sec = r?.sections?.section_name || "Unknown section";
+      const term = r?.terms?.term_code ? ` • ${r.terms.term_code}` : "";
+      const subj =
+        r?.subjects?.subject_title || r?.subjects?.subject_code || "";
+      const subjText = subj ? ` • ${subj}` : "";
+      const label = `${sec}${term}${subjText} • ${r.day_of_week} P${
+        r.period_no
+      } (${fmtTime(r.start_time)}-${fmtTime(r.end_time)})`;
+
+      return { value: r.schedule_id, label, row: r };
+    });
+  }, [slots]);
+
+  const selectedSlot = useMemo(() => {
+    return slotOptions.find((o) => o.value === selectedScheduleId)?.row || null;
+  }, [slotOptions, selectedScheduleId]);
+
+  const canSubmit = Boolean(
+    !loading &&
+      me?.id &&
+      lesson?.lesson_id &&
+      activeSY?.sy_id &&
+      selectedSlot?.schedule_id
+  );
+
+  async function submit() {
+    if (!canSubmit) return;
+
+    try {
+      setLoading(true);
+
+      const payload = {
+        lesson_id: lesson.lesson_id,
+        sy_id: activeSY.sy_id,
+        section_id: selectedSlot.section_id,
+        term_id: selectedSlot.term_id,
+        schedule_id: selectedSlot.schedule_id,
+        assigned_by: me.id,
+        scheduled_date: scheduledDate || null,
+      };
+
+      const { error } = await supabase.from("lesson_assignments").insert(payload);
+      if (error) throw error;
+
+      alert("Lesson assigned successfully!");
+      navigate("/teacher/lesson-library"); // ✅ go back to Lesson Library
+    } catch (e) {
+      console.error("AssignLesson submit error:", e);
+
+      const msg = String(e?.message || e);
+      if (
+        msg.toLowerCase().includes("duplicate") ||
+        msg.toLowerCase().includes("unique")
+      ) {
+        alert("This lesson is already assigned to that schedule/section.");
+      } else {
+        alert(`Assign failed: ${msg}`);
+      }
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  if (!isUuid(lessonId)) {
+    return (
+      <div className={`${UI.pageBg} ${UI.text} p-4`}>Invalid lessonId.</div>
+    );
+  }
+
+  const alignmentHint =
+    lesson && (lesson.grade_id || lesson.track_id || lesson.strand_id)
+      ? "Schedule list is filtered to sections aligned with this lesson’s Grade/Track/Strand."
+      : "This lesson has no Grade/Track/Strand constraints, so all your schedule slots (Active SY) are selectable.";
 
   return (
     <div className={`${UI.pageBg} ${UI.text} space-y-4`}>
-      {/* Header */}
-      <div className="flex flex-col gap-3 md:flex-row md:items-end md:justify-between">
-        <div>
-          <div className="text-2xl font-extrabold">Assign Lesson</div>
-          <div className={`mt-1 text-sm ${UI.muted}`}>
-            Select students to assign this lesson.
-          </div>
+      {/* Top bar */}
+      <div className="flex items-center justify-between">
+        <button
+          type="button"
+          onClick={() => navigate(-1)}
+          className="inline-flex items-center gap-2 rounded-xl border border-black/10 bg-white px-4 py-2 text-sm font-semibold hover:bg-black/[0.02]"
+        >
+          <ArrowLeft className="h-4 w-4" />
+          Back
+        </button>
+
+        <button
+          type="button"
+          onClick={() => navigate("/teacher/lesson-library")}
+          className="inline-flex items-center gap-2 rounded-xl border border-black/10 bg-white px-4 py-2 text-sm font-semibold hover:bg-black/[0.02]"
+          title="Go to Lesson Library"
+        >
+          <BookOpen className="h-4 w-4" />
+          Lesson Library
+        </button>
+      </div>
+
+      {/* Header card */}
+      <div className={`rounded-2xl border ${UI.border} bg-white p-4 space-y-2`}>
+        <div className="text-lg font-extrabold">Assign Lesson</div>
+
+        <div className={`text-sm ${UI.muted}`}>
+          {lesson ? (
+            <>
+              Assigning:{" "}
+              <span className="font-extrabold text-black/80">
+                {lesson.title}
+              </span>
+              {activeSY?.sy_code ? (
+                <>
+                  {" "}
+                  <span className="text-black/35">•</span>{" "}
+                  <span className="font-bold text-black/70">
+                    SY {activeSY.sy_code}
+                  </span>
+                </>
+              ) : null}
+            </>
+          ) : (
+            "Loading lesson…"
+          )}
         </div>
 
-        <div className="flex flex-wrap items-center gap-2">
-          <button
-            type="button"
-            onClick={() => navigate("/teacher/lesson-library")}
-            className="inline-flex items-center gap-2 rounded-xl border border-black/10 bg-white px-4 py-2 text-sm font-extrabold hover:bg-black/[0.02]"
-          >
-            <ChevronLeft className="h-4 w-4" />
-            Back to Lesson Library
-          </button>
-
-          <button
-            type="button"
-            onClick={() => window.location.reload()}
-            className="inline-flex items-center gap-2 rounded-xl border border-black/10 bg-white px-4 py-2 text-sm font-extrabold hover:bg-black/[0.02]"
-          >
-            <RefreshCcw className="h-4 w-4" />
-            Refresh
-          </button>
+        <div className="text-xs text-black/50">
+          Only <span className="font-bold">Published</span> lessons can be
+          assigned.
         </div>
       </div>
 
-      <div className={`h-px w-full ${UI.border} border-t`} />
+      {/* Form */}
+      <div className={`rounded-2xl border ${UI.border} bg-white p-4 space-y-4`}>
+        {/* Schedule Slot */}
+        <label className="block">
+          <span className="text-xs font-semibold text-black/55">
+            Schedule Slot (Aligned Section)
+          </span>
+          <select
+            value={selectedScheduleId}
+            onChange={(e) => setSelectedScheduleId(e.target.value)}
+            disabled={loading}
+            className="mt-1 w-full rounded-xl border border-black/10 bg-white px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-[#C9A227]/40"
+          >
+            <option value="">Select a schedule slot you teach…</option>
+            {slotOptions.map((o) => (
+              <option key={o.value} value={o.value}>
+                {o.label}
+              </option>
+            ))}
+          </select>
 
-      {loading ? (
-        <LoadingBlock />
-      ) : error ? (
-        <ErrorBlock title="Unable to load assignment page" message={error} />
-      ) : !lesson ? (
-        <ErrorBlock title="Lesson not found" message="This lesson does not exist." />
-      ) : (
-        <div className="grid gap-4">
-          {/* Lesson info */}
-          <Card>
-            <CardHeader
-              title="Lesson Info"
-              right={
-                <div className="flex gap-2">
-                  <Pill tone="outline">{lesson.status}</Pill>
-                </div>
-              }
+          <div className="mt-1 text-xs text-black/45">{alignmentHint}</div>
+
+          {!loading && lesson && slotOptions.length === 0 ? (
+            <div className="mt-2 rounded-xl border border-amber-200 bg-amber-50 p-3 text-xs text-amber-900">
+              No available schedule slots match this lesson’s Grade/Track/Strand
+              within the Active School Year.
+            </div>
+          ) : null}
+        </label>
+
+        {/* Scheduled Date */}
+        <label className="block">
+          <span className="text-xs font-semibold text-black/55">
+            Scheduled Date{" "}
+            <span className="font-normal text-black/40">(optional)</span>
+          </span>
+          <div className="mt-1 flex items-center gap-2 rounded-xl border border-black/10 bg-white px-3 py-2">
+            <CalendarDays className="h-4 w-4 text-black/45" />
+            <input
+              type="date"
+              value={scheduledDate}
+              onChange={(e) => setScheduledDate(e.target.value)}
+              disabled={loading}
+              className="w-full text-sm outline-none"
             />
-            <CardBody>
-              <div className="flex flex-col gap-3 md:flex-row md:items-start md:justify-between">
-                <div className="min-w-0">
-                  <div className="flex items-center gap-2">
-                    <BookOpen className="h-4 w-4 text-[#6B4E2E]" />
-                    <div className="text-lg font-extrabold">{lesson.title}</div>
-                  </div>
+          </div>
+        </label>
 
-                  <div className={`mt-2 flex flex-wrap items-center gap-2 text-xs ${UI.muted}`}>
-                    <span className="inline-flex items-center gap-1">
-                      <Clock className="h-3.5 w-3.5" />
-                      {lesson.duration_minutes} min
-                    </span>
-                    <span>•</span>
-                    <span>{lesson.audience}</span>
-                    <span>•</span>
-                    <span>Updated: {fmtDateTime(lesson.updated_at)}</span>
-                  </div>
-                </div>
+        {/* Preview selection */}
+        {selectedSlot ? (
+          <div className="rounded-xl border border-black/10 bg-black/[0.02] p-3 text-sm">
+            <div className="font-extrabold text-black/75">
+              Assignment Preview
+            </div>
+            <div className="mt-2 grid gap-1 text-xs text-black/60">
+              <div>
+                <span className="font-semibold">Section:</span>{" "}
+                <span className="font-bold text-black/70">
+                  {selectedSlot?.sections?.section_name || "—"}
+                </span>
               </div>
-            </CardBody>
-          </Card>
-
-          {/* Students picker */}
-          <Card>
-            <CardHeader
-              title="Select Students"
-              right={
-                <Pill tone="outline">
-                  Selected: {selected.size}
-                </Pill>
-              }
-            />
-            <CardBody>
-              <div className="flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
-                <div className={`text-sm ${UI.muted}`}>
-                  {students.length} student{students.length === 1 ? "" : "s"} found in your sections.
-                </div>
-
-                <div className="w-full md:w-[360px]">
-                  <div className="relative">
-                    <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-black/45" />
-                    <input
-                      value={q}
-                      onChange={(e) => setQ(e.target.value)}
-                      placeholder="Search student # / name / email..."
-                      className="w-full rounded-xl border border-black/10 bg-white px-10 py-2 text-sm outline-none focus:ring-2 focus:ring-[#C9A227]/40"
-                    />
-                  </div>
-                </div>
+              <div>
+                <span className="font-semibold">Term:</span>{" "}
+                <span className="font-bold text-black/70">
+                  {selectedSlot?.terms?.term_code || "—"}
+                </span>
               </div>
-
-              <div className="mt-4 overflow-hidden rounded-2xl border border-black/10">
-                <table className="w-full text-left text-sm">
-                  <thead className="bg-black/[0.02] text-xs text-black/60">
-                    <tr>
-                      <th className="px-4 py-3 font-semibold">Select</th>
-                      <th className="px-4 py-3 font-semibold">Student #</th>
-                      <th className="px-4 py-3 font-semibold">Name</th>
-                      <th className="px-4 py-3 font-semibold">Email</th>
-                    </tr>
-                  </thead>
-
-                  <tbody>
-                    {filteredStudents.map((s) => {
-                      const id = String(s.id);
-                      const isChecked = selected.has(id);
-
-                      return (
-                        <tr key={id} className="border-t border-black/10 hover:bg-black/[0.01]">
-                          <td className="px-4 py-3">
-                            <input
-                              type="checkbox"
-                              checked={isChecked}
-                              onChange={() => toggleSelect(id)}
-                              className="h-4 w-4 accent-[#C9A227]"
-                            />
-                          </td>
-                          <td className="px-4 py-3 font-semibold">{s.student_number || "-"}</td>
-                          <td className="px-4 py-3">
-                            {`${s.last_name || ""}, ${s.first_name || ""}`.trim()}
-                          </td>
-                          <td className="px-4 py-3 text-black/70">{s.email || "-"}</td>
-                        </tr>
-                      );
-                    })}
-
-                    {filteredStudents.length === 0 ? (
-                      <tr>
-                        <td colSpan={4} className={`px-4 py-10 text-center text-sm ${UI.muted}`}>
-                          No students found.
-                        </td>
-                      </tr>
-                    ) : null}
-                  </tbody>
-                </table>
+              <div>
+                <span className="font-semibold">Schedule:</span>{" "}
+                <span className="font-bold text-black/70">
+                  {selectedSlot.day_of_week} • P{selectedSlot.period_no} (
+                  {fmtTime(selectedSlot.start_time)}-
+                  {fmtTime(selectedSlot.end_time)})
+                </span>
               </div>
-
-              {/* Actions */}
-              <div className="mt-4 flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-end">
-                <button
-                  type="button"
-                  onClick={clearSelection}
-                  disabled={selected.size === 0}
-                  className="inline-flex items-center justify-center gap-2 rounded-xl border border-black/10 bg-white px-4 py-2 text-sm font-extrabold hover:bg-black/[0.02] disabled:opacity-60"
-                >
-                  <X className="h-4 w-4" />
-                  Clear Selection
-                </button>
-
-                <button
-                  type="button"
-                  onClick={assignNow}
-                  disabled={selected.size === 0}
-                  className={`inline-flex items-center justify-center gap-2 rounded-xl px-4 py-2 text-sm font-extrabold text-black hover:opacity-95 disabled:opacity-60 ${UI.goldBg}`}
-                >
-                  <Send className="h-4 w-4" />
-                  Assign Now
-                </button>
+              <div>
+                <span className="font-semibold">Subject:</span>{" "}
+                <span className="font-bold text-black/70">
+                  {selectedSlot?.subjects?.subject_title ||
+                    selectedSlot?.subjects?.subject_code ||
+                    "—"}
+                </span>
               </div>
+            </div>
+          </div>
+        ) : null}
 
-              <div className="mt-3 text-[11px] text-black/55">
-                ⚠️ Note: Assignment insert logic is not yet connected because the assignment table schema was not provided.
-                If you paste your assignment table schema, I will wire the `insert()` immediately.
-              </div>
-            </CardBody>
-          </Card>
+        {/* Submit */}
+        <button
+          type="button"
+          onClick={submit}
+          disabled={!canSubmit}
+          className={`inline-flex w-full items-center justify-center gap-2 rounded-xl px-4 py-2 text-sm font-extrabold ${UI.goldBg} text-black hover:opacity-95 disabled:opacity-60`}
+        >
+          <CheckCircle2 className="h-4 w-4" />
+          Assign Lesson
+        </button>
+
+        <div className="text-xs text-black/45">
+          If you don’t see a section here, make sure:
+          <ul className="list-disc pl-5 mt-1 space-y-1">
+            <li>
+              You have a schedule slot assigned to you for the Active School
+              Year.
+            </li>
+            <li>
+              The section’s Grade/Track/Strand matches the lesson’s Grade/Track/Strand
+              (when set).
+            </li>
+          </ul>
         </div>
-      )}
+      </div>
     </div>
   );
 }

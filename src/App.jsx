@@ -113,7 +113,7 @@ export default function App() {
             <Route path="lessons" element={<TeacherLessons />} />
             <Route path="lesson-library" element={<LessonLibrary />} />
             <Route path="lesson-sampler" element={<LessonSampler />} />
-            <Route path="assign-lesson/:lessonId" element={<AssignLesson />} />
+            <Route path="assign-lesson" element={<AssignLesson />} />
             <Route path="classes" element={<TeacherClasses />} />
             <Route path="schedule" element={<TeacherSchedules />} />
             <Route path="announcements" element={<TeacherAnnouncements />} />
