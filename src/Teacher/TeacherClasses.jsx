@@ -12,9 +12,7 @@ import {
   X,
   ClipboardList,
   Megaphone,
-  BarChart3,
   Plus,
-  Save,
   RefreshCcw,
   AlertTriangle,
 } from "lucide-react";
@@ -171,8 +169,6 @@ export default function TeacherClasses() {
   const [activeSY, setActiveSY] = useState(null); // { sy_id, sy_code }
   const [termRow, setTermRow] = useState(null); // { term_id, term_code }
   const [classes, setClasses] = useState([]);
-
-  const days = useMemo(() => ["All", ...DAY_ORDER], []);
 
   // ---- Load active school year
   useEffect(() => {
@@ -441,10 +437,7 @@ export default function TeacherClasses() {
       >
         <div className="flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
           <div>
-            <div
-              className="text-sm font-extrabold"
-              style={{ color: BRAND.brown }}
-            >
+            <div className="text-sm font-extrabold" style={{ color: BRAND.brown }}>
               My Classes
             </div>
             <div className="text-xs font-semibold" style={{ color: BRAND.muted }}>
@@ -479,28 +472,9 @@ export default function TeacherClasses() {
             />
           </div>
 
-          <Select
-            value={grade}
-            onChange={setGrade}
-            icon={Filter}
-            options={grades}
-            label="Grade"
-          />
-          <Select
-            value={subject}
-            onChange={setSubject}
-            icon={Filter}
-            options={subjects}
-            label="Subject"
-          />
-          <Select
-            value={day}
-            onChange={setDay}
-            icon={Filter}
-            options={["All", ...DAY_ORDER]}
-            label="Day"
-          />
-
+          <Select value={grade} onChange={setGrade} icon={Filter} options={grades} label="Grade" />
+          <Select value={subject} onChange={setSubject} icon={Filter} options={subjects} label="Subject" />
+          <Select value={day} onChange={setDay} icon={Filter} options={["All", ...DAY_ORDER]} label="Day" />
           <Select
             value={termCode}
             onChange={setTermCode}
@@ -509,14 +483,7 @@ export default function TeacherClasses() {
             label="Term"
             renderOption={(v) => `Term: ${v}`}
           />
-
-          <Select
-            value={sort}
-            onChange={setSort}
-            icon={Filter}
-            options={["Name", "Schedule", "Student Count"]}
-            label="Sort"
-          />
+          <Select value={sort} onChange={setSort} icon={Filter} options={["Name", "Schedule", "Student Count"]} label="Sort" />
         </div>
       </motion.div>
 
@@ -526,32 +493,21 @@ export default function TeacherClasses() {
         style={{ borderColor: BRAND.stroke, boxShadow: BRAND.cardShadow }}
       >
         {!loading && filtered.length === 0 ? (
-          <div
-            className="rounded-3xl border p-6 text-center"
-            style={{ borderColor: BRAND.stroke }}
-          >
+          <div className="rounded-3xl border p-6 text-center" style={{ borderColor: BRAND.stroke }}>
             <div className="text-sm font-extrabold" style={{ color: BRAND.brown }}>
               No classes found
             </div>
             <div className="mt-2 text-sm" style={{ color: BRAND.muted }}>
-              Make sure teacher has rows in <code>section_schedules</code> for this
-              SY + Term.
+              Make sure teacher has rows in <code>section_schedules</code> for this SY + Term.
             </div>
           </div>
         ) : (
           <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-3">
             {filtered.map((c) => (
-              <div
-                key={c.id}
-                className="rounded-3xl border bg-white p-5 transition hover:-translate-y-[1px]"
-                style={{ borderColor: BRAND.stroke }}
-              >
+              <div key={c.id} className="rounded-3xl border bg-white p-5 transition hover:-translate-y-[1px]" style={{ borderColor: BRAND.stroke }}>
                 <div className="flex items-start justify-between gap-3">
                   <div>
-                    <div
-                      className="text-sm font-extrabold"
-                      style={{ color: BRAND.brown }}
-                    >
+                    <div className="text-sm font-extrabold" style={{ color: BRAND.brown }}>
                       {c.subject}
                     </div>
                     <div className="mt-1 text-xs font-semibold" style={{ color: BRAND.muted }}>
@@ -600,19 +556,8 @@ export default function TeacherClasses() {
         )}
       </motion.div>
 
-      <Modal
-        open={!!selected}
-        title={selected ? `${selected.subject} • ${selected.code}` : ""}
-        onClose={() => setSelected(null)}
-      >
-        {selected ? (
-          <ClassDetailsTabs
-            c={selected}
-            defaultTab={selected._openTab || "Overview"}
-            sy={activeSY}
-            term={termRow}
-          />
-        ) : null}
+      <Modal open={!!selected} title={selected ? `${selected.subject} • ${selected.code}` : ""} onClose={() => setSelected(null)}>
+        {selected ? <ClassDetailsTabs c={selected} defaultTab={selected._openTab || "Overview"} sy={activeSY} term={termRow} /> : null}
       </Modal>
     </div>
   );
@@ -621,13 +566,13 @@ export default function TeacherClasses() {
 function ClassDetailsTabs({ c, defaultTab, sy, term }) {
   const [tab, setTab] = useState(defaultTab || "Overview");
 
+  // ✅ Grades removed
   const tabs = [
     { key: "Overview", icon: ClipboardList },
     { key: "Students", icon: Users },
     { key: "Announcements", icon: Megaphone },
     { key: "Schedule", icon: CalendarDays },
     { key: "Lessons", icon: BookOpen },
-    { key: "Grades", icon: BarChart3 },
   ];
 
   useEffect(() => {
@@ -704,10 +649,8 @@ function ClassDetailsTabs({ c, defaultTab, sy, term }) {
             <AnnouncementsPanel c={c} sy={sy} term={term} />
           ) : tab === "Schedule" ? (
             <SchedulePanel c={c} />
-          ) : tab === "Lessons" ? (
-            <Placeholder title="Lessons" note="No lessons table wired yet." />
           ) : (
-            <Placeholder title="Grades" note="No grades table wired yet." />
+            <Placeholder title="Lessons" note="No lessons table wired yet." />
           )}
         </motion.div>
       </AnimatePresence>
@@ -728,26 +671,42 @@ function Placeholder({ title, note }) {
   );
 }
 
+// ✅ Overview WITHOUT internal IDs
 function OverviewPanel({ c, sy, term }) {
   return (
     <div className="space-y-3">
       <div className="text-sm font-extrabold" style={{ color: BRAND.brown }}>
         Overview
       </div>
-      <div className="text-sm font-semibold" style={{ color: BRAND.muted }}>
-        SY: <span style={{ color: BRAND.brown }}>{sy?.sy_code || "—"}</span> • Term:{" "}
-        <span style={{ color: BRAND.brown }}>{term?.term_code || "—"}</span>
-      </div>
 
       <div className="rounded-2xl border p-4" style={{ borderColor: BRAND.stroke }}>
         <div className="text-xs font-extrabold" style={{ color: BRAND.brown }}>
-          Internal identifiers
+          Class information
         </div>
-        <div className="mt-2 text-xs font-semibold" style={{ color: BRAND.muted }}>
-          <div>section_id: {c._section_id}</div>
-          <div>subject_id: {c._subject_id}</div>
-          <div>term_id: {c._term_id}</div>
-          <div>sy_id: {c._sy_id}</div>
+
+        <div className="mt-2 grid gap-2 text-xs font-semibold" style={{ color: BRAND.muted }}>
+          <div>
+            School Year: <span style={{ color: BRAND.brown }}>{sy?.sy_code || "—"}</span>
+          </div>
+          <div>
+            Term: <span style={{ color: BRAND.brown }}>{term?.term_code || "—"}</span>
+          </div>
+          <div>
+            Subject: <span style={{ color: BRAND.brown }}>{c.subject || "—"}</span> ({c.code || "—"})
+          </div>
+          <div>
+            Section: <span style={{ color: BRAND.brown }}>{c.grade || "—"} {c.section || "—"}</span> • Strand:{" "}
+            <span style={{ color: BRAND.brown }}>{c.strand || "—"}</span>
+          </div>
+          <div>
+            Schedule: <span style={{ color: BRAND.brown }}>{c.schedule || "—"}</span>
+          </div>
+          <div>
+            Room: <span style={{ color: BRAND.brown }}>{c.room || "—"}</span>
+          </div>
+          <div>
+            Students: <span style={{ color: BRAND.brown }}>{c.students ?? 0}</span>
+          </div>
         </div>
       </div>
     </div>
@@ -816,10 +775,27 @@ function SchedulePanel({ c }) {
   );
 }
 
+/**
+ * ✅ StudentsPanel uses STUDENTS table name fields (no profiles query)
+ * Uses: last_name, first_name, middle_initial, extension
+ */
 function StudentsPanel({ c, sy }) {
   const [loading, setLoading] = useState(true);
   const [err, setErr] = useState("");
   const [rows, setRows] = useState([]);
+
+  function formatStudentName(s) {
+    const last = (s.last_name || "").trim();
+    const first = (s.first_name || "").trim();
+    const mi = (s.middle_initial || "").trim();
+    const ext = (s.extension || "").trim();
+
+    const miPart = mi ? ` ${mi}.` : "";
+    const extPart = ext ? ` ${ext}` : "";
+
+    if (!last && !first) return "—";
+    return `${last}, ${first}${miPart}${extPart}`;
+  }
 
   useEffect(() => {
     let alive = true;
@@ -832,10 +808,9 @@ function StudentsPanel({ c, sy }) {
         if (!sy?.sy_id) throw new Error("Missing active school year.");
         if (!c?._section_id) throw new Error("Missing section_id.");
 
-        // NOTE: if your students table has more fields, add them here.
         const { data, error } = await supabase
           .from("students")
-          .select("id, user_id, student_number, section_id, sy_id")
+          .select("id, student_number, first_name, last_name, middle_initial, extension, section_id, sy_id")
           .eq("sy_id", sy.sy_id)
           .eq("section_id", c._section_id)
           .order("student_number", { ascending: true });
@@ -890,7 +865,7 @@ function StudentsPanel({ c, sy }) {
                   Student #
                 </th>
                 <th className="px-4 py-3 font-extrabold" style={{ color: BRAND.brown }}>
-                  user_id
+                  Name
                 </th>
               </tr>
             </thead>
@@ -900,8 +875,8 @@ function StudentsPanel({ c, sy }) {
                   <td className="px-4 py-3 font-semibold" style={{ color: BRAND.muted }}>
                     {s.student_number || "—"}
                   </td>
-                  <td className="px-4 py-3 font-mono text-xs" style={{ color: BRAND.muted }}>
-                    {s.user_id}
+                  <td className="px-4 py-3 font-semibold" style={{ color: BRAND.muted }}>
+                    {formatStudentName(s)}
                   </td>
                 </tr>
               ))}
@@ -923,7 +898,7 @@ function AnnouncementsPanel({ c, sy, term }) {
     title: "",
     content: "",
     priority: "Medium",
-    target_audience: "Section Students", // default for class context
+    target_audience: "Section Students",
     status: "Published",
   });
 
@@ -945,8 +920,6 @@ function AnnouncementsPanel({ c, sy, term }) {
       const user = authData?.user;
       if (!user) throw new Error("Not authenticated.");
 
-      // Teacher's announcements for this class context
-      // - Scope: SY + term + section
       const { data, error } = await supabase
         .from("announcements")
         .select(
@@ -1007,7 +980,6 @@ function AnnouncementsPanel({ c, sy, term }) {
       if (!form.title.trim()) throw new Error("Title is required.");
       if (!form.content.trim()) throw new Error("Content is required.");
 
-      // ✅ IMPORTANT: set posted_by_role + posted_by_teacher_id so StudentAnnouncements can filter correctly
       const payload = {
         posted_by: user.id,
         posted_by_role: "teacher",
@@ -1023,9 +995,6 @@ function AnnouncementsPanel({ c, sy, term }) {
         sy_id: sy.sy_id,
         term_id: term.term_id,
 
-        // Class context:
-        // - Section Students: needs section_id
-        // - My Students: keep section_id null (optional)
         section_id: form.target_audience === "Section Students" ? c._section_id : null,
       };
 
@@ -1179,11 +1148,7 @@ function AnnouncementsPanel({ c, sy, term }) {
           </div>
         ) : (
           items.map((a) => (
-            <div
-              key={a.id}
-              className="rounded-3xl border bg-white p-4"
-              style={{ borderColor: BRAND.stroke }}
-            >
+            <div key={a.id} className="rounded-3xl border bg-white p-4" style={{ borderColor: BRAND.stroke }}>
               <div className="flex items-start justify-between gap-3">
                 <div>
                   <div className="text-sm font-extrabold" style={{ color: BRAND.brown }}>

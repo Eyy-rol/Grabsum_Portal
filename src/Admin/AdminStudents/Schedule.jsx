@@ -281,7 +281,11 @@ export default function SeniorHighScheduleAdminPage() {
 
   const activeSy = activeSyQ.data;
   const terms = termsQ.data ?? [];
-  const sections = sectionsQ.data ?? [];
+const sections = useMemo(
+  () => (sectionsQ.data ?? []).filter((s) => norm(s.section_name) !== "unclassified"),
+  [sectionsQ.data]
+);
+
   const subjects = subjectsQ.data ?? [];
   const teachers = teachersQ.data ?? [];
 
@@ -901,10 +905,7 @@ export default function SeniorHighScheduleAdminPage() {
 
   // ====== UI helpers ======
   const pageTitle = "Class Schedules";
-  const subtitle = canEditSchedule
-    ? "Create, modify, and manage schedules per section."
-    : "View schedules (view-only).";
-
+ 
   const metaChips = (
     <div className="flex flex-wrap items-center gap-2 text-xs">
       <Chip tone="muted">
@@ -930,7 +931,7 @@ export default function SeniorHighScheduleAdminPage() {
           <div className="flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
             <div className="space-y-1">
               <div className="text-lg font-extrabold">{pageTitle}</div>
-              <div className={`text-sm ${UI.muted}`}>Senior High School • {subtitle}</div>
+       
               <div className="pt-1">{metaChips}</div>
             </div>
 
@@ -1578,9 +1579,6 @@ export default function SeniorHighScheduleAdminPage() {
           </ModalShell>
         ) : null}
 
-        <div className={`pt-1 text-xs ${UI.muted}`}>
-          Tip: Keep DB uniqueness indexes (section slot / teacher slot / room slot) even after RLS. They’re your last line of defense against conflicts.
-        </div>
       </div>
     </div>
   );

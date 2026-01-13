@@ -30,13 +30,14 @@ import TeacherAnnouncements from "./Teacher/TeacherAnnouncements";
 import TeacherStudents from "./Teacher/TeacherStudents";
 import TeacherSettings from "./Teacher/TeacherSettings";
 
+
 import StudentLayout from "./layout/StudentLayout";
-import StudentDashboard from "./student/StudentDashboard";
-import StudentCourses from "./student/StudentCourses";
+import StudentDashboard from "./Student/StudentDashboard";
+import StudentCourses from "./Student/StudentCourses";
 import StudentSchedule from "./Student/StudentSchedule";
 import StudentAnnouncements from "./Student/StudentAnnouncements";
-import StudentProfile from "./student/StudentProfile";
-import StudentSettings from "./student/StudentSettings";
+import StudentProfile from "./Student/StudentProfile";
+
 
 import DevLayout from "./layout/DevLayout";
 import DevDashboard from "./dev/pages/Dashboard.jsx";
@@ -114,7 +115,7 @@ export default function App() {
             <Route path="schedule" element={<StudentSchedule />} />
             <Route path="announcements" element={<StudentAnnouncements />} />
             <Route path="profile" element={<StudentProfile />} />
-            <Route path="settings" element={<StudentSettings />} />
+           
 
             {/* ✅ student change password route */}
             <Route path="change-password" element={<ChangePassword />} />

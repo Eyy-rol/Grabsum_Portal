@@ -15,12 +15,13 @@ import {
   GraduationCap,
   CheckCircle2,
   Archive,
+  Eye,
+  KeyRound,
+  Copy,
 } from "lucide-react";
 import { z } from "zod";
 import { useForm } from "react-hook-form";
 import { zodResolver } from "@hookform/resolvers/zod";
-
-import ClassModal from "../../components/ClassModal";
 
 const EDGE_FN_NAME = "super-api";
 
@@ -36,13 +37,7 @@ const UI = {
 const STATUS = ["Pending", "Approved", "Rejected"];
 
 /**
- * ✅ Updated schema to match public.enrollment fields you want in pre-enroll:
- * - st_bplace
- * - st_previous_school
- * - st_father_name
- * - st_mother_name
- * - st_guardian_relationship
- * (and existing fields like grade_id/track_id/strand_id, sy_id optional)
+ * ✅ Updated schema to match public.enrollment fields
  */
 const enrollmentSchema = z.object({
   application_id: z.string().min(1, "Application ID is required").max(50),
@@ -93,6 +88,10 @@ function fullName(r) {
   return `${r.st_lname || ""}, ${r.st_fname || ""}${ext}${mi}`.trim();
 }
 
+function studentName(s) {
+  return `${s.last_name || ""}, ${s.first_name || ""}`.trim();
+}
+
 async function generateApplicationId() {
   const now = new Date();
   const mm = String(now.getMonth() + 1).padStart(2, "0");
@@ -120,23 +119,13 @@ async function generateApplicationId() {
   return `${prefix}${nn2}`;
 }
 
-async function copyCredentialsToClipboard({ student_number, temp_password }, toast) {
+async function copyTextToClipboard(text, toast) {
   try {
-    const text = `Student Number: ${student_number}\nTemporary Password: ${temp_password || "—"}`;
     await navigator.clipboard.writeText(text);
-
-    toast.push({
-      tone: "success",
-      title: "Copied to clipboard",
-      message: "Credentials copied successfully.",
-    });
+    toast.push({ tone: "success", title: "Copied", message: "Copied to clipboard." });
     return true;
   } catch (e) {
-    toast.push({
-      tone: "danger",
-      title: "Copy failed",
-      message: String(e?.message || e),
-    });
+    toast.push({ tone: "danger", title: "Copy failed", message: String(e?.message || e) });
     return false;
   }
 }
@@ -260,12 +249,16 @@ export default function Enrollment() {
   const [qName, setQName] = useState("");
   const [fTrack, setFTrack] = useState("All");
   const [fGrade, setFGrade] = useState("All");
+  const [fStrand, setFStrand] = useState("All");
 
   const [modal, setModal] = useState({ open: false, mode: "create", row: null });
 
-  // credentials modal
+  // ✅ access modal (credentials only — NO class mock)
   const [accessModalOpen, setAccessModalOpen] = useState(false);
   const [accessData, setAccessData] = useState(null);
+
+  // ✅ view student details modal
+  const [viewModal, setViewModal] = useState({ open: false, row: null });
 
   const tracksQ = useQuery({
     queryKey: ["tracks_lookup"],
@@ -314,39 +307,51 @@ export default function Enrollment() {
   });
 
   // ✅ Students (Enrolled tab) + profiles flags for Active/Archived scope
-const studentsQ = useQuery({
-  queryKey: ["students_with_profile"],
-  enabled: tab === "Enrolled",
-  queryFn: async () => {
-    const { data, error } = await supabase
-      .from("students")
-      .select(
-        `
-          *,
-          profiles (
-            user_id,
-            is_active,
-            is_archived
-          ),
-          enrollment (
-            id,
-            is_archived
-          )
-        `
-      )
-      .order("updated_at", { ascending: false });
+  const studentsQ = useQuery({
+    queryKey: ["students_with_profile"],
+    enabled: tab === "Enrolled",
+    queryFn: async () => {
+      const { data, error } = await supabase
+        .from("students")
+        .select(
+          `
+            *,
+            profiles (
+              user_id,
+              is_active,
+              is_archived
+            ),
+            enrollment (
+              id,
+              is_archived,
+              user_id,
+              grade_id,
+              track_id,
+              strand_id
+            )
+          `
+        )
+        .order("updated_at", { ascending: false });
 
-    if (error) throw error;
+      if (error) throw error;
 
-    return (data ?? []).map((s) => ({
-      ...s,
-      profile_is_active: s.profiles?.is_active ?? true,
-      profile_is_archived: s.profiles?.is_archived ?? false,
-      enrollment_is_archived: s.enrollment?.is_archived ?? false,
-    }));
-  },
-});
+      return (data ?? []).map((s) => {
+        const enr = Array.isArray(s.enrollment) ? s.enrollment[0] : s.enrollment;
 
+        return {
+          ...s,
+          // prefer enrolled student's own fields, fallback to enrollment relation if present
+          grade_id: s.grade_id ?? enr?.grade_id ?? null,
+          track_id: s.track_id ?? enr?.track_id ?? null,
+          strand_id: s.strand_id ?? enr?.strand_id ?? null,
+
+          profile_is_active: s.profiles?.is_active ?? true,
+          profile_is_archived: s.profiles?.is_archived ?? false,
+          enrollment_is_archived: enr?.is_archived ?? false,
+        };
+      });
+    },
+  });
 
   const enrollmentRows = enrollQ.data ?? [];
   const studentsRows = studentsQ.data ?? [];
@@ -363,8 +368,15 @@ const studentsQ = useQuery({
     return m;
   }, [gradesQ.data]);
 
+  const strandMap = useMemo(() => {
+    const m = new Map();
+    (strandsQ.data ?? []).forEach((s) => m.set(String(s.strand_id), s.strand_code));
+    return m;
+  }, [strandsQ.data]);
+
   /* ===================== Filters ===================== */
 
+  // Enrollment (Pending/Approved) filtering
   const baseFilteredEnrollment = useMemo(() => {
     const needle = qName.trim().toLowerCase();
 
@@ -372,8 +384,9 @@ const studentsQ = useQuery({
       .filter((r) => Boolean(r.is_archived) === (scope === "Archived"))
       .filter((r) => (needle ? fullName(r).toLowerCase().includes(needle) : true))
       .filter((r) => (fTrack === "All" ? true : String(r.track_id || "") === String(fTrack)))
-      .filter((r) => (fGrade === "All" ? true : String(r.grade_id || "") === String(fGrade)));
-  }, [enrollmentRows, qName, fTrack, fGrade, scope]);
+      .filter((r) => (fGrade === "All" ? true : String(r.grade_id || "") === String(fGrade)))
+      .filter((r) => (fStrand === "All" ? true : String(r.strand_id || "") === String(fStrand)));
+  }, [enrollmentRows, qName, fTrack, fGrade, fStrand, scope]);
 
   const pendingRows = useMemo(
     () => baseFilteredEnrollment.filter((r) => norm(r.st_application_status) === "pending"),
@@ -385,26 +398,24 @@ const studentsQ = useQuery({
     [baseFilteredEnrollment]
   );
 
+  // ✅ Enrolled filtering (NOW includes Grade + Strand)
   const filteredStudents = useMemo(() => {
-  const needle = qName.trim().toLowerCase();
+    const needle = qName.trim().toLowerCase();
 
-  return (studentsRows ?? [])
-    .filter((s) => {
-      // ✅ archived if:
-      // - profile archived OR profile inactive OR enrollment archived
-      const archived =
-        Boolean(s.profile_is_archived) ||
-        !Boolean(s.profile_is_active) ||
-        Boolean(s.enrollment_is_archived);
-
-      return archived === (scope === "Archived");
-    })
-    .filter((r) => {
-      if (!needle) return true;
-      const hay = `${r.student_number || ""} ${r.first_name || ""} ${r.last_name || ""} ${r.email || ""}`.toLowerCase();
-      return hay.includes(needle);
-    });
-}, [studentsRows, qName, scope]);
+    return (studentsRows ?? [])
+      .filter((s) => {
+        const archived =
+          Boolean(s.profile_is_archived) || !Boolean(s.profile_is_active) || Boolean(s.enrollment_is_archived);
+        return archived === (scope === "Archived");
+      })
+      .filter((s) => {
+        if (!needle) return true;
+        const hay = `${s.student_number || ""} ${s.first_name || ""} ${s.last_name || ""} ${s.email || ""}`.toLowerCase();
+        return hay.includes(needle);
+      })
+      .filter((s) => (fGrade === "All" ? true : String(s.grade_id || "") === String(fGrade)))
+      .filter((s) => (fStrand === "All" ? true : String(s.strand_id || "") === String(fStrand)));
+  }, [studentsRows, qName, scope, fGrade, fStrand]);
 
   /* ===================== Mutations ===================== */
 
@@ -469,14 +480,12 @@ const studentsQ = useQuery({
 
       if (error) throw new Error(error.message || "Enroll failed");
       if (!data?.student_number) throw new Error("No student_number returned");
-
       return data;
     },
     onSuccess: async (data) => {
       setAccessData({
         student_number: data.student_number,
         temp_password: data.temp_password || null,
-        class_info: { grade_level: "—", section: "—", adviser: "—", schedule: "—" },
       });
       setAccessModalOpen(true);
 
@@ -485,7 +494,8 @@ const studentsQ = useQuery({
 
       toast.push({ tone: "success", title: "Enrolled", message: "Student # generated successfully." });
 
-      await copyCredentialsToClipboard({ student_number: data.student_number, temp_password: data.temp_password }, toast);
+      const text = `Student Number: ${data.student_number}\nTemporary Password: ${data.temp_password || "—"}`;
+      await copyTextToClipboard(text, toast);
     },
     onError: (e) => toast.push({ tone: "danger", title: "Enroll failed", message: String(e?.message || e) }),
   });
@@ -503,7 +513,6 @@ const studentsQ = useQuery({
 
       if (e1) throw e1;
 
-      // if enrolled user exists, lock profile
       if (row.user_id) {
         const { error: e2 } = await supabase
           .from("profiles")
@@ -560,45 +569,43 @@ const studentsQ = useQuery({
   });
 
   // ✅ archive enrolled student directly (Enrolled tab)
-const archiveStudentM = useMutation({
-  mutationFn: async (stuRow) => {
-    const { data, error } = await supabase.functions.invoke(EDGE_FN_NAME, {
-      body: { action: "archive_student", student_id: stuRow.id },
-    });
+  const archiveStudentM = useMutation({
+    mutationFn: async (stuRow) => {
+      const { data, error } = await supabase.functions.invoke(EDGE_FN_NAME, {
+        body: { action: "archive_student", student_id: stuRow.id },
+      });
 
-    if (error) throw new Error(error.message || "Archive failed");
-    if (!data?.ok) throw new Error(data?.error || "Archive failed");
+      if (error) throw new Error(error.message || "Archive failed");
+      if (!data?.ok) throw new Error(data?.error || "Archive failed");
 
-    return true;
-  },
-  onSuccess: async () => {
-    await qc.invalidateQueries({ queryKey: ["students_with_profile"] });
-    await qc.invalidateQueries({ queryKey: ["enrollment"] });
-    toast.push({ tone: "success", title: "Archived", message: "Student moved to Archived and access disabled." });
-  },
-  onError: (e) => toast.push({ tone: "danger", title: "Archive failed", message: String(e?.message || e) }),
-});
+      return true;
+    },
+    onSuccess: async () => {
+      await qc.invalidateQueries({ queryKey: ["students_with_profile"] });
+      await qc.invalidateQueries({ queryKey: ["enrollment"] });
+      toast.push({ tone: "success", title: "Archived", message: "Student moved to Archived and access disabled." });
+    },
+    onError: (e) => toast.push({ tone: "danger", title: "Archive failed", message: String(e?.message || e) }),
+  });
 
+  const restoreStudentM = useMutation({
+    mutationFn: async (stuRow) => {
+      const { data, error } = await supabase.functions.invoke(EDGE_FN_NAME, {
+        body: { action: "restore_student", student_id: stuRow.id },
+      });
 
-const restoreStudentM = useMutation({
-  mutationFn: async (stuRow) => {
-    const { data, error } = await supabase.functions.invoke(EDGE_FN_NAME, {
-      body: { action: "restore_student", student_id: stuRow.id },
-    });
+      if (error) throw new Error(error.message || "Restore failed");
+      if (!data?.ok) throw new Error(data?.error || "Restore failed");
 
-    if (error) throw new Error(error.message || "Restore failed");
-    if (!data?.ok) throw new Error(data?.error || "Restore failed");
-
-    return true;
-  },
-  onSuccess: async () => {
-    await qc.invalidateQueries({ queryKey: ["students_with_profile"] });
-    await qc.invalidateQueries({ queryKey: ["enrollment"] });
-    toast.push({ tone: "success", title: "Restored", message: "Student access enabled." });
-  },
-  onError: (e) => toast.push({ tone: "danger", title: "Restore failed", message: String(e?.message || e) }),
-});
-
+      return true;
+    },
+    onSuccess: async () => {
+      await qc.invalidateQueries({ queryKey: ["students_with_profile"] });
+      await qc.invalidateQueries({ queryKey: ["enrollment"] });
+      toast.push({ tone: "success", title: "Restored", message: "Student access enabled." });
+    },
+    onError: (e) => toast.push({ tone: "danger", title: "Restore failed", message: String(e?.message || e) }),
+  });
 
   const resetPwdM = useMutation({
     mutationFn: async (stuRow) => {
@@ -617,13 +624,13 @@ const restoreStudentM = useMutation({
       setAccessData({
         student_number: data.student_number,
         temp_password: data.temp_password,
-        class_info: { grade_level: "—", section: "—", adviser: "—", schedule: "—" },
       });
       setAccessModalOpen(true);
 
       toast.push({ tone: "success", title: "Password reset", message: "Temporary password generated." });
 
-      await copyCredentialsToClipboard({ student_number: data.student_number, temp_password: data.temp_password }, toast);
+      const text = `Student Number: ${data.student_number}\nTemporary Password: ${data.temp_password || "—"}`;
+      await copyTextToClipboard(text, toast);
     },
     onError: (e) => toast.push({ tone: "danger", title: "Reset failed", message: String(e?.message || e) }),
   });
@@ -754,14 +761,31 @@ const restoreStudentM = useMutation({
 
   const shownEnrollmentRows = tab === "Pending" ? pendingRows : approvedRows;
 
+  // Strand options:
+  // - if track selected: show only strands under that track
+  // - else: show all
+  const strandOptions = useMemo(() => {
+    const all = strandsQ.data ?? [];
+    if (fTrack === "All") return all;
+    return all.filter((s) => String(s.track_id) === String(fTrack));
+  }, [strandsQ.data, fTrack]);
+
+  // When track changes, reset strand if it no longer fits
+  useEffect(() => {
+    if (fTrack === "All") return;
+    if (fStrand === "All") return;
+    const ok = (strandOptions ?? []).some((s) => String(s.strand_id) === String(fStrand));
+    if (!ok) setFStrand("All");
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [fTrack]);
+
   return (
     <div className={`${UI.pageBg} ${UI.text} space-y-4`}>
       <ToastHost toasts={toast.toasts} onDismiss={toast.dismiss} />
 
       <div className="flex flex-col gap-3 md:flex-row md:items-end md:justify-between">
         <div>
-          <div className="text-lg font-extrabold">Enrollment</div>
-          <div className={`text-sm ${UI.muted}`}>Pending → Approve → Approved → Enroll → Enrolled (Students).</div>
+          <div className="text-2xl font-extrabold">Enrollment</div>
         </div>
 
         {tab === "Pending" ? (
@@ -861,28 +885,11 @@ const restoreStudentM = useMutation({
             </div>
           </Field>
 
-          <Field label="Track (optional)">
-            <select
-              value={fTrack}
-              onChange={(e) => setFTrack(e.target.value)}
-              className="mt-1 w-full rounded-xl border border-black/10 bg-white px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-[#C9A227]/40"
-              disabled={tab === "Enrolled"}
-            >
-              <option value="All">All</option>
-              {(tracksQ.data ?? []).map((t) => (
-                <option key={t.track_id} value={t.track_id}>
-                  {t.track_code}
-                </option>
-              ))}
-            </select>
-          </Field>
-
-          <Field label="Grade (optional)">
+          <Field label="Grade Level (optional)">
             <select
               value={fGrade}
               onChange={(e) => setFGrade(e.target.value)}
               className="mt-1 w-full rounded-xl border border-black/10 bg-white px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-[#C9A227]/40"
-              disabled={tab === "Enrolled"}
             >
               <option value="All">All</option>
               {(gradesQ.data ?? []).map((g) => (
@@ -892,6 +899,39 @@ const restoreStudentM = useMutation({
               ))}
             </select>
           </Field>
+
+          <Field label="Strand (optional)">
+            <select
+              value={fStrand}
+              onChange={(e) => setFStrand(e.target.value)}
+              className="mt-1 w-full rounded-xl border border-black/10 bg-white px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-[#C9A227]/40"
+            >
+              <option value="All">All</option>
+              {strandOptions.map((s) => (
+                <option key={s.strand_id} value={s.strand_id}>
+                  {s.strand_code}
+                </option>
+              ))}
+            </select>
+          </Field>
+
+          {/* Keep Track filter available (optional) for narrowing strand list, but you can remove if you want */}
+          <div className="md:col-span-4">
+            <Field label="Track (optional — narrows Strand list)">
+              <select
+                value={fTrack}
+                onChange={(e) => setFTrack(e.target.value)}
+                className="mt-1 w-full rounded-xl border border-black/10 bg-white px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-[#C9A227]/40"
+              >
+                <option value="All">All</option>
+                {(tracksQ.data ?? []).map((t) => (
+                  <option key={t.track_id} value={t.track_id}>
+                    {t.track_code}
+                  </option>
+                ))}
+              </select>
+            </Field>
+          </div>
         </div>
       </div>
 
@@ -931,7 +971,7 @@ const restoreStudentM = useMutation({
                   <th className="px-4 py-3 font-semibold">Full Name</th>
                   <th className="px-4 py-3 font-semibold">Email</th>
                   <th className="px-4 py-3 font-semibold">Grade</th>
-                  <th className="px-4 py-3 font-semibold">Track</th>
+                  <th className="px-4 py-3 font-semibold">Strand</th>
                   <th className="px-4 py-3 font-semibold">Status</th>
                   <th className="px-4 py-3 font-semibold text-right">Actions</th>
                 </tr>
@@ -944,7 +984,7 @@ const restoreStudentM = useMutation({
                     <td className="px-4 py-3">{fullName(r)}</td>
                     <td className="px-4 py-3 text-black/70">{r.st_email || "-"}</td>
                     <td className="px-4 py-3 text-black/70">{gradeMap.get(String(r.grade_id || "")) || "-"}</td>
-                    <td className="px-4 py-3 text-black/70">{trackMap.get(String(r.track_id || "")) || "-"}</td>
+                    <td className="px-4 py-3 text-black/70">{strandMap.get(String(r.strand_id || "")) || "-"}</td>
                     <td className="px-4 py-3">
                       <StatusPill value={r.st_application_status || "Pending"} />
                     </td>
@@ -1027,6 +1067,8 @@ const restoreStudentM = useMutation({
                 <th className="px-4 py-3 font-semibold">Student #</th>
                 <th className="px-4 py-3 font-semibold">Name</th>
                 <th className="px-4 py-3 font-semibold">Email</th>
+                <th className="px-4 py-3 font-semibold">Grade</th>
+                <th className="px-4 py-3 font-semibold">Strand</th>
                 <th className="px-4 py-3 font-semibold text-right">Actions</th>
               </tr>
             </thead>
@@ -1034,57 +1076,48 @@ const restoreStudentM = useMutation({
               {filteredStudents.map((s) => (
                 <tr key={s.id} className="border-t border-black/10 hover:bg-black/[0.01]">
                   <td className="px-4 py-3 font-semibold">{s.student_number}</td>
-                  <td className="px-4 py-3">{`${s.last_name || ""}, ${s.first_name || ""}`.trim()}</td>
+                  <td className="px-4 py-3">{studentName(s)}</td>
                   <td className="px-4 py-3 text-black/70">{s.email || "-"}</td>
+                  <td className="px-4 py-3 text-black/70">{gradeMap.get(String(s.grade_id || "")) || "-"}</td>
+                  <td className="px-4 py-3 text-black/70">{strandMap.get(String(s.strand_id || "")) || "-"}</td>
+
                   <td className="px-4 py-3">
                     <div className="flex justify-end gap-2">
-                      <button
-                        type="button"
+                      {/* ✅ View details */}
+                      <IconBtn title="View details" onClick={() => setViewModal({ open: true, row: s })} tone="gold" disabled={busy}>
+                        <Eye className="h-5 w-5" />
+                      </IconBtn>
+
+                      {/* ✅ Show access (credentials only; no class mock) */}
+                      <IconBtn
+                        title="Show access"
                         onClick={() => {
                           setAccessData({
                             student_number: s.student_number,
                             temp_password: null,
-                            class_info: { grade_level: "—", section: "—", adviser: "—", schedule: "—" },
                           });
                           setAccessModalOpen(true);
                         }}
-                        className="rounded-xl px-4 py-2 text-sm font-extrabold bg-[#C9A227] text-black"
-                      >
-                        Show Access
-                      </button>
-
-                      <button
-                        type="button"
+                        tone="gold"
                         disabled={busy}
-                        onClick={() => resetPwdM.mutate(s)}
-                        className="inline-flex items-center gap-2 rounded-xl px-4 py-2 text-sm font-extrabold bg-rose-600 text-white disabled:opacity-60"
                       >
-                        <RefreshCcw className="h-4 w-4" />
-                        Reset
-                      </button>
+                        <KeyRound className="h-5 w-5" />
+                      </IconBtn>
 
+                      {/* ✅ Reset password (icon) */}
+                      <IconBtn title="Reset password" onClick={() => resetPwdM.mutate(s)} tone="danger" disabled={busy}>
+                        <RefreshCcw className="h-5 w-5" />
+                      </IconBtn>
+
+                      {/* ✅ Archive / Restore (icon) */}
                       {scope === "Active" ? (
-                        <button
-                          type="button"
-                          disabled={busy}
-                          onClick={() => onArchiveStudent(s)}
-                          className="inline-flex items-center gap-2 rounded-xl px-4 py-2 text-sm font-extrabold bg-black/5 text-black hover:bg-black/10 disabled:opacity-60"
-                          title="Archive (disable portal access)"
-                        >
-                          <Archive className="h-4 w-4" />
-                          Archive
-                        </button>
+                        <IconBtn title="Archive (disable access)" onClick={() => onArchiveStudent(s)} tone="danger" disabled={busy}>
+                          <Archive className="h-5 w-5" />
+                        </IconBtn>
                       ) : (
-                        <button
-                          type="button"
-                          disabled={busy}
-                          onClick={() => onRestoreStudent(s)}
-                          className="inline-flex items-center gap-2 rounded-xl px-4 py-2 text-sm font-extrabold bg-[#C9A227] text-black disabled:opacity-60"
-                          title="Restore (enable portal access)"
-                        >
-                          <ArchiveRestore className="h-4 w-4" />
-                          Restore
-                        </button>
+                        <IconBtn title="Restore (enable access)" onClick={() => onRestoreStudent(s)} tone="gold" disabled={busy}>
+                          <ArchiveRestore className="h-5 w-5" />
+                        </IconBtn>
                       )}
                     </div>
                   </td>
@@ -1093,7 +1126,7 @@ const restoreStudentM = useMutation({
 
               {filteredStudents.length === 0 ? (
                 <tr>
-                  <td colSpan={4} className={`px-4 py-10 text-center text-sm ${UI.muted}`}>
+                  <td colSpan={6} className={`px-4 py-10 text-center text-sm ${UI.muted}`}>
                     No enrolled students found.
                   </td>
                 </tr>
@@ -1120,7 +1153,25 @@ const restoreStudentM = useMutation({
         />
       ) : null}
 
-      <ClassModal open={accessModalOpen} onClose={() => setAccessModalOpen(false)} data={accessData} title="Student Login + Class" />
+      {/* ✅ Credentials-only modal (no class info mock) */}
+      <AccessModal
+        open={accessModalOpen}
+        data={accessData}
+        onClose={() => setAccessModalOpen(false)}
+        onCopy={async () => {
+          const txt = `Student Number: ${accessData?.student_number || "—"}\nTemporary Password: ${accessData?.temp_password || "—"}`;
+          await copyTextToClipboard(txt, toast);
+        }}
+      />
+
+      {/* ✅ Student Details modal */}
+      <StudentDetailsModal
+        open={viewModal.open}
+        row={viewModal.row}
+        gradeLabel={gradeMap.get(String(viewModal.row?.grade_id || "")) || "—"}
+        strandLabel={strandMap.get(String(viewModal.row?.strand_id || "")) || "—"}
+        onClose={() => setViewModal({ open: false, row: null })}
+      />
     </div>
   );
 }
@@ -1191,11 +1242,7 @@ function StudentModal({ mode, row, tracks, grades, strands, onClose, onCreate, o
     form.setValue("strand_id", "");
   }, [trackId]); // eslint-disable-line react-hooks/exhaustive-deps
 
-  /**
-   * ✅ LRN checker (fixed):
-   * - Only checks public.enrollment (because public.students does not have lrn column in your schema)
-   * - Matches your partial unique index behavior by checking only active (is_archived=false) records
-   */
+  // ✅ LRN checker
   const [lrnState, setLrnState] = useState({ checking: false, exists: false, message: "" });
   const lrn = watch("st_lrn");
   const originalLrn = row?.st_lrn || "";
@@ -1358,7 +1405,6 @@ function StudentModal({ mode, row, tracks, grades, strands, onClose, onCreate, o
               </div>
             </Section>
 
-            {/* ✅ Added: match pre-enroll fields from public.enrollment */}
             <Section title="School Background (optional)">
               <div className="grid gap-3 md:grid-cols-1">
                 <Input label="Previous School" error={errors.st_previous_school?.message} {...register("st_previous_school")} />
@@ -1373,16 +1419,8 @@ function StudentModal({ mode, row, tracks, grades, strands, onClose, onCreate, o
 
               <div className="mt-3 grid gap-3 md:grid-cols-3">
                 <Input label="Guardian Name" error={errors.st_guardian_name?.message} {...register("st_guardian_name")} />
-                <Input
-                  label="Guardian Contact"
-                  error={errors.st_guardian_contact?.message}
-                  {...register("st_guardian_contact")}
-                />
-                <Input
-                  label="Relationship"
-                  error={errors.st_guardian_relationship?.message}
-                  {...register("st_guardian_relationship")}
-                />
+                <Input label="Guardian Contact" error={errors.st_guardian_contact?.message} {...register("st_guardian_contact")} />
+                <Input label="Relationship" error={errors.st_guardian_relationship?.message} {...register("st_guardian_relationship")} />
               </div>
             </Section>
 
@@ -1429,7 +1467,15 @@ function StudentModal({ mode, row, tracks, grades, strands, onClose, onCreate, o
                 disabled={submitDisabled}
                 type="submit"
                 className="inline-flex items-center gap-2 rounded-xl px-4 py-2 text-sm font-extrabold bg-[#C9A227] text-black hover:opacity-95 disabled:opacity-60"
-                title={lrnState.exists ? "LRN already exists" : lrnState.checking ? "Checking LRN..." : !isValid ? "Fill required fields" : ""}
+                title={
+                  lrnState.exists
+                    ? "LRN already exists"
+                    : lrnState.checking
+                    ? "Checking LRN..."
+                    : !isValid
+                    ? "Fill required fields"
+                    : ""
+                }
               >
                 <Save className="h-4 w-4" />
                 {isEdit ? "Save Changes" : "Create"}
@@ -1439,6 +1485,115 @@ function StudentModal({ mode, row, tracks, grades, strands, onClose, onCreate, o
         </div>
       </div>
     </>
+  );
+}
+
+/* ================= Modals ================= */
+
+function AccessModal({ open, data, onClose, onCopy }) {
+  if (!open) return null;
+
+  return (
+    <>
+      <div className="fixed inset-0 z-40 bg-black/20 backdrop-blur-sm" onClick={onClose} />
+      <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
+        <div className="w-full max-w-md rounded-2xl border border-black/10 bg-white shadow-xl">
+          <div className="flex items-start justify-between gap-4 border-b border-black/10 p-4">
+            <div>
+              <div className="text-base font-extrabold">Student Access</div>
+              <div className="text-xs text-black/60">Credentials only (no class info shown).</div>
+            </div>
+            <button onClick={onClose} className="grid h-9 w-9 place-items-center rounded-xl hover:bg-black/5" type="button">
+              <X className="h-5 w-5 text-black/60" />
+            </button>
+          </div>
+
+          <div className="p-4 space-y-3">
+            <div className="rounded-xl border border-black/10 bg-black/[0.02] p-3">
+              <div className="text-xs font-semibold text-black/60">Student Number</div>
+              <div className="mt-1 text-sm font-extrabold text-black">{data?.student_number || "—"}</div>
+            </div>
+
+            <div className="rounded-xl border border-black/10 bg-black/[0.02] p-3">
+              <div className="text-xs font-semibold text-black/60">Temporary Password</div>
+              <div className="mt-1 text-sm font-extrabold text-black">{data?.temp_password || "—"}</div>
+              <div className="mt-1 text-[11px] text-black/55">
+                (If blank, use Reset icon to generate a temporary password.)
+              </div>
+            </div>
+
+            <div className="flex justify-end gap-2">
+              <button
+                type="button"
+                onClick={onCopy}
+                className="inline-flex items-center gap-2 rounded-xl border border-black/10 bg-white px-4 py-2 text-sm font-extrabold hover:bg-black/[0.02]"
+              >
+                <Copy className="h-4 w-4" />
+                Copy
+              </button>
+              <button
+                type="button"
+                onClick={onClose}
+                className="inline-flex items-center gap-2 rounded-xl bg-[#C9A227] px-4 py-2 text-sm font-extrabold text-black hover:opacity-95"
+              >
+                Close
+              </button>
+            </div>
+          </div>
+        </div>
+      </div>
+    </>
+  );
+}
+
+function StudentDetailsModal({ open, row, gradeLabel, strandLabel, onClose }) {
+  if (!open || !row) return null;
+
+  return (
+    <>
+      <div className="fixed inset-0 z-40 bg-black/20 backdrop-blur-sm" onClick={onClose} />
+      <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
+        <div className="w-full max-w-2xl rounded-2xl border border-black/10 bg-white shadow-xl">
+          <div className="flex items-start justify-between gap-4 border-b border-black/10 p-4">
+            <div>
+              <div className="text-base font-extrabold">Student Details</div>
+              <div className="text-xs text-black/60">{row.student_number || "—"}</div>
+            </div>
+            <button onClick={onClose} className="grid h-9 w-9 place-items-center rounded-xl hover:bg-black/5" type="button">
+              <X className="h-5 w-5 text-black/60" />
+            </button>
+          </div>
+
+          <div className="p-4 grid gap-3 md:grid-cols-2">
+            <Info label="Name" value={`${row.last_name || ""}, ${row.first_name || ""}`.trim()} />
+            <Info label="Email" value={row.email || "—"} />
+            <Info label="Grade Level" value={gradeLabel} />
+            <Info label="Strand" value={strandLabel} />
+            <Info label="User ID" value={row.user_id || "—"} mono />
+            <Info label="Student ID" value={String(row.id)} mono />
+          </div>
+
+          <div className="flex justify-end gap-2 border-t border-black/10 p-4">
+            <button
+              type="button"
+              onClick={onClose}
+              className="rounded-xl bg-[#C9A227] px-4 py-2 text-sm font-extrabold text-black hover:opacity-95"
+            >
+              Close
+            </button>
+          </div>
+        </div>
+      </div>
+    </>
+  );
+}
+
+function Info({ label, value, mono }) {
+  return (
+    <div className="rounded-xl border border-black/10 bg-white p-3">
+      <div className="text-xs font-semibold text-black/55">{label}</div>
+      <div className={`mt-1 text-sm font-extrabold text-black ${mono ? "font-mono text-xs" : ""}`}>{value}</div>
+    </div>
   );
 }
 
@@ -1494,7 +1649,9 @@ function Select({ label, error, children, disabled, ...rest }) {
 
 function IconBtn({ title, onClick, tone, disabled, children }) {
   const cls =
-    tone === "danger" ? "bg-rose-500/10 text-rose-700 hover:bg-rose-500/15" : "bg-[#C9A227]/10 text-[#C9A227] hover:opacity-90";
+    tone === "danger"
+      ? "bg-rose-500/10 text-rose-700 hover:bg-rose-500/15"
+      : "bg-[#C9A227]/10 text-[#6B4E2E] hover:opacity-90";
 
   return (
     <button

@@ -1,4 +1,7 @@
-import React, { useMemo, useState } from "react";
+// src/dev/pages/AuditReports.jsx
+import React, { useEffect, useMemo, useState } from "react";
+import { supabase } from "../../lib/supabaseClient";
+import { getMyProfile } from "../../lib/portalCtx";
 
 function cn(...xs) {
   return xs.filter(Boolean).join(" ");
@@ -71,103 +74,154 @@ function Table({ columns, rows }) {
   );
 }
 
-const REPORTS = [
-  {
-    id: "user_access",
-    title: "User Access Report",
-    desc: "Logins, role changes, security events, and account status.",
-    tone: "info",
-  },
-  {
-    id: "role_changes",
-    title: "Role Changes Report",
-    desc: "Who changed roles, when, and to what.",
-    tone: "warning",
-  },
-  {
-    id: "security_events",
-    title: "Security Events Report",
-    desc: "Failed logins, lockouts, policy updates, suspicious activity.",
-    tone: "danger",
-  },
-  {
-    id: "data_integrity",
-    title: "Data Integrity Check",
-    desc: "Missing profiles, orphaned records, consistency checks.",
-    tone: "success",
-  },
-];
+function statusTone(s) {
+  if (s === "ready") return "success";
+  if (s === "running") return "info";
+  if (s === "failed") return "danger";
+  return "neutral";
+}
+
+function rangeLabel(k) {
+  if (k === "today") return "Today";
+  if (k === "7d") return "Last 7 days";
+  if (k === "30d") return "Last 30 days";
+  return k;
+}
 
 export default function AuditReports() {
-  const [selected, setSelected] = useState("user_access");
+  const [reports, setReports] = useState([]); // from DB
+  const [selected, setSelected] = useState(null);
+
   const [range, setRange] = useState("7d");
   const [format, setFormat] = useState("pdf");
-  const [includePII, setIncludePII] = useState(false);
+
+  const [recent, setRecent] = useState([]);
   const [saving, setSaving] = useState(false);
+  const [loading, setLoading] = useState(true);
+  const [errMsg, setErrMsg] = useState("");
 
-  // UI-only “recent generated reports”
-  const [recent, setRecent] = useState(() => [
-    {
-      id: "r1",
-      name: "Role Changes Report",
-      range: "Today",
-      created_at: "2025-12-29 09:35",
-      status: "ready",
-      format: "csv",
-    },
-    {
-      id: "r2",
-      name: "Security Events Report",
-      range: "Last 7 days",
-      created_at: "2025-12-28 18:10",
-      status: "ready",
-      format: "pdf",
-    },
-  ]);
+  const reportMeta = useMemo(() => reports.find((r) => r.code === selected), [reports, selected]);
 
-  const reportMeta = useMemo(() => REPORTS.find((r) => r.id === selected), [selected]);
+  async function ensureDev() {
+    const { profile } = await getMyProfile();
+    const role = String(profile?.role || "").toLowerCase();
+    if (!["dev", "super_admin"].includes(role)) throw new Error("Forbidden: dev/super_admin only");
+  }
+
+  async function load() {
+    setLoading(true);
+    setErrMsg("");
+
+    try {
+      await ensureDev();
+
+      const [r1, r2] = await Promise.all([
+        supabase.rpc("dev_list_reports"),
+        supabase.rpc("dev_recent_report_runs", { p_limit: 20 }),
+      ]);
+
+      if (r1.error) throw r1.error;
+      if (r2.error) throw r2.error;
+
+      const defs = Array.isArray(r1.data) ? r1.data : [];
+      setReports(defs);
+
+      if (!selected && defs.length) setSelected(defs[0].code);
+
+      const runs = (Array.isArray(r2.data) ? r2.data : []).map((x) => ({
+        id: x.id,
+        created_at: x.created_at ? new Date(x.created_at).toLocaleString() : "—",
+        report_code: x.report_code,
+        range: rangeLabel(x.range_key),
+        format: String(x.format || "").toUpperCase(),
+        status: x.status || "—",
+        row_count: x.row_count ?? null,
+        file_url: x.file_url || "",
+      }));
+
+      setRecent(runs);
+    } catch (e) {
+      setErrMsg(String(e?.message || e));
+      setReports([]);
+      setRecent([]);
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  useEffect(() => {
+    load();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   async function generate() {
     setSaving(true);
+    setErrMsg("");
 
-    // UI-only: simulate generation
-    setTimeout(() => {
-      setRecent((prev) => [
-        {
-          id: "r" + (prev.length + 1),
-          name: reportMeta?.title ?? "Report",
-          range: range === "today" ? "Today" : range === "7d" ? "Last 7 days" : "Last 30 days",
-          created_at: new Date().toISOString().slice(0, 16).replace("T", " "),
-          status: "ready",
-          format,
-        },
-        ...prev,
-      ]);
+    try {
+      await ensureDev();
+      if (!selected) throw new Error("Select a report");
+
+      const { data, error } = await supabase.rpc("dev_generate_report", {
+        p_report_code: selected,
+        p_range_key: range,
+        p_format: format,
+      });
+
+      if (error) throw error;
+
+      // reload recent runs after generation
+      await load();
+      return data;
+    } catch (e) {
+      setErrMsg(String(e?.message || e));
+    } finally {
       setSaving(false);
-    }, 800);
-  }
-
-  function statusTone(s) {
-    if (s === "ready") return "success";
-    if (s === "running") return "info";
-    return "neutral";
+    }
   }
 
   const columns = [
     { key: "created_at", label: "Created" },
-    { key: "name", label: "Report" },
-    { key: "range", label: "Range" },
-    { key: "format", label: "Format", render: (r) => <Badge tone="neutral">{String(r.format).toUpperCase()}</Badge> },
+    {
+      key: "report_code",
+      label: "Report",
+      render: (r) => {
+        const def = reports.find((x) => x.code === r.report_code);
+        return (
+          <div className="leading-tight">
+            <div className="font-semibold">{def?.title || r.report_code}</div>
+            <div className="text-xs text-black/45">{r.range}</div>
+          </div>
+        );
+      },
+    },
+    { key: "format", label: "Format", render: (r) => <Badge tone="neutral">{r.format}</Badge> },
     { key: "status", label: "Status", render: (r) => <Badge tone={statusTone(r.status)}>{r.status}</Badge> },
     {
       key: "actions",
       label: "",
-      render: () => (
-        <div className="flex gap-2">
-          <button className="rounded-2xl border border-black/10 bg-white px-4 py-2 text-xs font-semibold hover:bg-black/5">
+      render: (r) => (
+        <div className="flex gap-2 justify-end">
+          <button
+            type="button"
+            disabled={!r.file_url}
+            onClick={() => {
+              if (!r.file_url) return;
+              window.open(r.file_url, "_blank", "noopener,noreferrer");
+            }}
+            className={cn(
+              "rounded-2xl border px-4 py-2 text-xs font-semibold",
+              r.file_url ? "border-black/10 bg-white hover:bg-black/5" : "border-black/10 bg-black/5 text-black/40"
+            )}
+          >
             Download
           </button>
-          <button className="rounded-2xl border border-black/10 bg-[#fafafa] px-4 py-2 text-xs font-semibold hover:bg-black/5">
+
+          <button
+            type="button"
+            onClick={() => alert("Viewer: wire to a safe preview endpoint later.")}
+            className="rounded-2xl border border-black/10 bg-[#fafafa] px-4 py-2 text-xs font-semibold hover:bg-black/5"
+          >
             View
           </button>
         </div>
@@ -179,112 +233,130 @@ export default function AuditReports() {
     <div className="space-y-4">
       <Card
         title="Audit & Reports"
-        subtitle="Generate compliance and operational reports. (UI only)"
-        right={<Badge tone="info">Tracked</Badge>}
+        subtitle="Dev-safe reports (anonymized). No PII export is allowed on Dev."
+        right={<Badge tone="info">Dev-safe</Badge>}
       >
-        <div className="grid gap-4 lg:grid-cols-3">
-          {/* Left: report picker */}
-          <div className="lg:col-span-1">
-            <div className="rounded-[22px] border border-black/10 bg-[#fafafa] p-4">
-              <div className="text-xs font-semibold text-black/60">Report Types</div>
-              <div className="mt-3 space-y-2">
-                {REPORTS.map((r) => (
-                  <button
-                    key={r.id}
-                    onClick={() => setSelected(r.id)}
-                    className={cn(
-                      "w-full rounded-2xl border px-4 py-3 text-left transition",
-                      selected === r.id
-                        ? "border-black/15 bg-white"
-                        : "border-black/10 bg-[#fafafa] hover:bg-black/5"
-                    )}
-                  >
-                    <div className="flex items-center justify-between gap-2">
-                      <div className="text-sm font-semibold">{r.title}</div>
-                      <Badge tone={r.tone}>{r.tone}</Badge>
+        {errMsg ? (
+          <div className="mb-4 rounded-xl border border-rose-200 bg-rose-50 px-3 py-2 text-xs font-semibold text-rose-800">
+            {errMsg}
+          </div>
+        ) : null}
+
+        {loading ? (
+          <div className="rounded-2xl border border-black/10 bg-white p-5 text-sm font-semibold text-black/60">
+            Loading…
+          </div>
+        ) : (
+          <div className="grid gap-4 lg:grid-cols-3">
+            {/* Left: report picker */}
+            <div className="lg:col-span-1">
+              <div className="rounded-[22px] border border-black/10 bg-[#fafafa] p-4">
+                <div className="text-xs font-semibold text-black/60">Report Types</div>
+                <div className="mt-3 space-y-2">
+                  {reports.map((r) => (
+                    <button
+                      key={r.code}
+                      onClick={() => setSelected(r.code)}
+                      className={cn(
+                        "w-full rounded-2xl border px-4 py-3 text-left transition",
+                        selected === r.code ? "border-black/15 bg-white" : "border-black/10 bg-[#fafafa] hover:bg-black/5"
+                      )}
+                    >
+                      <div className="flex items-center justify-between gap-2">
+                        <div className="text-sm font-semibold">{r.title}</div>
+                        <Badge tone={r.tone || "neutral"}>{r.tone || "info"}</Badge>
+                      </div>
+                      <div className="mt-1 text-xs text-black/50">{r.description}</div>
+                    </button>
+                  ))}
+                  {reports.length === 0 ? (
+                    <div className="rounded-2xl border border-black/10 bg-white p-4 text-sm text-black/50">
+                      No enabled report definitions.
                     </div>
-                    <div className="mt-1 text-xs text-black/50">{r.desc}</div>
-                  </button>
-                ))}
+                  ) : null}
+                </div>
               </div>
             </div>
-          </div>
 
-          {/* Right: generator + recent */}
-          <div className="lg:col-span-2 space-y-4">
-            <Card
-              title="Generate Report"
-              subtitle={reportMeta?.desc}
-              right={<Badge tone={reportMeta?.tone ?? "neutral"}>{reportMeta?.title ?? "Report"}</Badge>}
-            >
-              <div className="grid gap-3 md:grid-cols-3">
-                <div>
-                  <div className="text-xs font-semibold text-black/60">Range</div>
-                  <select
-                    value={range}
-                    onChange={(e) => setRange(e.target.value)}
-                    className="mt-1 w-full rounded-2xl border border-black/10 bg-[#fafafa] px-4 py-2 text-sm outline-none"
-                  >
-                    <option value="today">Today</option>
-                    <option value="7d">Last 7 days</option>
-                    <option value="30d">Last 30 days</option>
-                  </select>
-                </div>
-
-                <div>
-                  <div className="text-xs font-semibold text-black/60">Format</div>
-                  <select
-                    value={format}
-                    onChange={(e) => setFormat(e.target.value)}
-                    className="mt-1 w-full rounded-2xl border border-black/10 bg-[#fafafa] px-4 py-2 text-sm outline-none"
-                  >
-                    <option value="pdf">PDF</option>
-                    <option value="csv">CSV</option>
-                    <option value="xlsx">XLSX</option>
-                  </select>
-                </div>
-
-                <div className="flex items-end">
-                  <button
-                    onClick={generate}
-                    disabled={saving}
-                    className={cn(
-                      "w-full rounded-2xl px-4 py-2 text-xs font-semibold",
-                      saving ? "bg-black/10 text-black/50" : "bg-[#e7aa2f] text-black hover:opacity-90"
-                    )}
-                  >
-                    {saving ? "Generating…" : "Generate"}
-                  </button>
-                </div>
-              </div>
-
-              <div className="mt-4 rounded-[22px] border border-black/10 bg-[#fff3da] p-4">
-                <div className="flex items-center justify-between gap-3">
+            {/* Right: generator + recent */}
+            <div className="lg:col-span-2 space-y-4">
+              <Card
+                title="Generate Report"
+                subtitle={reportMeta?.description}
+                right={<Badge tone={reportMeta?.tone || "neutral"}>{reportMeta?.title || "Report"}</Badge>}
+              >
+                <div className="grid gap-3 md:grid-cols-3">
                   <div>
-                    <div className="text-sm font-semibold">PII / Sensitive data</div>
-                    <div className="text-xs text-black/50">
-                      Keep OFF unless required (protect student personal information).
-                    </div>
+                    <div className="text-xs font-semibold text-black/60">Range</div>
+                    <select
+                      value={range}
+                      onChange={(e) => setRange(e.target.value)}
+                      className="mt-1 w-full rounded-2xl border border-black/10 bg-[#fafafa] px-4 py-2 text-sm outline-none"
+                    >
+                      <option value="today">Today</option>
+                      <option value="7d">Last 7 days</option>
+                      <option value="30d">Last 30 days</option>
+                    </select>
                   </div>
-                  <button
-                    type="button"
-                    onClick={() => setIncludePII((v) => !v)}
-                    className={cn(
-                      "rounded-full px-4 py-2 text-xs font-semibold border",
-                      includePII ? "bg-black text-white border-black" : "bg-white border-black/10"
-                    )}
-                  >
-                    {includePII ? "Include PII" : "Exclude PII"}
-                  </button>
-                </div>
-              </div>
-            </Card>
 
-            <Card title="Recent Reports" subtitle="Generated outputs (UI only).">
-              <Table columns={columns} rows={recent} />
-            </Card>
+                  <div>
+                    <div className="text-xs font-semibold text-black/60">Format</div>
+                    <select
+                      value={format}
+                      onChange={(e) => setFormat(e.target.value)}
+                      className="mt-1 w-full rounded-2xl border border-black/10 bg-[#fafafa] px-4 py-2 text-sm outline-none"
+                    >
+                      <option value="pdf">PDF</option>
+                      <option value="csv">CSV</option>
+                      <option value="xlsx">XLSX</option>
+                    </select>
+                  </div>
+
+                  <div className="flex items-end">
+                    <button
+                      onClick={generate}
+                      disabled={saving || !selected}
+                      className={cn(
+                        "w-full rounded-2xl px-4 py-2 text-xs font-semibold",
+                        saving || !selected ? "bg-black/10 text-black/50" : "bg-[#e7aa2f] text-black hover:opacity-90"
+                      )}
+                    >
+                      {saving ? "Generating…" : "Generate"}
+                    </button>
+                  </div>
+                </div>
+
+                {/* Dev policy notice */}
+                <div className="mt-4 rounded-[22px] border border-black/10 bg-[#eaf2ff] p-4">
+                  <div className="flex items-start justify-between gap-3">
+                    <div>
+                      <div className="text-sm font-semibold">PII is disabled on Dev</div>
+                      <div className="text-xs text-black/50">
+                        Dev reports are anonymized/system-only. For PII exports, use Admin/Super Admin tools with explicit access.
+                      </div>
+                    </div>
+                    <Badge tone="info">Enforced</Badge>
+                  </div>
+                </div>
+              </Card>
+
+              <Card
+                title="Recent Reports"
+                subtitle="System run history (safe metadata)."
+                right={
+                  <button
+                    onClick={load}
+                    className="rounded-2xl border border-black/10 bg-[#fafafa] px-4 py-2 text-xs font-semibold hover:bg-black/5"
+                  >
+                    Refresh
+                  </button>
+                }
+              >
+                <Table columns={columns} rows={recent} />
+              </Card>
+            </div>
           </div>
-        </div>
+        )}
       </Card>
     </div>
   );

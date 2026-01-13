@@ -1,8 +1,8 @@
 // src/pages/student/StudentProfile.jsx
 import React, { useEffect, useMemo, useState } from "react";
 import { motion } from "framer-motion";
-import { Camera, Mail, Phone, MapPin, User, Shield, Save } from "lucide-react";
-import { supabase } from "../lib/supabaseClient"; // ✅ adjust if needed
+import { Mail, MapPin, User, Save } from "lucide-react";
+import { supabase } from "../lib/supabaseClient";
 
 const BRAND = {
   brown: "#2b1a12",
@@ -18,22 +18,31 @@ function safeStr(x) {
   return x == null ? "" : String(x);
 }
 
+function buildNameFromEnrollment(enr) {
+  if (!enr) return "";
+  const fn = safeStr(enr.st_fname).trim();
+  const mi = safeStr(enr.st_mi).trim();
+  const ln = safeStr(enr.st_lname).trim();
+  const ext = safeStr(enr.st_ext).trim();
+  return [fn, mi ? `${mi}.` : "", ln, ext].filter(Boolean).join(" ").replace(/\s+/g, " ").trim();
+}
+
 export default function StudentProfile() {
   const initial = useMemo(
     () => ({
+      // display-only
       studentId: "",
-      fullName: "",
       gradeLevel: "—",
-      section: "—",
-      program: "—",
+      track: "—",
+      strand: "—",
+      // editable
+      fullName: "",
       email: "",
       address: "",
       guardianName: "",
       guardianContact: "",
-      // internal ids
-      _user_id: "",
+      // internal (minimal)
       _enrollment_id: null,
-      _status: null,
     }),
     []
   );
@@ -47,7 +56,6 @@ export default function StudentProfile() {
     setForm((s) => ({ ...s, [k]: v }));
   }
 
-  // ✅ LOAD from students + enrollment (+ optional profiles)
   useEffect(() => {
     let mounted = true;
 
@@ -56,146 +64,78 @@ export default function StudentProfile() {
       setErrMsg("");
 
       try {
-        // 1) Auth user
         const { data: authRes, error: authErr } = await supabase.auth.getUser();
         if (authErr) throw authErr;
         const user = authRes?.user;
         if (!user?.id) throw new Error("Not logged in.");
 
-        const user_id = user.id;
-
-        // 2) students row (primary source for student_number + email + academic ids)
-        const { data: stu, error: stuErr } = await supabase
-          .from("students")
-          .select(
-            "id, user_id, enrollment_id, student_number, email, first_name, last_name, middle_initial, extension, grade_id, track_id, strand_id, section_id, sy_id, status"
-          )
-          .eq("user_id", user_id)
+        // enrollment: latest non-archived for this user
+        const { data: enr, error: enrErr } = await supabase
+          .from("enrollment")
+          .select(`
+            id,
+            st_number,
+            st_email,
+            st_fname,
+            st_lname,
+            st_mi,
+            st_ext,
+            st_current_address,
+            st_guardian_name,
+            st_guardian_contact,
+            grade_id,
+            track_id,
+            strand_id,
+            is_archived
+          `)
+          .eq("user_id", user.id)
+          .eq("is_archived", false)
+          .order("created_at", { ascending: false })
+          .limit(1)
           .maybeSingle();
 
-        if (stuErr) throw stuErr;
-        if (!stu) throw new Error("Student record not found. Contact admin.");
+        if (enrErr) throw enrErr;
+        if (!enr) throw new Error("Enrollment record not found. Please contact the administrator.");
 
-        // 3) enrollment row (guardian + address usually lives here)
-        let enr = null;
-        if (stu.enrollment_id) {
-          const { data: enrRow, error: enrErr } = await supabase
-            .from("enrollment")
-            .select("id, st_current_address, st_guardian_name, st_guardian_contact")
-            .eq("id", stu.enrollment_id)
-            .maybeSingle();
-          if (enrErr) throw enrErr;
-          enr = enrRow;
-        }
-
-        // 4) Lookups for display text
-        const [gradeRes, sectionRes, trackRes, strandRes, syRes] = await Promise.all([
-          stu.grade_id
-            ? supabase
-                .from("grade_levels")
-                .select("grade_level")
-                .eq("grade_id", stu.grade_id)
-                .maybeSingle()
+        // lookups (optional; skip if ids are null)
+        const [gradeRes, trackRes, strandRes] = await Promise.all([
+          enr.grade_id
+            ? supabase.from("grade_levels").select("grade_level").eq("grade_id", enr.grade_id).maybeSingle()
             : Promise.resolve({ data: null, error: null }),
 
-          stu.section_id
-            ? supabase
-                .from("sections")
-                .select("section_name")
-                .eq("section_id", stu.section_id)
-                .maybeSingle()
+          enr.track_id
+            ? supabase.from("tracks").select("track_code").eq("track_id", enr.track_id).maybeSingle()
             : Promise.resolve({ data: null, error: null }),
 
-          stu.track_id
-            ? supabase
-                .from("tracks")
-                .select("track_code")
-                .eq("track_id", stu.track_id)
-                .maybeSingle()
-            : Promise.resolve({ data: null, error: null }),
-
-          stu.strand_id
-            ? supabase
-                .from("strands")
-                .select("strand_code")
-                .eq("strand_id", stu.strand_id)
-                .maybeSingle()
-            : Promise.resolve({ data: null, error: null }),
-
-          // ✅ FIX: your table has sy_code, NOT school_year
-          stu.sy_id
-            ? supabase
-                .from("school_years")
-                .select("sy_code, start_date, end_date, status")
-                .eq("sy_id", stu.sy_id)
-                .maybeSingle()
+          enr.strand_id
+            ? supabase.from("strands").select("strand_code").eq("strand_id", enr.strand_id).maybeSingle()
             : Promise.resolve({ data: null, error: null }),
         ]);
 
         if (gradeRes?.error) throw gradeRes.error;
-        if (sectionRes?.error) throw sectionRes.error;
         if (trackRes?.error) throw trackRes.error;
         if (strandRes?.error) throw strandRes.error;
-        if (syRes?.error) throw syRes.error;
 
-        const gradeLabel = gradeRes?.data?.grade_level
-          ? `Grade ${gradeRes.data.grade_level}`
-          : "—";
-
-        const sectionLabel = sectionRes?.data?.section_name ?? "—";
+        const gradeLabel = gradeRes?.data?.grade_level ? `Grade ${gradeRes.data.grade_level}` : "—";
         const trackLabel = trackRes?.data?.track_code ?? "—";
-        const strandLabel = strandRes?.data?.strand_code ?? "";
+        const strandLabel = strandRes?.data?.strand_code ?? "—";
 
-        // 5) Optional profiles (full_name + phone + flags)
-        const { data: prof, error: profErr } = await supabase
-          .from("profiles")
-          .select("full_name, is_active, is_archived, role")
-          .eq("user_id", user_id)
-          .maybeSingle();
-
-        if (profErr) throw profErr;
-
-        // Full name fallback if profiles.full_name missing
-        const fromStudentsName = [
-          safeStr(stu.first_name),
-          safeStr(stu.middle_initial ? `${stu.middle_initial}.` : ""),
-          safeStr(stu.last_name),
-          safeStr(stu.extension),
-        ]
-          .filter(Boolean)
-          .join(" ")
-          .replace(/\s+/g, " ")
-          .trim();
-
-        const fullName = safeStr(prof?.full_name) || fromStudentsName || "—";
-
-        // school year label (use sy_code, or derive from dates)
-        const sy = syRes?.data;
-        const syLabel = safeStr(sy?.sy_code || "");
-        const syStatus = safeStr(sy?.status || "");
+        const fullName = buildNameFromEnrollment(enr) || "—";
+        const email = safeStr(enr.st_email || user.email);
 
         if (!mounted) return;
 
         setForm({
-          studentId: safeStr(stu.student_number),
-          fullName,
+          studentId: safeStr(enr.st_number),
           gradeLevel: gradeLabel,
-          section: sectionLabel,
-          program: strandLabel ? `${trackLabel} • ${strandLabel}` : trackLabel,
-          email: safeStr(stu.email || user.email),
-          
-          address: safeStr(enr?.st_current_address || ""),
-          guardianName: safeStr(enr?.st_guardian_name || ""),
-          guardianContact: safeStr(enr?.st_guardian_contact || ""),
-          _user_id: user_id,
-          _enrollment_id: stu.enrollment_id ?? null,
-          _status: {
-            is_active: prof?.is_active ?? true,
-            is_archived: prof?.is_archived ?? false,
-            role: safeStr(prof?.role || "student"),
-            sy: syLabel,
-            sy_status: syStatus,
-          },
+          track: trackLabel,
+          strand: strandLabel,
+          fullName,
+          email,
+          address: safeStr(enr.st_current_address || ""),
+          guardianName: safeStr(enr.st_guardian_name || ""),
+          guardianContact: safeStr(enr.st_guardian_contact || ""),
+          _enrollment_id: enr.id,
         });
       } catch (e) {
         if (!mounted) return;
@@ -211,42 +151,30 @@ export default function StudentProfile() {
     };
   }, [initial]);
 
-  // ✅ SAVE (optional) — if students should be READ ONLY, disable this in UI
   async function onSave() {
     setSaving(true);
     setErrMsg("");
 
     try {
-      if (!form._user_id) throw new Error("Missing user. Please login again.");
-      if (!form._enrollment_id) throw new Error("No enrollment record linked. Contact admin.");
+      if (!form._enrollment_id) throw new Error("No enrollment record found. Contact admin.");
 
-      // Update enrollment fields
-      const { error: enrUpErr } = await supabase
+      const now = new Date().toISOString();
+
+      // Update only editable fields in enrollment
+      const { error: upErr } = await supabase
         .from("enrollment")
         .update({
+          // If you want full name editable, you can split it into fname/lname/mi/ext.
+          // For now, we'll save only address + guardian info (safe & simple).
           st_current_address: form.address,
           st_guardian_name: form.guardianName,
           st_guardian_contact: form.guardianContact,
-          st_updated_at: new Date().toISOString(),
-          updated_at: new Date().toISOString(),
+          st_updated_at: now,
+          updated_at: now,
         })
         .eq("id", form._enrollment_id);
 
-      if (enrUpErr) throw enrUpErr;
-
-      // Optional: update profile phone/full_name if your schema allows student edits
-      const profPatch = {
-        full_name: form.fullName,
-        phone: form.phone,
-        updated_at: new Date().toISOString(),
-      };
-
-      const { error: profUpErr } = await supabase
-        .from("profiles")
-        .update(profPatch)
-        .eq("user_id", form._user_id);
-
-      if (profUpErr) throw profUpErr;
+      if (upErr) throw upErr;
 
       alert("Saved successfully.");
     } catch (e) {
@@ -256,26 +184,9 @@ export default function StudentProfile() {
     }
   }
 
-  const accountStatusText = useMemo(() => {
-    const s = form._status;
-    if (!s) return "—";
-    if (s.is_archived) return "Archived";
-    if (!s.is_active) return "Disabled";
-    return "Active";
-  }, [form._status]);
-
-  const schoolYearText = useMemo(() => {
-    const s = form._status;
-    if (!s?.sy) return "School Year: —";
-    return `School Year ${s.sy}${s.sy_status ? ` (${s.sy_status})` : ""}`;
-  }, [form._status]);
-
   if (loading) {
     return (
-      <div
-        className="rounded-3xl border bg-white p-5"
-        style={{ borderColor: BRAND.stroke, boxShadow: BRAND.cardShadow }}
-      >
+      <div className="rounded-3xl border bg-white p-5" style={{ borderColor: BRAND.stroke, boxShadow: BRAND.cardShadow }}>
         <div className="text-sm font-extrabold" style={{ color: BRAND.brown }}>
           Loading profile…
         </div>
@@ -302,7 +213,7 @@ export default function StudentProfile() {
               Profile
             </div>
             <div className="text-xs font-semibold" style={{ color: BRAND.muted }}>
-              View and update your student information
+              Update your contact and guardian information
             </div>
 
             {errMsg ? (
@@ -312,28 +223,13 @@ export default function StudentProfile() {
             ) : null}
           </div>
 
-          <button
-            onClick={onSave}
-            disabled={saving}
-            className="inline-flex items-center justify-center gap-2 rounded-2xl px-5 py-2 text-sm font-semibold transition disabled:opacity-60"
-            style={{
-              background: BRAND.gold,
-              color: BRAND.brown,
-              boxShadow: "0 10px 18px rgba(212,166,47,0.24)",
-            }}
-            onMouseEnter={(e) => !saving && (e.currentTarget.style.background = BRAND.goldHover)}
-            onMouseLeave={(e) => (e.currentTarget.style.background = BRAND.gold)}
-            type="button"
-          >
-            <Save className="h-4 w-4" />
-            {saving ? "Saving…" : "Save Changes"}
-          </button>
+      
         </div>
       </motion.div>
 
       {/* Body */}
       <div className="grid gap-4 lg:grid-cols-[360px_1fr]">
-        {/* Left card (avatar) */}
+        {/* Left summary (no avatar image) */}
         <motion.div
           initial={{ opacity: 0, y: 8 }}
           animate={{ opacity: 1, y: 0 }}
@@ -342,23 +238,8 @@ export default function StudentProfile() {
           style={{ borderColor: BRAND.stroke, boxShadow: BRAND.cardShadow }}
         >
           <div className="flex items-center gap-4">
-            <div className="relative">
-              <div
-                className="grid h-20 w-20 place-items-center rounded-3xl"
-                style={{ background: BRAND.softGoldBg }}
-              >
-                <User className="h-8 w-8" style={{ color: BRAND.muted }} />
-              </div>
-
-              <button
-                className="absolute -bottom-2 -right-2 grid h-9 w-9 place-items-center rounded-2xl border bg-white hover:bg-black/5 transition"
-                style={{ borderColor: BRAND.stroke }}
-                onClick={() => alert("Upload avatar later (wire to Supabase Storage)")}
-                aria-label="Upload profile photo"
-                type="button"
-              >
-                <Camera className="h-4 w-4" style={{ color: BRAND.muted }} />
-              </button>
+            <div className="grid h-20 w-20 place-items-center rounded-3xl" style={{ background: BRAND.softGoldBg }}>
+              <User className="h-8 w-8" style={{ color: BRAND.muted }} />
             </div>
 
             <div>
@@ -372,7 +253,8 @@ export default function StudentProfile() {
                 className="mt-2 inline-flex rounded-full px-3 py-1 text-[11px] font-extrabold"
                 style={{ background: BRAND.softGoldBg, color: BRAND.brown }}
               >
-                {form.gradeLevel} • {form.section}
+                {form.gradeLevel} • {form.track}
+                {form.strand && form.strand !== "—" ? ` • ${form.strand}` : ""}
               </div>
             </div>
           </div>
@@ -383,27 +265,13 @@ export default function StudentProfile() {
               <span>{form.email || "—"}</span>
             </div>
             <div className="flex items-center gap-2">
-              <Phone className="h-4 w-4" />
-              <span>{form.phone || "—"}</span>
-            </div>
-            <div className="flex items-center gap-2">
               <MapPin className="h-4 w-4" />
               <span>{form.address || "—"}</span>
             </div>
           </div>
-
-          <div className="mt-5 rounded-2xl border p-4" style={{ borderColor: BRAND.stroke }}>
-            <div className="flex items-center gap-2 text-sm font-extrabold" style={{ color: BRAND.brown }}>
-              <Shield className="h-5 w-5" style={{ color: BRAND.muted }} />
-              Account Status
-            </div>
-            <div className="mt-2 text-sm" style={{ color: BRAND.muted }}>
-              {accountStatusText} • {schoolYearText}
-            </div>
-          </div>
         </motion.div>
 
-        {/* Right form */}
+        {/* Right form (only necessary + editable) */}
         <motion.div
           initial={{ opacity: 0, y: 8 }}
           animate={{ opacity: 1, y: 0 }}
@@ -412,19 +280,19 @@ export default function StudentProfile() {
           style={{ borderColor: BRAND.stroke, boxShadow: BRAND.cardShadow }}
         >
           <div className="text-sm font-extrabold" style={{ color: BRAND.brown }}>
-            Personal Information
+            Contact Information
           </div>
           <div className="mt-1 text-xs font-semibold" style={{ color: BRAND.muted }}>
-            Update contact details and guardian information
+            You can update your address and guardian details
           </div>
 
           <div className="mt-5 grid gap-4 md:grid-cols-2">
-            <Field label="Full Name">
+            <Field label="Full Name" locked>
               <input
                 value={form.fullName}
-                onChange={(e) => update("fullName", e.target.value)}
-                className="w-full rounded-2xl border bg-white/70 px-4 py-3 text-sm outline-none transition focus:bg-white"
-                style={{ borderColor: BRAND.stroke }}
+                disabled
+                className="w-full rounded-2xl border bg-black/5 px-4 py-3 text-sm outline-none"
+                style={{ borderColor: BRAND.stroke, color: BRAND.muted }}
               />
             </Field>
 
@@ -443,15 +311,6 @@ export default function StudentProfile() {
                 disabled
                 className="w-full rounded-2xl border bg-black/5 px-4 py-3 text-sm outline-none"
                 style={{ borderColor: BRAND.stroke, color: BRAND.muted }}
-              />
-            </Field>
-
-            <Field label="Contact Number">
-              <input
-                value={form.phone}
-                onChange={(e) => update("phone", e.target.value)}
-                className="w-full rounded-2xl border bg-white/70 px-4 py-3 text-sm outline-none transition focus:bg-white"
-                style={{ borderColor: BRAND.stroke }}
               />
             </Field>
 

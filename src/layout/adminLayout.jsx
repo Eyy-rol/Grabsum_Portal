@@ -11,8 +11,6 @@ import {
   CalendarDays,
   Megaphone,
   ChevronDown,
-  Search,
-  Bell,
   LogOut,
   PanelLeftClose,
   PanelLeftOpen,
@@ -23,35 +21,52 @@ import {
 import { TOKENS } from "../styles/tokens";
 import { supabase } from "../lib/supabaseClient";
 
-// -------------------------------------------
-// NAV
-// -------------------------------------------
+/** Optional: set your logo path here (public folder recommended) */
+const SCHOOL = {
+  appName: "Grabsum SHS Portal",
+  panelName: "Admin",
+  logoUrl: "/school-logo.png", // put your logo in /public/school-logo.png (or change this)
+};
+
 const NAV = [
-  { key: "home", label: "Home", icon: LayoutDashboard, to: "/admin" },
+  { key: "dashboard", label: "Dashboard", icon: LayoutDashboard, to: "/admin" },
+
   {
     key: "students",
     label: "Students",
     icon: Users,
     children: [
       { key: "enrollment", label: "Enrollment", icon: ClipboardList, to: "/admin/students/enrollment" },
-      { key: "classes", label: "Classes", icon: BookOpen, to: "/admin/students/classes" },
-      { key: "schedule", label: "Schedule", icon: BookOpen, to: "/admin/students/schedule" },
-      { key: "section", label: "Section", icon: BookOpen, to: "/admin/students/section" },
-      { key: "subject", label: "Subject", icon: BookOpen, to: "/admin/students/subject" },
-      { key: "school-year", label: "School Year", icon: BookOpen, to: "/admin/students/school-year" },
+      { key: "schedule", label: "Student Schedule", icon: BookOpen, to: "/admin/students/schedule" },
     ],
   },
+
   {
-    key: "teacher",
-    label: "Teacher",
-    icon: GraduationCap,
+    key: "academics",
+    label: "Academics",
+    icon: BookOpen,
     children: [
-      { key: "manage", label: "Manage", icon: Users, to: "/admin/teacher/manage" },
-      { key: "schedule", label: "Schedule", icon: BookOpen, to: "/admin/teacher/schedule" },
+      { key: "sections", label: "Sections", icon: ClipboardList, to: "/admin/students/section" },
+      { key: "subjects", label: "Subjects", icon: ClipboardList, to: "/admin/students/subject" },
     ],
   },
+
+  {
+    key: "setup",
+    label: "School Setup",
+    icon: ClipboardList,
+    children: [{ key: "school-year", label: "School Year", icon: BookOpen, to: "/admin/students/school-year" }],
+  },
+
+  {
+    key: "teachers",
+    label: "Teachers",
+    icon: GraduationCap,
+    children: [{ key: "manage", label: "Manage", icon: Users, to: "/admin/teacher/manage" }],
+  },
+
   { key: "calendar", label: "Calendar", icon: CalendarDays, to: "/admin/calendar" },
-  { key: "announcement", label: "Announcement", icon: Megaphone, to: "/admin/announcement" },
+  { key: "announcement", label: "Announcements", icon: Megaphone, to: "/admin/announcement" },
 ];
 
 export default function AdminLayout() {
@@ -85,12 +100,7 @@ export default function AdminLayout() {
           {/* Mobile sidebar overlay */}
           <AnimatePresence>
             {sidebarOpen ? (
-              <motion.div
-                initial={{ opacity: 0 }}
-                animate={{ opacity: 1 }}
-                exit={{ opacity: 0 }}
-                className="fixed inset-0 z-40 md:hidden"
-              >
+              <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }} className="fixed inset-0 z-40 md:hidden">
                 <button
                   className="absolute inset-0 bg-black/30"
                   onClick={() => setSidebarOpen(false)}
@@ -138,22 +148,38 @@ function Sidebar({ collapsed, setCollapsed, mobile = false, onClose }) {
   const nav = useNavigate();
   const loc = useLocation();
 
-  const [open, setOpen] = useState({ students: true, teacher: true });
+  const [open, setOpen] = useState({
+    students: true,
+    academics: true,
+    setup: true,
+    teachers: true,
+  });
 
+  const [logoOk, setLogoOk] = useState(true);
+
+  // ✅ Supabase-driven user/admin details
   const [me, setMe] = useState({
     loading: true,
     err: "",
+    full_name: "",
     email: "",
     role: "",
+    department: "",
+    phone: "",
+    is_active: true,
+    is_archived: false,
   });
 
   useEffect(() => {
     const p = loc.pathname;
-    if (p.includes("/admin/students/")) setOpen((s) => ({ ...s, students: true }));
-    if (p.includes("/admin/teacher/")) setOpen((s) => ({ ...s, teacher: true }));
+    if (p.includes("/admin/students/")) {
+      if (p.includes("/students/enrollment") || p.includes("/students/schedule")) setOpen((s) => ({ ...s, students: true }));
+      if (p.includes("/students/section") || p.includes("/students/subject")) setOpen((s) => ({ ...s, academics: true }));
+      if (p.includes("/students/school-year")) setOpen((s) => ({ ...s, setup: true }));
+    }
+    if (p.includes("/admin/teacher/")) setOpen((s) => ({ ...s, teachers: true }));
   }, [loc.pathname]);
 
-  // Load user info (session -> profiles fallback)
   useEffect(() => {
     let alive = true;
 
@@ -165,50 +191,50 @@ function Sidebar({ collapsed, setCollapsed, mobile = false, onClose }) {
         const user = sessData?.session?.user;
         if (!user?.id) {
           if (!alive) return;
-          setMe({ loading: false, err: "", email: "", role: "" });
-          return;
-        }
-
-        // If profiles select fails because of missing cols or RLS, we still show auth email.
-        const { data: prof, error: profErr } = await supabase
-          .from("profiles")
-          .select("email, role")
-          .eq("user_id", user.id)
-          .maybeSingle();
-
-        if (!alive) return;
-
-        if (profErr) {
           setMe({
             loading: false,
             err: "",
-            email: user.email || "",
-            role: "admin",
+            full_name: "",
+            email: "",
+            role: "",
+            department: "",
+            phone: "",
+            is_active: true,
+            is_archived: false,
           });
           return;
         }
 
+        const [{ data: prof, error: profErr }, { data: adminRow, error: adminErr }] = await Promise.all([
+          supabase.from("profiles").select("full_name, email, role").eq("user_id", user.id).maybeSingle(),
+          supabase.from("admins").select("department, phone, is_active, is_archived").eq("user_id", user.id).maybeSingle(),
+        ]);
+
+        if (!alive) return;
+
+        const email = String(prof?.email || user.email || "");
+        const full_name = String(prof?.full_name || "").trim();
+
         setMe({
           loading: false,
-          err: "",
-          email: String(prof?.email || user.email || ""),
+          err: profErr ? String(profErr.message || profErr) : adminErr ? String(adminErr.message || adminErr) : "",
+          full_name,
+          email,
           role: String(prof?.role || "admin"),
+          department: String(adminRow?.department || ""),
+          phone: String(adminRow?.phone || ""),
+          is_active: adminRow?.is_active ?? true,
+          is_archived: adminRow?.is_archived ?? false,
         });
       } catch (e) {
         if (!alive) return;
-        setMe((prev) => ({
-          ...prev,
-          loading: false,
-          err: String(e?.message || e),
-        }));
+        setMe((prev) => ({ ...prev, loading: false, err: String(e?.message || e) }));
       }
     }
 
     loadMe();
 
-    const { data } = supabase.auth.onAuthStateChange(() => {
-      loadMe();
-    });
+    const { data } = supabase.auth.onAuthStateChange(() => loadMe());
 
     return () => {
       alive = false;
@@ -227,6 +253,13 @@ function Sidebar({ collapsed, setCollapsed, mobile = false, onClose }) {
 
   const width = mobile ? 320 : collapsed ? 92 : 320;
 
+  const displayName =
+    (me.full_name && me.full_name.trim()) ||
+    (me.email ? me.email.split("@")[0] : "") ||
+    "User";
+
+  const roleLabel = me.role ? String(me.role).replaceAll("_", " ") : "admin";
+
   return (
     <aside
       className={`rounded-2xl border ${TOKENS.border} ${TOKENS.panel} p-5 shadow-sm md:sticky md:top-8`}
@@ -235,14 +268,23 @@ function Sidebar({ collapsed, setCollapsed, mobile = false, onClose }) {
       {/* Header */}
       <div className="flex items-center justify-between gap-2">
         <div className="flex items-center gap-3 overflow-hidden">
-          <div className={`h-11 w-11 rounded-2xl ${TOKENS.goldSoft} grid place-items-center shrink-0`}>
-            <span className={`text-sm font-black ${TOKENS.gold}`}>G</span>
+          <div className={`h-11 w-11 rounded-2xl ${TOKENS.goldSoft} grid place-items-center shrink-0 overflow-hidden`}>
+            {SCHOOL.logoUrl ? (
+              <img
+                src={SCHOOL.logoUrl}
+                alt="School logo"
+                className="h-full w-full object-cover"
+                onError={() => setLogoOk(false)}
+                style={{ display: logoOk ? "block" : "none" }}
+              />
+            ) : null}
+            {!SCHOOL.logoUrl || !logoOk ? <span className={`text-sm font-black ${TOKENS.gold}`}>G</span> : null}
           </div>
 
           {!collapsed ? (
             <div className="leading-tight">
-              <div className="text-xs tracking-wide text-black/55">Grabsum SHS Portal</div>
-              <div className="text-lg font-extrabold">Admin</div>
+              <div className="text-xs tracking-wide text-black/55">{SCHOOL.appName}</div>
+              <div className="text-lg font-extrabold">{SCHOOL.panelName}</div>
             </div>
           ) : null}
         </div>
@@ -281,31 +323,29 @@ function Sidebar({ collapsed, setCollapsed, mobile = false, onClose }) {
                 <button
                   onClick={() => setOpen((s) => ({ ...s, [item.key]: !s[item.key] }))}
                   className={[
-                    "flex w-full items-center rounded-2xl transition",
-                    collapsed ? "justify-center px-2 py-2.5" : "gap-3 px-3 py-2.5",
-                    "hover:bg-black/5",
+                    "group flex w-full items-center rounded-2xl border transition",
+                    collapsed ? "justify-center p-2" : "gap-3 px-3 py-2.5",
+                    open[item.key] ? "bg-black/[0.02] border-black/10" : "border-transparent hover:bg-black/5",
                   ].join(" ")}
                   title={collapsed ? item.label : undefined}
                   type="button"
                 >
-                  <span className={`grid h-10 w-10 place-items-center rounded-2xl border ${TOKENS.border} bg-white/60`}>
+                  <span className={`grid h-10 w-10 place-items-center rounded-2xl border ${TOKENS.border} bg-white/70 shrink-0`}>
                     <item.icon className="h-5 w-5 text-black/60" />
                   </span>
 
                   {!collapsed ? (
                     <>
-                      <span className="flex-1 font-semibold text-black/75">{item.label}</span>
-                      <ChevronDown
-                        className={"h-4 w-4 text-black/60 transition " + (open[item.key] ? "rotate-180" : "")}
-                      />
+                      <span className="font-semibold text-black/75">{item.label}</span>
+                      <ChevronDown className={"ml-auto h-4 w-4 text-black/60 transition " + (open[item.key] ? "rotate-180" : "")} />
                     </>
                   ) : null}
                 </button>
 
                 {!collapsed && open[item.key] ? (
-                  <div className="ml-3 space-y-1.5 border-l border-black/10 pl-3">
+                  <div className="space-y-1.5">
                     {item.children.map((c) => (
-                      <SideLink key={c.key} to={c.to} icon={c.icon} label={c.label} compact />
+                      <SubLink key={c.key} to={c.to} icon={c.icon} label={c.label} />
                     ))}
                   </div>
                 ) : null}
@@ -317,17 +357,25 @@ function Sidebar({ collapsed, setCollapsed, mobile = false, onClose }) {
         </nav>
       </div>
 
-      {/* Profile */}
+      {/* Profile (keep) */}
       <div className={`mt-5 rounded-2xl border border-black/10 bg-white/60 ${collapsed ? "p-2" : "p-4"}`}>
         <div className={`flex items-center gap-3 ${collapsed ? "justify-center" : ""}`}>
           <div className="h-10 w-10 rounded-2xl border border-black/10 bg-white grid place-items-center">
-            <span className="text-sm font-black text-black/70">A</span>
+            <span className="text-sm font-black text-black/70">{displayName ? String(displayName).slice(0, 1).toUpperCase() : "A"}</span>
           </div>
 
           {!collapsed ? (
             <div className="min-w-0">
-              <div className="text-sm font-bold">{me.loading ? "Loading…" : me.role ? `${me.role} User` : "User"}</div>
+              <div className="text-sm font-bold">
+                {me.loading ? "Loading…" : `${roleLabel} User`}
+                {!me.loading && (me.is_archived || !me.is_active) ? (
+                  <span className="ml-2 rounded-full border border-rose-200 bg-rose-50 px-2 py-0.5 text-[11px] font-semibold text-rose-700">
+                    Disabled
+                  </span>
+                ) : null}
+              </div>
               <div className="mt-0.5 text-xs text-black/55 truncate">{me.email || "-"}</div>
+              {!me.loading && me.full_name ? <div className="mt-0.5 text-xs font-semibold text-black/60 truncate">{me.full_name}</div> : null}
               {me.err ? <div className="mt-1 text-[11px] font-semibold text-rose-600">{me.err}</div> : null}
             </div>
           ) : null}
@@ -351,7 +399,7 @@ function Sidebar({ collapsed, setCollapsed, mobile = false, onClose }) {
               type="button"
             >
               <LayoutDashboard className="h-4 w-4 text-black/60" />
-              Home
+              Dashboard
             </button>
           ) : null}
         </div>
@@ -360,7 +408,7 @@ function Sidebar({ collapsed, setCollapsed, mobile = false, onClose }) {
   );
 }
 
-function SideLink({ to, icon: Icon, label, compact = false, collapsed = false }) {
+function SideLink({ to, icon: Icon, label, collapsed = false }) {
   return (
     <NavLink
       to={to}
@@ -368,21 +416,14 @@ function SideLink({ to, icon: Icon, label, compact = false, collapsed = false })
       title={collapsed ? label : undefined}
       className={({ isActive }) =>
         [
-          "group flex items-center rounded-2xl transition",
-          collapsed ? "justify-center px-2 py-2.5" : "gap-3 px-3 py-2.5",
-          compact ? "text-sm" : "",
-          isActive ? `${TOKENS.goldSoft} border ${TOKENS.border}` : "hover:bg-black/5",
+          "group flex items-center rounded-2xl border transition",
+          collapsed ? "justify-center p-2" : "gap-3 px-3 py-2.5",
+          isActive ? `${TOKENS.goldSoft} ${TOKENS.border}` : "border-transparent hover:bg-black/5",
         ].join(" ")
       }
     >
-      <span
-        className={[
-          "grid place-items-center rounded-2xl border transition",
-          compact ? "h-9 w-9" : "h-10 w-10",
-          `${TOKENS.border} bg-white/60 group-hover:bg-white/80`,
-        ].join(" ")}
-      >
-        <Icon className={compact ? "h-4 w-4 text-black/60" : "h-5 w-5 text-black/60"} />
+      <span className={`grid h-10 w-10 place-items-center rounded-2xl border ${TOKENS.border} bg-white/70 group-hover:bg-white/80 shrink-0`}>
+        <Icon className="h-5 w-5 text-black/60" />
       </span>
 
       {!collapsed ? <span className="font-semibold text-black/75">{label}</span> : null}
@@ -390,16 +431,127 @@ function SideLink({ to, icon: Icon, label, compact = false, collapsed = false })
   );
 }
 
+function SubLink({ to, icon: Icon, label }) {
+  return (
+    <NavLink
+      to={to}
+      end
+      className={({ isActive }) =>
+        [
+          "group flex items-center rounded-2xl border transition",
+          "pl-12 pr-3 py-2",
+          isActive ? `${TOKENS.goldSoft} ${TOKENS.border}` : "border-transparent hover:bg-black/5",
+        ].join(" ")
+      }
+    >
+      <span className={`grid h-9 w-9 place-items-center rounded-2xl border ${TOKENS.border} bg-white/70 group-hover:bg-white/80 shrink-0`}>
+        <Icon className="h-4 w-4 text-black/60" />
+      </span>
+      <span className="ml-3 text-sm font-semibold text-black/75">{label}</span>
+    </NavLink>
+  );
+}
+
+/** ✅ Topbar: clickable user pill -> dropdown (logout) that ENDS SESSION */
 function Topbar({ title, onOpenSidebar }) {
+  const nav = useNavigate();
+
+  const [me, setMe] = useState({
+    loading: true,
+    full_name: "",
+    email: "",
+    role: "",
+  });
+
+  const [openMenu, setOpenMenu] = useState(false);
+  const menuRef = useRef(null);
+
+  useEffect(() => {
+    let alive = true;
+
+    async function loadMe() {
+      try {
+        const { data: sessData } = await supabase.auth.getSession();
+        const user = sessData?.session?.user;
+
+        if (!user?.id) {
+          if (!alive) return;
+          setMe({ loading: false, full_name: "", email: "", role: "" });
+          return;
+        }
+
+        const { data: prof } = await supabase.from("profiles").select("full_name, email, role").eq("user_id", user.id).maybeSingle();
+
+        if (!alive) return;
+
+        setMe({
+          loading: false,
+          full_name: String(prof?.full_name || "").trim(),
+          email: String(prof?.email || user.email || ""),
+          role: String(prof?.role || "admin"),
+        });
+      } catch {
+        if (!alive) return;
+        setMe((p) => ({ ...p, loading: false }));
+      }
+    }
+
+    loadMe();
+    const { data } = supabase.auth.onAuthStateChange(() => loadMe());
+
+    return () => {
+      alive = false;
+      data?.subscription?.unsubscribe?.();
+    };
+  }, []);
+
+  // close menu on click outside / escape
+  useEffect(() => {
+    function onDocDown(e) {
+      if (!openMenu) return;
+      if (!menuRef.current) return;
+      if (menuRef.current.contains(e.target)) return;
+      setOpenMenu(false);
+    }
+    function onEsc(e) {
+      if (e.key === "Escape") setOpenMenu(false);
+    }
+    document.addEventListener("mousedown", onDocDown);
+    document.addEventListener("keydown", onEsc);
+    return () => {
+      document.removeEventListener("mousedown", onDocDown);
+      document.removeEventListener("keydown", onEsc);
+    };
+  }, [openMenu]);
+
+  const name =
+    (me.full_name && me.full_name.trim()) ||
+    (me.email ? me.email.split("@")[0] : "") ||
+    "Admin";
+
+  const initials = (name || "A")
+    .split(" ")
+    .filter(Boolean)
+    .slice(0, 2)
+    .map((x) => x[0]?.toUpperCase())
+    .join("");
+
+  const roleLabel = me.role ? String(me.role).replaceAll("_", " ") : "admin";
+
+  async function handleLogout() {
+    // ✅ END SESSION
+    try {
+      await supabase.auth.signOut();
+    } finally {
+      setOpenMenu(false);
+      nav("/login", { replace: true });
+    }
+  }
+
   return (
     <header className={`rounded-2xl border ${TOKENS.border} ${TOKENS.panel} p-4 md:p-5 shadow-sm`}>
-      <div className="flex flex-col gap-4 md:flex-row md:items-center md:justify-between">
-        <div className="flex items-start justify-between gap-3 md:block">
-          <div className="leading-tight">
-            <div className="text-xs font-semibold text-black/50">Admin Panel</div>
-            <div className="text-2xl font-extrabold">{title}</div>
-          </div>
-
+      <div className="flex items-center justify-between gap-3">
+        <div className="flex items-start gap-3">
           <button
             onClick={onOpenSidebar}
             className="md:hidden grid h-10 w-10 place-items-center rounded-2xl border border-black/10 bg-white/60 hover:bg-white/80"
@@ -409,24 +561,56 @@ function Topbar({ title, onOpenSidebar }) {
           >
             <Menu className="h-5 w-5 text-black/60" />
           </button>
+
+          <div className="leading-tight">
+            <div className="text-xs font-semibold text-black/50">{roleLabel}</div>
+            <div className="text-2xl font-extrabold">{title}</div>
+          </div>
         </div>
 
-        <div className="flex items-center gap-2">
-          <div className="relative flex-1 md:w-[420px]">
-            <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-black/45" />
-            <input
-              className="w-full rounded-2xl border border-black/10 bg-white/70 px-10 py-2.5 text-sm outline-none focus:bg-white"
-              placeholder="Search…"
-            />
-          </div>
-
+        {/* ✅ user pill + dropdown */}
+        <div className="relative" ref={menuRef}>
           <button
-            className="grid h-10 w-10 place-items-center rounded-2xl border border-black/10 bg-white/60 hover:bg-white/80"
             type="button"
-            onClick={() => alert("Notifications UI (wire later)")}
+            onClick={() => setOpenMenu((s) => !s)}
+            className="flex items-center gap-3 rounded-2xl border border-black/10 bg-white/70 px-3 py-2 hover:bg-white"
+            aria-haspopup="menu"
+            aria-expanded={openMenu}
           >
-            <Bell className="h-5 w-5 text-black/60" />
+            <div className="grid h-9 w-9 place-items-center rounded-2xl border border-emerald-200 bg-emerald-50">
+              <span className="text-xs font-extrabold text-emerald-700">{initials || "A"}</span>
+            </div>
+
+            <div className="leading-tight text-left">
+              <div className="text-sm font-extrabold text-black/80">{me.loading ? "Loading…" : name}</div>
+              <div className="text-xs text-black/55">{me.email || ""}</div>
+            </div>
+
+            <ChevronDown className={`h-4 w-4 text-black/60 transition ${openMenu ? "rotate-180" : ""}`} />
           </button>
+
+          <AnimatePresence>
+            {openMenu ? (
+              <motion.div
+                initial={{ opacity: 0, y: 6 }}
+                animate={{ opacity: 1, y: 0 }}
+                exit={{ opacity: 0, y: 6 }}
+                transition={{ duration: 0.14 }}
+                className="absolute right-0 mt-2 w-[220px] overflow-hidden rounded-2xl border border-black/10 bg-white shadow-xl"
+                role="menu"
+              >
+                <button
+                  type="button"
+                  onClick={handleLogout}
+                  className="flex w-full items-center gap-2 px-4 py-3 text-sm font-semibold text-black/75 hover:bg-black/[0.03]"
+                  role="menuitem"
+                >
+                  <LogOut className="h-4 w-4 text-black/60" />
+                  Log out
+                </button>
+              </motion.div>
+            ) : null}
+          </AnimatePresence>
         </div>
       </div>
     </header>
@@ -434,20 +618,24 @@ function Topbar({ title, onOpenSidebar }) {
 }
 
 function Footer() {
-  return <div className="px-2 pb-2 text-xs text-black/50">© {new Date().getFullYear()} Grabsum SHS Portal • Admin UI</div>;
+  return <div className="px-2 pb-2 text-xs text-black/50">© {new Date().getFullYear()} {SCHOOL.appName} • Admin UI</div>;
 }
 
 function titleFromPath(path) {
-  if (path === "/admin") return "Home";
+  if (path === "/admin") return "Dashboard";
+
   if (path.includes("/students/enrollment")) return "Students • Enrollment";
-  if (path.includes("/students/classes")) return "Students • Classes";
   if (path.includes("/students/schedule")) return "Students • Schedule";
-  if (path.includes("/students/section")) return "Students • Section";
-  if (path.includes("/students/subject")) return "Students • Subject";
-  if (path.includes("/students/school-year")) return "Students • School Year";
-  if (path.includes("/teacher/manage")) return "Teacher • Manage";
-  if (path.includes("/teacher/schedule")) return "Teacher • Schedule";
-  if (path.includes("/calendar")) return "Calendar";
-  if (path.includes("/announcement")) return "Announcement";
+
+  if (path.includes("/students/section")) return "Academics • Sections";
+  if (path.includes("/students/subject")) return "Academics • Subjects";
+
+  if (path.includes("/students/school-year")) return "School Setup • School Year";
+
+  if (path.includes("/teacher/manage")) return "Teachers • Manage";
+
+  if (path.includes("/calendar")) return "Scheduling • Calendar";
+  if (path.includes("/announcement")) return "Communication • Announcements";
+
   return "Admin";
 }

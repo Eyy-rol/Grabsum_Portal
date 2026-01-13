@@ -23,11 +23,10 @@ function teacherFullName(t) {
 }
 
 function adminLabelFromProfile(p) {
-  // your profiles doesn't have first_name/last_name (per screenshot)
   if (!p) return "Admin";
   const email = String(p.email || "").trim();
   if (!email) return "Admin";
-  return email; // or return email.split("@")[0] if you prefer shorter
+  return email; // or email.split("@")[0]
 }
 
 export default function StudentAnnouncement() {
@@ -48,7 +47,7 @@ export default function StudentAnnouncement() {
 
     try {
       // 0) auth/profile checks
-      const { profile } = await getMyProfile();
+      const { user, profile } = await getMyProfile();
       if (norm(profile?.role) !== "student") throw new Error("Forbidden: student only");
 
       const sy = await getActiveSy();
@@ -58,13 +57,17 @@ export default function StudentAnnouncement() {
       const { data: student, error: stErr } = await supabase
         .from("students")
         .select("id, user_id, section_id, sy_id")
-        .eq("user_id", profile.user_id)
+        .eq("user_id", user.id) // ✅ safer than profile.user_id
         .eq("sy_id", sy.sy_id)
-        .single();
+        .maybeSingle();
 
       if (stErr) throw stErr;
 
-      const sectionId = student?.section_id || null;
+      if (!student) {
+        throw new Error("No student record found for this account in the active School Year.");
+      }
+
+      const sectionId = student?.section_id ?? null; // ✅ define it once
 
       // 2) adviser for this section in active SY
       let adviserId = null; // teachers.user_id
@@ -177,8 +180,7 @@ export default function StudentAnnouncement() {
         teacherMap = new Map((teacherRows || []).map((t) => [t.user_id, t]));
       }
 
-      // ✅ profiles map (FIXED: do NOT select first_name/last_name)
-      // If blocked by RLS, we just label as "Admin"
+      // profiles map (admins)
       let profileMap = new Map();
       if (adminPosterIds.length) {
         const { data: profRows, error: pErr } = await supabase
@@ -186,6 +188,7 @@ export default function StudentAnnouncement() {
           .select("user_id, email")
           .in("user_id", adminPosterIds);
 
+        // If blocked by RLS, just fallback to "Admin"
         if (!pErr) {
           profileMap = new Map((profRows || []).map((p) => [p.user_id, p]));
         }
@@ -304,6 +307,7 @@ export default function StudentAnnouncement() {
           <button
             onClick={load}
             className="inline-flex items-center gap-2 rounded-2xl border border-black/10 bg-[#fafafa] px-4 py-2 text-xs font-semibold hover:bg-black/5"
+            type="button"
           >
             <RefreshCcw className="h-4 w-4" />
             Refresh
@@ -323,6 +327,7 @@ export default function StudentAnnouncement() {
                     ? "border-[#C9A227]/50 bg-[#C9A227]/10 text-[#2b1a12]"
                     : "border-black/10 bg-white text-black/60 hover:bg-black/[0.02]"
                 }`}
+                type="button"
               >
                 {t}{" "}
                 <span className="ml-1 rounded-full border border-black/10 bg-white px-2 py-0.5 text-[10px] font-extrabold text-black/50">
@@ -399,9 +404,7 @@ export default function StudentAnnouncement() {
 
               <div className="mt-3 whitespace-pre-wrap text-sm text-black/70">{a.content}</div>
 
-              <div className="mt-3 text-[11px] font-semibold text-black/40">
-                Audience: {a.target_audience}
-              </div>
+              <div className="mt-3 text-[11px] font-semibold text-black/40">Audience: {a.target_audience}</div>
             </motion.div>
           ))}
         </div>

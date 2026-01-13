@@ -606,12 +606,10 @@ export default function PreEnroll() {
           <div className="flex items-center gap-3">
             <img src={logo} alt="Grabsum School logo" className="h-10 w-10 rounded-full object-contain" draggable="false" />
             <div>
-              <div className="text-sm font-extrabold" style={{ color: BRAND.brown }}>
-                GRABSUM School • Pre-enrollment
+              <div className="text-2xl font-extrabold" style={{ color: BRAND.brown }}>
+                Grabsum School Inc. • Pre-enrollment
               </div>
-              <div className="text-xs" style={{ color: BRAND.muted }}>
-                Complete each section to unlock the next.
-              </div>
+            
             </div>
           </div>
 
@@ -625,7 +623,7 @@ export default function PreEnroll() {
               }}
               className="rounded-2xl px-4 py-2 text-sm font-semibold border border-black/10 bg-white/80 hover:bg-white transition"
             >
-              Returning student?
+              Old student?
             </button>
 
             <div
@@ -650,7 +648,7 @@ export default function PreEnroll() {
           <div className="grid grid-cols-1 lg:grid-cols-[360px_1fr]">
             {/* Left stepper */}
             <div className="p-6 lg:p-8" style={{ background: "rgba(251,246,239,0.55)", borderRight: `1px solid ${BRAND.stroke}` }}>
-              <div className="text-sm font-extrabold" style={{ color: BRAND.brown }}>
+              <div className="text-lg font-extrabold" style={{ color: BRAND.brown }}>
                 Registration Steps
               </div>
               <div className="mt-1 text-xs" style={{ color: BRAND.muted }}>

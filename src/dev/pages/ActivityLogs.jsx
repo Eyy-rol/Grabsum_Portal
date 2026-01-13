@@ -103,7 +103,7 @@ function rangeToStart(range) {
     d.setDate(d.getDate() - 30);
     return d.toISOString();
   }
-  return null; // custom/UI later
+  return null;
 }
 
 export default function ActivityLogs() {
@@ -113,7 +113,6 @@ export default function ActivityLogs() {
   const [selected, setSelected] = useState(null);
 
   const [q, setQ] = useState("");
-  const [type, setType] = useState("all");
   const [result, setResult] = useState("all");
   const [range, setRange] = useState("today");
 
@@ -123,102 +122,35 @@ export default function ActivityLogs() {
     setSelected(null);
 
     try {
-      // ✅ dev/super_admin only (adjust roles you allow)
       const { profile } = await getMyProfile();
       const role = String(profile?.role || "").toLowerCase();
-      if (!["dev", "developer", "super_admin"].includes(role)) {
+      if (!["dev", "super_admin"].includes(role)) {
         throw new Error("Forbidden: dev/super_admin only");
       }
 
       const start = rangeToStart(range);
+      const qq = q.trim() || null;
 
-      // 1) Load logs
-      let query = supabase
-        .from("activity_logs")
-        .select(
-          "id, created_at, actor_user_id, action, entity_type, entity_id, message, metadata, ip_address, application_id, result"
-        )
-        .order("created_at", { ascending: false })
-        .limit(300);
+      const { data, error } = await supabase.rpc("dev_activity_logs", {
+        p_start: start ? start : null,
+        p_result: result === "all" ? "all" : result,
+        p_q: qq,
+        p_limit: 300,
+      });
 
-      if (start) query = query.gte("created_at", start);
-      if (result !== "all") query = query.eq("result", result);
-
-      // Type filter is UI-driven, apply via action keywords (or create a real column later)
-      if (type !== "all") {
-        // simple filter by ilike action text
-        const map = {
-          auth: ["login", "auth", "session"],
-          role: ["role"],
-          security: ["security", "policy"],
-          users: ["account", "user", "disable", "archive"],
-          system: ["system", "config", "migration", "backup", "seed"],
-        };
-        const keys = map[type] || [];
-        if (keys.length) {
-          // OR filter
-          const or = keys.map((k) => `action.ilike.%${k}%`).join(",");
-          query = query.or(or);
-        }
-      }
-
-      // Search
-      const qq = q.trim();
-      if (qq) {
-        // Search in action/entity/message/ip/application_id
-        query = query.or(
-          [
-            `action.ilike.%${qq}%`,
-            `entity_type.ilike.%${qq}%`,
-            `entity_id.ilike.%${qq}%`,
-            `message.ilike.%${qq}%`,
-            `ip_address.ilike.%${qq}%`,
-            `application_id.ilike.%${qq}%`,
-          ].join(",")
-        );
-      }
-
-      const { data: rows, error } = await query;
       if (error) throw error;
 
-      // 2) Resolve actor display via profiles (since actor_user_id FK is auth.users)
-      const actorIds = Array.from(new Set((rows || []).map((r) => r.actor_user_id).filter(Boolean)));
-      let actorMap = new Map();
-
-      if (actorIds.length) {
-        const { data: profs, error: pErr } = await supabase
-          .from("profiles")
-          .select("user_id, full_name, email, role")
-          .in("user_id", actorIds);
-
-        if (pErr) throw pErr;
-
-        (profs || []).forEach((p) => {
-          actorMap.set(p.user_id, {
-            name: p.full_name || p.email || p.user_id,
-            email: p.email || "",
-            role: p.role || "",
-          });
-        });
-      }
-
-      const mapped = (rows || []).map((r) => {
-        const actor = actorMap.get(r.actor_user_id);
-        const actorLabel = actor?.name || (r.actor_user_id ? r.actor_user_id.slice(0, 8) : "unknown");
-
-        return {
-          id: r.id,
-          at: r.created_at ? new Date(r.created_at).toLocaleString() : "—",
-          actor: actorLabel,
-          actor_email: actor?.email || "",
-          action: r.action,
-          target: r.entity_type ? `${r.entity_type}${r.entity_id ? `:${r.entity_id}` : ""}` : (r.entity_id || "—"),
-          result: r.result,
-          ip: r.ip_address || "—",
-          meta: r.message || "",
-          raw: r,
-        };
-      });
+      const mapped = (data || []).map((r) => ({
+        id: r.id,
+        at: r.created_at ? new Date(r.created_at).toLocaleString() : "—",
+        actor: r.actor_mask ? `user:${r.actor_mask}` : "user:unknown",
+        action: r.action,
+        target: r.entity_type ? `${r.entity_type}${r.entity_id ? `:${r.entity_id}` : ""}` : (r.entity_id || "—"),
+        result: r.result,
+        ip: r.ip_mask || "—",
+        meta: r.message || "",
+        raw: r, // already anonymized
+      }));
 
       setLogs(mapped);
     } catch (e) {
@@ -233,11 +165,6 @@ export default function ActivityLogs() {
     load();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
-
-  const filtered = useMemo(() => {
-    // already filtered server-side, but keep client-safe
-    return logs;
-  }, [logs]);
 
   const columns = [
     { key: "at", label: "Time" },
@@ -290,15 +217,9 @@ export default function ActivityLogs() {
     <div className="space-y-4">
       <Card
         title="Activity Logs"
-        subtitle="Track system actions, auth events, role changes, and security-related activity."
+        subtitle="System logs only (anonymized). No user profiles/emails exposed."
         right={
           <div className="flex items-center gap-2">
-            <button
-              onClick={() => alert("Export CSV: wire later")}
-              className="rounded-2xl border border-black/10 bg-[#fafafa] px-4 py-2 text-xs font-semibold hover:bg-black/5"
-            >
-              Export CSV
-            </button>
             <button
               onClick={load}
               className="rounded-2xl bg-[#e7aa2f] px-4 py-2 text-xs font-semibold text-black hover:opacity-90"
@@ -315,31 +236,15 @@ export default function ActivityLogs() {
         ) : null}
 
         {/* Filters */}
-        <div className="mb-4 grid gap-3 md:grid-cols-5">
-          <div className="md:col-span-2">
+        <div className="mb-4 grid gap-3 md:grid-cols-3">
+          <div className="md:col-span-1">
             <div className="text-xs font-semibold text-black/60">Search</div>
             <input
               value={q}
               onChange={(e) => setQ(e.target.value)}
-              placeholder="Search action, entity, message, IP, application_id…"
+              placeholder="Search action, entity, message, app…"
               className="mt-1 w-full rounded-2xl border border-black/10 bg-[#fafafa] px-4 py-2 text-sm outline-none focus:ring-2 focus:ring-black/10"
             />
-          </div>
-
-          <div>
-            <div className="text-xs font-semibold text-black/60">Type</div>
-            <select
-              value={type}
-              onChange={(e) => setType(e.target.value)}
-              className="mt-1 w-full rounded-2xl border border-black/10 bg-[#fafafa] px-4 py-2 text-sm outline-none"
-            >
-              <option value="all">All</option>
-              <option value="auth">Auth</option>
-              <option value="role">Role</option>
-              <option value="security">Security</option>
-              <option value="users">Users</option>
-              <option value="system">System</option>
-            </select>
           </div>
 
           <div>
@@ -366,11 +271,10 @@ export default function ActivityLogs() {
               <option value="today">Today</option>
               <option value="7d">Last 7 days</option>
               <option value="30d">Last 30 days</option>
-              <option value="custom">Custom (UI)</option>
             </select>
           </div>
 
-          <div className="md:col-span-5 flex justify-end">
+          <div className="md:col-span-3 flex justify-end">
             <button
               onClick={load}
               disabled={loading}
@@ -386,7 +290,7 @@ export default function ActivityLogs() {
             Loading…
           </div>
         ) : (
-          <Table columns={columns} rows={filtered} />
+          <Table columns={columns} rows={logs} />
         )}
       </Card>
 
@@ -396,7 +300,7 @@ export default function ActivityLogs() {
           <div className="mb-4 flex items-start justify-between gap-4">
             <div>
               <div className="text-sm font-semibold">Log Details</div>
-              <div className="text-xs text-black/50">Inspect the selected event.</div>
+              <div className="text-xs text-black/50">Payload is anonymized + redacted.</div>
             </div>
             <button
               onClick={() => setSelected(null)}

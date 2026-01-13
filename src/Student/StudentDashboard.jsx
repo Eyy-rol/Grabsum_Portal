@@ -2,6 +2,7 @@
 import React, { useEffect, useMemo, useState } from "react";
 import { motion } from "framer-motion";
 import { BookOpen, Clock, CheckCircle2, Sparkles } from "lucide-react";
+import { useNavigate } from "react-router-dom";
 import { supabase } from "../lib/supabaseClient";
 
 // ✅ Supabase-powered calendar widget
@@ -103,6 +104,8 @@ function combineDateAndTime(dateObj, timeStr) {
 }
 
 export default function StudentDashboard() {
+  const navigate = useNavigate();
+
   const [now, setNow] = useState(new Date());
 
   // ✅ Welcome name
@@ -184,7 +187,7 @@ export default function StudentDashboard() {
       }
 
       // 1) Student row (for section + grade/track/strand filters)
-      const { data: studentRow, error: studentErr } = await supabase
+      const { data: studentRow } = await supabase
         .from("students")
         .select("first_name, section_id, grade_id, track_id, strand_id, sy_id")
         .eq("user_id", user.id)
@@ -210,7 +213,9 @@ export default function StudentDashboard() {
       // ===== Announcements (All Students + Section Students) =====
       const baseAnnQuery = supabase
         .from("announcements")
-        .select("id, title, content, priority, posted_at, posted_by, target_audience, section_id")
+        .select(
+          "id, title, content, priority, posted_at, posted_by, target_audience, section_id"
+        )
         .eq("status", "Published")
         .eq("is_archived", false)
         .order("posted_at", { ascending: false })
@@ -272,9 +277,6 @@ export default function StudentDashboard() {
 
         if (!isMounted) return;
 
-        // Debug (remove later)
-        // console.log("Dashboard schedule => section:", studentRow.section_id, "dow:", dow, "err:", schedErr, "rows:", schedRows);
-
         if (schedErr) {
           setTodaysClasses([]);
         } else {
@@ -284,7 +286,9 @@ export default function StudentDashboard() {
             (schedRows ?? []).map((r) => {
               const teacherName =
                 r?.teacher?.first_name || r?.teacher?.last_name
-                  ? `${(r?.teacher?.first_name || "").trim()} ${(r?.teacher?.last_name || "").trim()}`.trim()
+                  ? `${(r?.teacher?.first_name || "").trim()} ${(
+                      r?.teacher?.last_name || ""
+                    ).trim()}`.trim()
                   : "—";
 
               return {
@@ -298,7 +302,6 @@ export default function StudentDashboard() {
             })
           );
 
-          // keep todaysClasses stat accurate without stale closure
           setStats((s) => ({ ...s, todaysClasses: (schedRows ?? []).length }));
         }
 
@@ -332,14 +335,18 @@ export default function StudentDashboard() {
           (lessonRows ?? []).map((l) => {
             const teacherName =
               l?.teacher?.first_name || l?.teacher?.last_name
-                ? `${(l?.teacher?.first_name || "").trim()} ${(l?.teacher?.last_name || "").trim()}`.trim()
+                ? `${(l?.teacher?.first_name || "").trim()} ${(
+                    l?.teacher?.last_name || ""
+                  ).trim()}`.trim()
                 : "Teacher";
 
             return {
               course: l?.subjects?.subject_title || "Subject",
               title: l.title,
               teacher: teacherName,
-              date: l.created_at ? new Date(l.created_at).toLocaleDateString() : "",
+              date: l.created_at
+                ? new Date(l.created_at).toLocaleDateString()
+                : "",
               raw: l,
             };
           })
@@ -352,11 +359,13 @@ export default function StudentDashboard() {
 
       if (studentRow?.section_id) {
         const { data: courseRows } = await supabase
-          .from("section_schedules") // ✅ correct table
+          .from("section_schedules")
           .select("subject_id")
           .eq("section_id", studentRow.section_id);
 
-        const uniq = new Set((courseRows ?? []).map((r) => r.subject_id).filter(Boolean));
+        const uniq = new Set(
+          (courseRows ?? []).map((r) => r.subject_id).filter(Boolean)
+        );
         totalCourses = uniq.size;
       }
 
@@ -365,9 +374,6 @@ export default function StudentDashboard() {
         totalCourses,
         pendingAssignments: 0, // wire later
       }));
-
-      // Helpful debug if student record is missing
-      // console.log("studentErr:", studentErr, "studentRow:", studentRow);
     }
 
     loadDashboard();
@@ -380,7 +386,9 @@ export default function StudentDashboard() {
 
   // ✅ next class computed from Supabase-powered todaysClasses
   const nextClass = useMemo(() => {
-    const upcoming = (todaysClasses ?? []).filter((c) => c.end > now).sort((a, b) => a.start - b.start);
+    const upcoming = (todaysClasses ?? [])
+      .filter((c) => c.end > now)
+      .sort((a, b) => a.start - b.start);
     return upcoming[0] || null;
   }, [todaysClasses, now]);
 
@@ -407,11 +415,17 @@ export default function StudentDashboard() {
       >
         <div className="flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
           <div>
-            <div className="text-sm font-semibold" style={{ color: BRAND.muted }}>
+            <div
+              className="text-sm font-semibold"
+              style={{ color: BRAND.muted }}
+            >
               {formatDate(now)} • {formatTime(now)}
             </div>
 
-            <div className="mt-1 text-2xl font-extrabold" style={{ color: BRAND.brown }}>
+            <div
+              className="mt-1 text-2xl font-extrabold"
+              style={{ color: BRAND.brown }}
+            >
               Welcome back, {loadingStudent ? "..." : studentName}!
             </div>
 
@@ -420,15 +434,26 @@ export default function StudentDashboard() {
             </div>
           </div>
 
-          <div className="rounded-2xl border px-4 py-3" style={{ borderColor: BRAND.stroke, background: BRAND.softGoldBg }}>
+          <div
+            className="rounded-2xl border px-4 py-3"
+            style={{
+              borderColor: BRAND.stroke,
+              background: BRAND.softGoldBg,
+            }}
+          >
             <div className="text-xs font-semibold" style={{ color: BRAND.muted }}>
               Next class in
             </div>
-            <div className="text-lg font-extrabold" style={{ color: BRAND.brown }}>
+            <div
+              className="text-lg font-extrabold"
+              style={{ color: BRAND.brown }}
+            >
               {nextClass ? countdown : "—"}
             </div>
             <div className="text-xs font-semibold" style={{ color: BRAND.muted }}>
-              {nextClass ? `${nextClass.subject} • ${formatTime(nextClass.start)}` : "No upcoming class"}
+              {nextClass
+                ? `${nextClass.subject} • ${formatTime(nextClass.start)}`
+                : "No upcoming class"}
             </div>
           </div>
         </div>
@@ -436,14 +461,26 @@ export default function StudentDashboard() {
 
       {/* Stats */}
       <div className="grid gap-4 md:grid-cols-3">
-        <StatCard icon={BookOpen} title="Total Courses" value={stats.totalCourses} hint="Tap Courses to view subjects" />
+        <StatCard
+          icon={BookOpen}
+          title="Total Courses"
+          value={stats.totalCourses}
+          hint="Tap Courses to view subjects"
+        />
         <StatCard
           icon={Clock}
           title="Today's Classes"
           value={stats.todaysClasses}
-          hint={nextClass ? `Next: ${formatTime(nextClass.start)}` : "No more classes today"}
+          hint={
+            nextClass ? `Next: ${formatTime(nextClass.start)}` : "No more classes today"
+          }
         />
-        <StatCard icon={CheckCircle2} title="Pending Assignments" value={stats.pendingAssignments} hint="Due soon" />
+        <StatCard
+          icon={CheckCircle2}
+          title="Pending Assignments"
+          value={stats.pendingAssignments}
+          hint="Due soon"
+        />
       </div>
 
       {/* Two-column main widgets */}
@@ -458,13 +495,14 @@ export default function StudentDashboard() {
         >
           <div className="flex items-center justify-between">
             <div>
-              <div className="text-sm font-extrabold" style={{ color: BRAND.brown }}>
+              <div
+                className="text-lg font-extrabold"
+                style={{ color: BRAND.brown }}
+              >
                 Today’s Schedule
               </div>
-              <div className="text-xs font-semibold" style={{ color: BRAND.muted }}>
-                Chronological view • with status
-              </div>
             </div>
+
             <button
               className="rounded-2xl px-4 py-2 text-sm font-semibold transition"
               style={{
@@ -472,9 +510,14 @@ export default function StudentDashboard() {
                 color: BRAND.brown,
                 boxShadow: "0 10px 18px rgba(212,166,47,0.24)",
               }}
-              onMouseEnter={(e) => (e.currentTarget.style.background = BRAND.goldHover)}
-              onMouseLeave={(e) => (e.currentTarget.style.background = BRAND.gold)}
-              onClick={() => alert("Go to /student/schedule")}
+              onMouseEnter={(e) =>
+                (e.currentTarget.style.background = BRAND.goldHover)
+              }
+              onMouseLeave={(e) =>
+                (e.currentTarget.style.background = BRAND.gold)
+              }
+              onClick={() => navigate("/student/schedule")}
+              type="button"
             >
               View Full Schedule
             </button>
@@ -482,16 +525,27 @@ export default function StudentDashboard() {
 
           <div className="mt-4 space-y-3">
             {loadingSchedule ? (
-              <div className="text-sm font-semibold" style={{ color: BRAND.muted }}>
+              <div
+                className="text-sm font-semibold"
+                style={{ color: BRAND.muted }}
+              >
                 Loading schedule...
               </div>
             ) : todaysClasses.length === 0 ? (
-              <div className="text-sm font-semibold" style={{ color: BRAND.muted }}>
+              <div
+                className="text-sm font-semibold"
+                style={{ color: BRAND.muted }}
+              >
                 No classes scheduled for today.
               </div>
             ) : (
               todaysClasses.map((c, idx) => {
-                const status = now < c.start ? "Upcoming" : now >= c.start && now <= c.end ? "In Progress" : "Completed";
+                const status =
+                  now < c.start
+                    ? "Upcoming"
+                    : now >= c.start && now <= c.end
+                    ? "In Progress"
+                    : "Completed";
 
                 return (
                   <div
@@ -499,11 +553,17 @@ export default function StudentDashboard() {
                     className="flex items-start gap-3 rounded-2xl border p-4"
                     style={{
                       borderColor: BRAND.stroke,
-                      background: status === "In Progress" ? "rgba(212,166,47,0.10)" : "rgba(255,255,255,1)",
+                      background:
+                        status === "In Progress"
+                          ? "rgba(212,166,47,0.10)"
+                          : "rgba(255,255,255,1)",
                     }}
                   >
                     <div className="min-w-[110px]">
-                      <div className="text-xs font-semibold" style={{ color: BRAND.muted }}>
+                      <div
+                        className="text-xs font-semibold"
+                        style={{ color: BRAND.muted }}
+                      >
                         {formatTime(c.start)} - {formatTime(c.end)}
                       </div>
                       <div
@@ -528,10 +588,16 @@ export default function StudentDashboard() {
                     </div>
 
                     <div className="flex-1">
-                      <div className="text-sm font-extrabold" style={{ color: BRAND.brown }}>
+                      <div
+                        className="text-sm font-extrabold"
+                        style={{ color: BRAND.brown }}
+                      >
                         {c.subject}
                       </div>
-                      <div className="mt-1 text-xs font-semibold" style={{ color: BRAND.muted }}>
+                      <div
+                        className="mt-1 text-xs font-semibold"
+                        style={{ color: BRAND.muted }}
+                      >
                         {c.teacher} • {c.room}
                       </div>
                     </div>
@@ -539,7 +605,8 @@ export default function StudentDashboard() {
                     <button
                       className="rounded-2xl border px-4 py-2 text-sm font-semibold transition hover:bg-black/5"
                       style={{ borderColor: BRAND.stroke, color: BRAND.brown }}
-                      onClick={() => alert("Class details")}
+                      onClick={() => navigate("/student/schedule")}
+                      type="button"
                     >
                       View Details
                     </button>
@@ -562,17 +629,25 @@ export default function StudentDashboard() {
           >
             <div className="flex items-center justify-between">
               <div>
-                <div className="text-sm font-extrabold" style={{ color: BRAND.brown }}>
+                <div
+                  className="text-sm font-extrabold"
+                  style={{ color: BRAND.brown }}
+                >
                   Announcements
                 </div>
-                <div className="text-xs font-semibold" style={{ color: BRAND.muted }}>
+                <div
+                  className="text-xs font-semibold"
+                  style={{ color: BRAND.muted }}
+                >
                   Latest updates from Admin
                 </div>
               </div>
+
               <button
                 className="text-sm font-extrabold hover:underline"
                 style={{ color: BRAND.gold }}
-                onClick={() => alert("Go to /student/announcements")}
+                onClick={() => navigate("/student/announcements")}
+                type="button"
               >
                 View All
               </button>
@@ -580,28 +655,47 @@ export default function StudentDashboard() {
 
             <div className="mt-4 space-y-3">
               {loadingAnnouncements ? (
-                <div className="text-sm font-semibold" style={{ color: BRAND.muted }}>
+                <div
+                  className="text-sm font-semibold"
+                  style={{ color: BRAND.muted }}
+                >
                   Loading announcements...
                 </div>
               ) : announcements.length === 0 ? (
-                <div className="text-sm font-semibold" style={{ color: BRAND.muted }}>
+                <div
+                  className="text-sm font-semibold"
+                  style={{ color: BRAND.muted }}
+                >
                   No announcements yet.
                 </div>
               ) : (
                 announcements.map((a) => (
-                  <div key={a.id} className="rounded-2xl border p-4" style={{ borderColor: BRAND.stroke }}>
+                  <div
+                    key={a.id}
+                    className="rounded-2xl border p-4"
+                    style={{ borderColor: BRAND.stroke }}
+                  >
                     <div className="flex items-center justify-between gap-2">
-                      <div className="text-sm font-extrabold" style={{ color: BRAND.brown }}>
+                      <div
+                        className="text-sm font-extrabold"
+                        style={{ color: BRAND.brown }}
+                      >
                         {a.title}
                       </div>
                       <span
                         className="rounded-full px-3 py-1 text-[11px] font-extrabold"
-                        style={{ background: BRAND.softGoldBg, color: BRAND.brown }}
+                        style={{
+                          background: BRAND.softGoldBg,
+                          color: BRAND.brown,
+                        }}
                       >
                         {a.tag}
                       </span>
                     </div>
-                    <div className="mt-1 text-xs font-semibold" style={{ color: BRAND.muted }}>
+                    <div
+                      className="mt-1 text-xs font-semibold"
+                      style={{ color: BRAND.muted }}
+                    >
                       Posted by {a.by}
                     </div>
                     <div className="mt-2 text-sm" style={{ color: BRAND.muted }}>
@@ -614,8 +708,15 @@ export default function StudentDashboard() {
           </motion.section>
 
           {/* ✅ CalendarWidget */}
-          <motion.div initial={{ opacity: 0, y: 8 }} animate={{ opacity: 1, y: 0 }} transition={{ duration: 0.18, delay: 0.06 }}>
-            <CalendarWidget title="Academic Calendar" subtitle="Official yearly schedule (read-only)" />
+          <motion.div
+            initial={{ opacity: 0, y: 8 }}
+            animate={{ opacity: 1, y: 0 }}
+            transition={{ duration: 0.18, delay: 0.06 }}
+          >
+            <CalendarWidget
+              title="Academic Calendar"
+              subtitle="Official yearly schedule (read-only)"
+            />
           </motion.div>
         </div>
       </div>
@@ -630,10 +731,16 @@ export default function StudentDashboard() {
       >
         <div className="flex items-center justify-between">
           <div>
-            <div className="text-sm font-extrabold" style={{ color: BRAND.brown }}>
+            <div
+              className="text-sm font-extrabold"
+              style={{ color: BRAND.brown }}
+            >
               Recent Lessons & Updates
             </div>
-            <div className="text-xs font-semibold" style={{ color: BRAND.muted }}>
+            <div
+              className="text-xs font-semibold"
+              style={{ color: BRAND.muted }}
+            >
               Latest uploads from your teachers
             </div>
           </div>
@@ -641,9 +748,14 @@ export default function StudentDashboard() {
           <button
             className="inline-flex items-center gap-2 rounded-2xl px-4 py-2 text-sm font-semibold transition"
             style={{ background: BRAND.gold, color: BRAND.brown }}
-            onMouseEnter={(e) => (e.currentTarget.style.background = BRAND.goldHover)}
-            onMouseLeave={(e) => (e.currentTarget.style.background = BRAND.gold)}
-            onClick={() => alert("Go to lessons (build under Courses)")}
+            onMouseEnter={(e) =>
+              (e.currentTarget.style.background = BRAND.goldHover)
+            }
+            onMouseLeave={(e) =>
+              (e.currentTarget.style.background = BRAND.gold)
+            }
+            onClick={() => navigate("/student/courses")}
+            type="button"
           >
             <Sparkles className="h-4 w-4" />
             View Lessons
@@ -652,30 +764,47 @@ export default function StudentDashboard() {
 
         <div className="mt-4 grid gap-3 md:grid-cols-3">
           {loadingLessons ? (
-            <div className="text-sm font-semibold" style={{ color: BRAND.muted }}>
+            <div
+              className="text-sm font-semibold"
+              style={{ color: BRAND.muted }}
+            >
               Loading lessons...
             </div>
           ) : lessons.length === 0 ? (
-            <div className="text-sm font-semibold" style={{ color: BRAND.muted }}>
+            <div
+              className="text-sm font-semibold"
+              style={{ color: BRAND.muted }}
+            >
               No lessons yet.
             </div>
           ) : (
             lessons.map((l, idx) => (
-              <div key={idx} className="rounded-2xl border p-4" style={{ borderColor: BRAND.stroke }}>
+              <div
+                key={idx}
+                className="rounded-2xl border p-4"
+                style={{ borderColor: BRAND.stroke }}
+              >
                 <div className="text-xs font-semibold" style={{ color: BRAND.muted }}>
                   {l.course} • {l.date}
                 </div>
-                <div className="mt-1 text-sm font-extrabold" style={{ color: BRAND.brown }}>
+                <div
+                  className="mt-1 text-sm font-extrabold"
+                  style={{ color: BRAND.brown }}
+                >
                   {l.title}
                 </div>
-                <div className="mt-1 text-xs font-semibold" style={{ color: BRAND.muted }}>
+                <div
+                  className="mt-1 text-xs font-semibold"
+                  style={{ color: BRAND.muted }}
+                >
                   {l.teacher}
                 </div>
 
                 <button
                   className="mt-3 w-full rounded-2xl border px-4 py-2 text-sm font-semibold transition hover:bg-black/5"
                   style={{ borderColor: BRAND.stroke, color: BRAND.brown }}
-                  onClick={() => alert("Open lesson viewer")}
+                  onClick={() => navigate("/student/courses")}
+                  type="button"
                 >
                   View Lesson
                 </button>
@@ -698,7 +827,10 @@ function StatCard({ icon: Icon, title, value, hint }) {
       style={{ borderColor: BRAND.stroke, boxShadow: BRAND.cardShadow }}
     >
       <div className="flex items-start gap-3">
-        <div className="grid h-11 w-11 place-items-center rounded-2xl" style={{ background: BRAND.softGoldBg }}>
+        <div
+          className="grid h-11 w-11 place-items-center rounded-2xl"
+          style={{ background: BRAND.softGoldBg }}
+        >
           <Icon className="h-5 w-5" style={{ color: "rgba(43,26,18,0.70)" }} />
         </div>
 
