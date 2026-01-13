@@ -475,12 +475,7 @@ export default function StudentDashboard() {
             nextClass ? `Next: ${formatTime(nextClass.start)}` : "No more classes today"
           }
         />
-        <StatCard
-          icon={CheckCircle2}
-          title="Pending Assignments"
-          value={stats.pendingAssignments}
-          hint="Due soon"
-        />
+   
       </div>
 
       {/* Two-column main widgets */}

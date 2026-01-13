@@ -24,8 +24,127 @@ const ROLE_OPTIONS = [
   { value: "super_admin", label: "super_admin" },
 ];
 
+/* ===================== Toast ===================== */
+
+function ToastHost({ toasts, onDismiss }) {
+  return (
+    <div className="fixed top-4 right-4 z-[9999] flex w-[360px] max-w-[92vw] flex-col gap-2">
+      {toasts.map((t) => (
+        <div
+          key={t.id}
+          className={`rounded-2xl border bg-white p-4 shadow-xl ${
+            t.tone === "danger"
+              ? "border-rose-200"
+              : t.tone === "success"
+              ? "border-emerald-200"
+              : "border-black/10"
+          }`}
+        >
+          <div className="flex items-start justify-between gap-3">
+            <div className="min-w-0">
+              <div className="text-sm font-extrabold text-black">{t.title}</div>
+              {t.message ? (
+                <div className="mt-1 text-xs font-semibold text-black/60">
+                  {t.message}
+                </div>
+              ) : null}
+
+              {t.actions?.length ? (
+                <div className="mt-3 flex flex-wrap gap-2">
+                  {t.actions.map((a) => (
+                    <button
+                      key={a.label}
+                      onClick={a.onClick}
+                      className={`rounded-xl px-3 py-2 text-xs font-extrabold ${
+                        a.variant === "danger"
+                          ? "bg-rose-600 text-white"
+                          : a.variant === "primary"
+                          ? "bg-[#C9A227] text-black"
+                          : "border border-black/10 bg-white text-black/70"
+                      }`}
+                      type="button"
+                    >
+                      {a.label}
+                    </button>
+                  ))}
+                </div>
+              ) : null}
+            </div>
+
+            <button
+              onClick={() => onDismiss(t.id)}
+              className="grid h-8 w-8 place-items-center rounded-xl hover:bg-black/5"
+              title="Close"
+              type="button"
+            >
+              <X className="h-4 w-4 text-black/50" />
+            </button>
+          </div>
+        </div>
+      ))}
+    </div>
+  );
+}
+
+function useToasts() {
+  const [toasts, setToasts] = useState([]);
+
+  const push = (toast) => {
+    const id = crypto.randomUUID?.() || String(Date.now() + Math.random());
+    const item = { id, tone: "info", ...toast };
+    setToasts((p) => [item, ...p]);
+
+    if (!item.actions?.length) {
+      setTimeout(() => {
+        setToasts((p) => p.filter((x) => x.id !== id));
+      }, 3200);
+    }
+    return id;
+  };
+
+  const dismiss = (id) => setToasts((p) => p.filter((x) => x.id !== id));
+
+  const confirm = ({
+    title,
+    message,
+    confirmText = "Confirm",
+    cancelText = "Cancel",
+    tone = "danger",
+  }) =>
+    new Promise((resolve) => {
+      const id = push({
+        title,
+        message,
+        tone,
+        actions: [
+          {
+            label: cancelText,
+            variant: "secondary",
+            onClick: () => {
+              dismiss(id);
+              resolve(false);
+            },
+          },
+          {
+            label: confirmText,
+            variant: tone === "danger" ? "danger" : "primary",
+            onClick: () => {
+              dismiss(id);
+              resolve(true);
+            },
+          },
+        ],
+      });
+    });
+
+  return { toasts, push, dismiss, confirm };
+}
+
+/* ===================== Page ===================== */
+
 export default function AdminManagement() {
   const qc = useQueryClient();
+  const toast = useToasts();
 
   const [q, setQ] = useState("");
   const [tab, setTab] = useState("active"); // active | archived
@@ -105,7 +224,11 @@ export default function AdminManagement() {
 
       return data;
     },
-    onSuccess: () => qc.invalidateQueries({ queryKey: ["dev-admins"] }),
+    onSuccess: async () => {
+      await qc.invalidateQueries({ queryKey: ["dev-admins"] });
+      toast.push({ tone: "success", title: "Created", message: "Admin account created." });
+    },
+    onError: (e) => toast.push({ tone: "danger", title: "Create failed", message: errMsg(e) }),
   });
 
   // ======================
@@ -114,14 +237,19 @@ export default function AdminManagement() {
   // ======================
   const updateM = useMutation({
     mutationFn: async ({ user_id, values }) => {
+      // ✅ enforce rule:
+      // if archived => active must be false
+      const willArchive = !!values.is_archived;
+      const nextActive = willArchive ? false : !!values.is_active;
+
       // admins metadata
       const { error: aErr } = await supabase
         .from("admins")
         .update({
           department: values.department || null,
           phone: values.phone || null,
-          is_active: !!values.is_active,
-          is_archived: !!values.is_archived,
+          is_active: nextActive,
+          is_archived: willArchive,
         })
         .eq("user_id", user_id);
 
@@ -133,34 +261,62 @@ export default function AdminManagement() {
         .update({
           full_name: values.full_name,
           role: values.role, // ✅ admin or super_admin
-          is_active: !!values.is_active,
-          is_archived: !!values.is_archived,
+          is_active: nextActive,
+          is_archived: willArchive,
         })
         .eq("user_id", user_id);
 
       if (pErr) throw pErr;
     },
-    onSuccess: () => qc.invalidateQueries({ queryKey: ["dev-admins"] }),
+    onSuccess: async () => {
+      await qc.invalidateQueries({ queryKey: ["dev-admins"] });
+      toast.push({ tone: "success", title: "Saved", message: "Admin updated." });
+    },
+    onError: (e) => toast.push({ tone: "danger", title: "Update failed", message: errMsg(e) }),
   });
 
   // ======================
-  // ARCHIVE / RESTORE (sync both)
+  // ARCHIVE / RESTORE (sync both + disable access)
+  // RULE:
+  // - archive  => is_archived=true AND is_active=false
+  // - restore  => is_archived=false AND is_active=true
   // ======================
   const archiveM = useMutation({
-    mutationFn: async ({ user_id, is_archived }) => {
+    mutationFn: async ({ user_id, makeArchived }) => {
+      const patch = makeArchived
+        ? { is_archived: true, is_active: false }
+        : { is_archived: false, is_active: true };
+
       const { error: aErr } = await supabase
         .from("admins")
-        .update({ is_archived })
+        .update(patch)
         .eq("user_id", user_id);
       if (aErr) throw aErr;
 
       const { error: pErr } = await supabase
         .from("profiles")
-        .update({ is_archived })
+        .update(patch)
         .eq("user_id", user_id);
       if (pErr) throw pErr;
     },
-    onSuccess: () => qc.invalidateQueries({ queryKey: ["dev-admins"] }),
+    onSuccess: async (_data, vars) => {
+      await qc.invalidateQueries({ queryKey: ["dev-admins"] });
+
+      if (vars.makeArchived) {
+        toast.push({
+          tone: "success",
+          title: "Archived",
+          message: "Access disabled. They can login again only after restore.",
+        });
+      } else {
+        toast.push({
+          tone: "success",
+          title: "Restored",
+          message: "Access enabled again.",
+        });
+      }
+    },
+    onError: (e) => toast.push({ tone: "danger", title: "Action failed", message: errMsg(e) }),
   });
 
   // ======================
@@ -188,6 +344,10 @@ export default function AdminManagement() {
 
       return data;
     },
+    onSuccess: () => {
+      toast.push({ tone: "success", title: "Password reset", message: "Temporary password generated." });
+    },
+    onError: (e) => toast.push({ tone: "danger", title: "Reset failed", message: errMsg(e) }),
   });
 
   // ======================
@@ -209,12 +369,35 @@ export default function AdminManagement() {
     setModal({ open: false, mode: "create", row: null });
   }
 
-  function onArchiveToggle(row) {
-    archiveM.mutate({ user_id: row.user_id, is_archived: !row.is_archived });
+  async function onArchiveToggle(row) {
+    const email = row?.profiles?.email || row.user_id;
+    const makeArchived = !row.is_archived;
+
+    const ok = await toast.confirm({
+      title: makeArchived ? "Archive admin?" : "Restore admin?",
+      message: makeArchived
+        ? `Archiving will DISABLE access immediately for: ${email}`
+        : `Restoring will ENABLE access again for: ${email}`,
+      confirmText: makeArchived ? "Archive" : "Restore",
+      cancelText: "Cancel",
+      tone: makeArchived ? "danger" : "info",
+    });
+
+    if (!ok) return;
+    archiveM.mutate({ user_id: row.user_id, makeArchived });
   }
 
-  function onResetPassword(row) {
-    const ok = window.confirm(`Reset password for ${row?.profiles?.email || row.user_id}?`);
+  async function onResetPassword(row) {
+    const email = row?.profiles?.email || row.user_id;
+
+    const ok = await toast.confirm({
+      title: "Reset password?",
+      message: `Reset password for ${email}?`,
+      confirmText: "Reset",
+      cancelText: "Cancel",
+      tone: "danger",
+    });
+
     if (!ok) return;
     resetPwdM.mutate({ user_id: row.user_id });
   }
@@ -224,6 +407,8 @@ export default function AdminManagement() {
 
   return (
     <div className="space-y-4">
+      <ToastHost toasts={toast.toasts} onDismiss={toast.dismiss} />
+
       <div className="flex flex-col gap-3 md:flex-row md:items-end md:justify-between">
         <div>
           <div className="text-sm font-extrabold">Admin Accounts</div>
@@ -234,7 +419,8 @@ export default function AdminManagement() {
 
         <button
           onClick={openCreate}
-          className={`inline-flex items-center gap-2 rounded-2xl px-4 py-2 text-sm font-extrabold ${TOKENS.goldBg} text-black hover:opacity-95`}
+          className={`inline-flex items-center gap-2 rounded-2xl px-4 py-2 text-sm font-extrabold ${TOKENS.goldBg} text-black hover:opacity-95 disabled:opacity-60`}
+          disabled={busy}
         >
           <Plus className="h-4 w-4" />
           Add Admin
@@ -251,7 +437,11 @@ export default function AdminManagement() {
               <span className="font-extrabold">{creds.email || "-"}</span>
               <button
                 className="rounded-xl border border-black/10 bg-white px-3 py-1 text-xs font-semibold hover:bg-white/80"
-                onClick={() => navigator.clipboard.writeText(String(creds.email || ""))}
+                onClick={() => {
+                  navigator.clipboard.writeText(String(creds.email || ""));
+                  toast.push({ tone: "success", title: "Copied", message: "Email copied." });
+                }}
+                type="button"
               >
                 Copy
               </button>
@@ -262,7 +452,11 @@ export default function AdminManagement() {
               <span className="font-extrabold">{creds.tempPassword}</span>
               <button
                 className="rounded-xl border border-black/10 bg-white px-3 py-1 text-xs font-semibold hover:bg-white/80"
-                onClick={() => navigator.clipboard.writeText(String(creds.tempPassword || ""))}
+                onClick={() => {
+                  navigator.clipboard.writeText(String(creds.tempPassword || ""));
+                  toast.push({ tone: "success", title: "Copied", message: "Password copied." });
+                }}
+                type="button"
               >
                 Copy
               </button>
@@ -294,6 +488,7 @@ export default function AdminManagement() {
               className={`rounded-2xl px-4 py-2 text-sm font-extrabold border border-black/10 ${
                 tab === "active" ? "bg-white" : "bg-white/60"
               }`}
+              type="button"
             >
               Active
             </button>
@@ -302,6 +497,7 @@ export default function AdminManagement() {
               className={`rounded-2xl px-4 py-2 text-sm font-extrabold border border-black/10 ${
                 tab === "archived" ? "bg-white" : "bg-white/60"
               }`}
+              type="button"
             >
               Archived
             </button>
@@ -312,7 +508,9 @@ export default function AdminManagement() {
       {/* Table */}
       <div className="overflow-hidden rounded-2xl border border-black/10 bg-white/70">
         <div className="flex items-center justify-between border-b border-black/10 bg-black/[0.02] px-4 py-3">
-          <div className="text-sm font-extrabold">{tab === "archived" ? "Archived Admins" : "Admins"}</div>
+          <div className="text-sm font-extrabold">
+            {tab === "archived" ? "Archived Admins" : "Admins"}
+          </div>
           <div className="text-xs text-black/55">
             Showing {filtered.length} of {visibleRows.length}
           </div>
@@ -359,16 +557,12 @@ export default function AdminManagement() {
                             <KeyRound className="h-5 w-5" />
                           </IconBtn>
 
-                          <IconBtn title="Archive" onClick={() => onArchiveToggle(r)} tone="neutral">
-                            <ArchiveRestore className="h-5 w-5" />
-                          </IconBtn>
-
-                          <IconBtn title="Delete (Archive)" onClick={() => onArchiveToggle(r)} tone="danger">
+                          <IconBtn title="Archive (disable access)" onClick={() => onArchiveToggle(r)} tone="danger">
                             <Trash2 className="h-5 w-5" />
                           </IconBtn>
                         </>
                       ) : (
-                        <IconBtn title="Restore" onClick={() => onArchiveToggle(r)} tone="neutral">
+                        <IconBtn title="Restore (enable access)" onClick={() => onArchiveToggle(r)} tone="neutral">
                           <ArchiveRestore className="h-5 w-5" />
                         </IconBtn>
                       )}
@@ -395,23 +589,11 @@ export default function AdminManagement() {
           mode={modal.mode}
           row={modal.row}
           busy={busy}
+          toast={toast}
           onClose={closeModal}
           onCreate={(values) => createM.mutate(values)}
           onUpdate={(user_id, values) => updateM.mutate({ user_id, values })}
         />
-      ) : null}
-
-      {/* Errors */}
-      {createM.isError ? (
-        <div className="rounded-2xl border border-rose-200 bg-rose-50 p-4 text-sm text-rose-700">
-          Create error: {errMsg(createM.error)}
-        </div>
-      ) : null}
-
-      {resetPwdM.isError ? (
-        <div className="rounded-2xl border border-rose-200 bg-rose-50 p-4 text-sm text-rose-700">
-          Reset error: {errMsg(resetPwdM.error)}
-        </div>
       ) : null}
     </div>
   );
@@ -420,7 +602,7 @@ export default function AdminManagement() {
 /** ======================
  *  MODAL
  *  ====================== */
-function AdminModal({ mode, row, onClose, onCreate, onUpdate, busy }) {
+function AdminModal({ mode, row, onClose, onCreate, onUpdate, busy, toast }) {
   const isView = mode === "view";
   const isEdit = mode === "edit";
 
@@ -445,15 +627,20 @@ function AdminModal({ mode, row, onClose, onCreate, onUpdate, busy }) {
 
   function submit() {
     if (!draft.full_name.trim()) {
-      alert("Full name is required.");
+      toast.push({ tone: "danger", title: "Validation", message: "Full name is required." });
       return;
     }
 
     // On CREATE: email required
     if (!isEdit && !isView && !draft.email.trim()) {
-      alert("Email is required.");
+      toast.push({ tone: "danger", title: "Validation", message: "Email is required." });
       return;
     }
+
+    // ✅ enforce rule inside modal too:
+    // if archived => active must be false
+    const willArchive = !!draft.is_archived;
+    const nextActive = willArchive ? false : !!draft.is_active;
 
     // CREATE
     if (!isEdit && !isView) {
@@ -475,8 +662,8 @@ function AdminModal({ mode, row, onClose, onCreate, onUpdate, busy }) {
         role: draft.role,
         department: draft.department || null,
         phone: draft.phone || null,
-        is_active: !!draft.is_active,
-        is_archived: !!draft.is_archived,
+        is_active: nextActive,
+        is_archived: willArchive,
       });
       onClose();
       return;
@@ -501,13 +688,17 @@ function AdminModal({ mode, row, onClose, onCreate, onUpdate, busy }) {
             </div>
           </div>
 
-          <button onClick={onClose} className="grid h-9 w-9 place-items-center rounded-2xl hover:bg-black/5">
+          <button
+            onClick={onClose}
+            className="grid h-9 w-9 place-items-center rounded-2xl hover:bg-black/5"
+            type="button"
+          >
             <X className="h-5 w-5 text-black/60" />
           </button>
         </div>
 
         <div className="h-[calc(100%-64px)] overflow-auto p-4 space-y-4">
-          {/* Email: create only (editing auth email requires admin API; keep locked for now) */}
+          {/* Email: create only */}
           <Input
             label="Email *"
             disabled={isView || isEdit}
@@ -555,8 +746,8 @@ function AdminModal({ mode, row, onClose, onCreate, onUpdate, busy }) {
               <label className="flex items-center gap-2 rounded-2xl border border-black/10 bg-white/70 px-3 py-2 text-sm">
                 <input
                   type="checkbox"
-                  disabled={isView}
-                  checked={!!draft.is_active}
+                  disabled={isView || !!draft.is_archived} // ✅ if archived, active is forced false
+                  checked={!!draft.is_active && !draft.is_archived}
                   onChange={(e) => set("is_active", e.target.checked)}
                 />
                 Active
@@ -567,10 +758,20 @@ function AdminModal({ mode, row, onClose, onCreate, onUpdate, busy }) {
                   type="checkbox"
                   disabled={isView}
                   checked={!!draft.is_archived}
-                  onChange={(e) => set("is_archived", e.target.checked)}
+                  onChange={(e) => {
+                    const checked = e.target.checked;
+                    set("is_archived", checked);
+                    if (checked) set("is_active", false); // ✅ force off
+                  }}
                 />
-                Archived
+                Archived (disables access)
               </label>
+
+              {draft.is_archived ? (
+                <div className="text-xs font-semibold text-rose-700">
+                  Archived admins cannot access their account until restored.
+                </div>
+              ) : null}
             </div>
           ) : null}
 
@@ -617,6 +818,7 @@ function IconBtn({ title, onClick, tone, children }) {
       title={title}
       onClick={onClick}
       className={`grid h-9 w-9 place-items-center rounded-2xl border border-black/10 ${cls}`}
+      type="button"
     >
       {children}
     </button>
