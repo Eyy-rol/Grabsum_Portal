@@ -94,17 +94,12 @@ export default function CalendarWidget({
       setErr("");
 
       try {
-        // Fetch events for visible month (with safe buffer to include spanning events)
         const start = new Date(monthCursor.getFullYear(), monthCursor.getMonth(), 1);
         const end = new Date(monthCursor.getFullYear(), monthCursor.getMonth() + 1, 0);
 
         const startISO = toISODate(start);
         const endISO = toISODate(end);
 
-        // include events that:
-        // - start within the month OR
-        // - end within the month OR
-        // - spans across the month (start before, end after)
         const { data, error } = await supabase
           .from("calendar_events")
           .select("id,title,type,start_date,end_date,all_day,start_time,end_time,location,custom_color")
@@ -113,7 +108,7 @@ export default function CalendarWidget({
               `start_date.gte.${startISO},start_date.lte.${endISO}`,
               `end_date.gte.${startISO},end_date.lte.${endISO}`,
               `and(start_date.lte.${startISO},end_date.gte.${endISO})`,
-              `and(start_date.lte.${endISO},end_date.is.null)`, // single-day events
+              `and(start_date.lte.${endISO},end_date.is.null)`,
             ].join(",")
           )
           .order("start_date", { ascending: true });
@@ -134,7 +129,6 @@ export default function CalendarWidget({
 
     load();
 
-    // optional realtime updates
     const ch = supabase
       .channel("calendar_widget_changes")
       .on("postgres_changes", { event: "*", schema: "public", table: "calendar_events" }, () => load())
@@ -148,7 +142,6 @@ export default function CalendarWidget({
 
   const eventsByDay = useMemo(() => {
     const map = new Map();
-    // build for all days in matrix
     const flatDays = monthWeeks.flat();
     for (const d of flatDays) {
       const iso = toISODate(d);
@@ -158,23 +151,28 @@ export default function CalendarWidget({
     return map;
   }, [events, monthWeeks]);
 
-  const dayEvents = useMemo(() => events.filter((ev) => occursOnDay(ev, selectedDay)), [events, selectedDay]);
+  const dayEvents = useMemo(
+    () => events.filter((ev) => occursOnDay(ev, selectedDay)),
+    [events, selectedDay]
+  );
 
   return (
+    // ✅ relative + overflow-hidden is REQUIRED so the modal stays inside this widget
     <section
-      className="rounded-3xl border bg-white p-5"
+      className="relative w-full max-w-full min-w-0 overflow-hidden rounded-3xl border bg-white p-5"
       style={{ borderColor: BRAND.stroke, boxShadow: BRAND.cardShadow }}
     >
       <div className="flex items-center justify-between gap-3">
-        <div>
-          <div className="text-sm font-extrabold" style={{ color: BRAND.brown }}>
+        <div className="min-w-0">
+          <div className="truncate text-sm font-extrabold" style={{ color: BRAND.brown }}>
             {title}
           </div>
-          <div className="text-xs font-semibold" style={{ color: BRAND.muted }}>
+          <div className="truncate text-xs font-semibold" style={{ color: BRAND.muted }}>
             {subtitle}
           </div>
           {err ? (
-            <div className="mt-2 rounded-2xl border px-3 py-2 text-xs font-extrabold text-rose-700"
+            <div
+              className="mt-2 rounded-2xl border px-3 py-2 text-xs font-extrabold text-rose-700"
               style={{ borderColor: "rgba(244,63,94,0.25)", background: "rgba(244,63,94,0.08)" }}
             >
               {err}
@@ -203,7 +201,8 @@ export default function CalendarWidget({
         </div>
       </div>
 
-      <div className="mt-3 inline-flex items-center gap-2 rounded-2xl border px-3 py-2 text-sm font-extrabold"
+      <div
+        className="mt-3 inline-flex items-center gap-2 rounded-2xl border px-3 py-2 text-sm font-extrabold"
         style={{ borderColor: BRAND.stroke, background: "rgba(255,255,255,0.7)", color: BRAND.brown }}
       >
         <CalendarIcon className="h-4 w-4" style={{ color: BRAND.muted }} />
@@ -244,7 +243,6 @@ export default function CalendarWidget({
             >
               {d.getDate()}
 
-              {/* Dots */}
               {list.length ? (
                 <div className="mt-1 flex items-center justify-center gap-1">
                   {list.slice(0, limitDotsPerDay).map((ev) => (
@@ -266,35 +264,44 @@ export default function CalendarWidget({
         })}
       </div>
 
-      {/* Day modal */}
+      {/* ✅ CONTAINED Day modal (no more cross-page overlay) */}
       {openDayModal ? (
-        <DayModal
-          dayISO={selectedDay}
-          events={dayEvents}
-          onClose={() => setOpenDayModal(false)}
-        />
+        <DayModalContained dayISO={selectedDay} events={dayEvents} onClose={() => setOpenDayModal(false)} />
       ) : null}
     </section>
   );
 }
 
-function DayModal({ dayISO, events, onClose }) {
+/**
+ * ✅ Contained modal:
+ * - Uses absolute instead of fixed
+ * - Stays inside the calendar widget
+ * - Prevents overlay on Recent Activity column
+ */
+function DayModalContained({ dayISO, events, onClose }) {
   return (
-    <>
-      <div className="fixed inset-0 z-40 bg-black/20 backdrop-blur-sm" onClick={onClose} />
-      <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
+    <div className="absolute inset-0 z-50">
+      {/* Backdrop (contained) */}
+      <div className="absolute inset-0 bg-black/20 backdrop-blur-sm" onClick={onClose} />
+
+      {/* Modal panel */}
+      <div className="absolute inset-0 flex items-center justify-center p-4">
         <div className="w-full max-w-3xl rounded-2xl border border-black/10 bg-white shadow-xl">
           <div className="flex items-center justify-between border-b border-black/10 p-4">
             <div className="text-sm font-extrabold">
               {niceDate(dayISO)}
               <div className="text-xs font-semibold text-black/55">Official schedule</div>
             </div>
-            <button onClick={onClose} className="grid h-9 w-9 place-items-center rounded-2xl hover:bg-black/5" type="button">
+            <button
+              onClick={onClose}
+              className="grid h-9 w-9 place-items-center rounded-2xl hover:bg-black/5"
+              type="button"
+            >
               <X className="h-5 w-5 text-black/60" />
             </button>
           </div>
 
-          <div className="p-4">
+          <div className="max-h-[70vh] overflow-auto p-4">
             {events.length === 0 ? (
               <div className="rounded-2xl border border-black/10 bg-white/70 p-4 text-sm text-black/60">
                 No events for this day.
@@ -314,7 +321,8 @@ function DayModal({ dayISO, events, onClose }) {
                           {ev.location ? ` • ${ev.location}` : ""}
                         </div>
                       </div>
-                      <span className="rounded-full px-3 py-1 text-[11px] font-extrabold"
+                      <span
+                        className="rounded-full px-3 py-1 text-[11px] font-extrabold"
                         style={{ background: BRAND.softGoldBg, color: BRAND.brown }}
                       >
                         Official
@@ -327,6 +335,6 @@ function DayModal({ dayISO, events, onClose }) {
           </div>
         </div>
       </div>
-    </>
+    </div>
   );
 }

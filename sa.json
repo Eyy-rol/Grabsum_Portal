@@ -1,0 +1,13 @@
+{
+  "type": "service_account",
+  "project_id": "hardy-thinker-484015-s2",
+  "private_key_id": "b44d214774cb6df9b802911f7af2110df045db11",
+  "private_key": "-----BEGIN PRIVATE KEY-----\nMIIEvQIBADANBgkqhkiG9w0BAQEFAASCBKcwggSjAgEAAoIBAQC70FrW2kzmcHLz\n5X7cTmnG4LkLgWs+Dw5+kYjmom6xmFGoqtHGqmLtohRdxMVjD6arOtIlPuMSt0lf\nt5Hf7jUrANd2yaD6aYfq48nL7GCXOE167pdkhA35yRnj8TLfdt/yDQJ87eiuVW5o\nLyHzJKOHf663CUMnLwk2/vaamra9jGx+neZp9yIrgC0tL0UFafz3Q+76wuOmjapI\nRTIyptKtUw7BPaMQMNsqZc3BLCsQLv+IW2mis2c0HqPcvtZYugM8lsECQyIMRq5S\nw/AxSx6ibkbJpaEVcLlkhDTo4VwDgJIIqmEoy3FAla2CRr/ZgSoxr0gnRKae1OJs\nV1h1Yv8HAgMBAAECggEAD1GnzyWAJz2dyrH53ntQ2mVjAoK8XhP5US6KtZEjKT4s\nzu6b7LHiHtLdCWbu2K0ioY3LLTmLaO/lPrbo4ZR65raLXIeGp1YrPWf2AjmWCU+Q\n1kmWtJ6myyxxfaujRCHck1AnV0xKccnLFxldEgl3gypRdGF/hjcqb79tGuAqrpwc\n8iceHiWSLa8jJuNcst5S+u91cPxOJnh1Xx5OOwMg6lcU0O0ifNROThbGqQEUWtGj\nVuGAiavq1o0LbLjiyfnQ6wlhzbGMSPHjiz32mtv98VlgLhzYL1Tn5VoezoRzSmBE\ns6Y9IEm2VMs9gjx3JqyOWCrNwTHePQj+w6q7DYtCzQKBgQD72ju3HElFs94pf6mm\n0hw7NGkrDEwDs9HRluz5BwUHUItUpTWQ7IzYMOihlThilHqGXPFH8XvAS/1W59Cs\new+xhfW5iQ1HuLLh4paYtgpU02kvGrlGNpwMG3GhaqjwjU0MKHrye7zV2DZqVBtO\nT42LoaTzqRDucpUkvEBJO5rddQKBgQC+6CVZvvSm7+tXy/SyR494YU3UK0w4uXOD\n2cGEs++SiqK/cu6AVmotVsa4hqt5kGsGeGgTgh52Awa/EVCN9tOtjQukQ6CyuJ5V\nyFf4yTbuqxAIve+SxkIrDuJwNwS7HMMxBGrgIL6yFWwCxLcrkFXLZtLBrxe0334t\nGREcSWcvCwKBgASffecfksy/v309hay1QKVpkeCjaiXLQDe7sH/lvBblSJl2KuSN\nIwy44RxOM+nDVfhvblJmwWHHQ1A8Ex2HaMNWdStBs8e0QTxaP29wMAJcmxqtP+dl\nCzpBqrVO0ukPfvGRMKiQ0ueN/3m2L4YhebStc+yxFsl5uvkgp4FwoagdAoGAHwLq\n/lcsuumCW3LAPy2suqtjzzFxYk2N3D9FVl88bZujsGHlKGfhO5g7E8KcnFS/bf+l\nOHYMqLL5J5SSd10/KZQd7gMmWaHv5pNy5vEYwVB8fE8OWdNm8EOsuPnXBOY5Nv82\ntU3cbGVadGCsOKFrrmz3k4rz2OftQTovM18hKd0CgYEAicjHgaFfb8uGu3c1X3Fd\nsG8qVy67/8+6Jwonc99DQAm7Zo0zKauFgz+UDZFAvghvOy5V/+NXd9UwJKvXl4G8\nDOWg9b1iN5gxZyiTKcEJ5QIggUUzm8eZzvtC2CMVX5+gavDCsKKOBNQKhrkMtJVg\n7iAhiyqSHZWYFvdnQhkSgHI=\n-----END PRIVATE KEY-----\n",
+  "client_email": "lesson-ai@hardy-thinker-484015-s2.iam.gserviceaccount.com",
+  "client_id": "113388781977864947069",
+  "auth_uri": "https://accounts.google.com/o/oauth2/auth",
+  "token_uri": "https://oauth2.googleapis.com/token",
+  "auth_provider_x509_cert_url": "https://www.googleapis.com/oauth2/v1/certs",
+  "client_x509_cert_url": "https://www.googleapis.com/robot/v1/metadata/x509/lesson-ai%40hardy-thinker-484015-s2.iam.gserviceaccount.com",
+  "universe_domain": "googleapis.com"
+}
