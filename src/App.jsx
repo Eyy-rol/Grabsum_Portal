@@ -33,13 +33,19 @@ import TeacherAnnouncements from "./Teacher/TeacherAnnouncements";
 import TeacherStudents from "./Teacher/TeacherStudents";
 import TeacherSettings from "./Teacher/TeacherSettings";
 
-
 import StudentLayout from "./layout/StudentLayout";
 import StudentDashboard from "./Student/StudentDashboard";
 import StudentCourses from "./Student/StudentCourses";
 import StudentSchedule from "./Student/StudentSchedule";
 import StudentAnnouncements from "./Student/StudentAnnouncements";
 import StudentProfile from "./Student/StudentProfile";
+
+import {
+  StudentSubjectsPage,
+  StudentSubjectLessonsPage,
+  StudentLessonDetailPage,
+} from "./Student/Lessons/lesson.jsx";
+
 
 
 import DevLayout from "./layout/DevLayout";
@@ -107,7 +113,7 @@ export default function App() {
             <Route path="lessons" element={<TeacherLessons />} />
             <Route path="lesson-library" element={<LessonLibrary />} />
             <Route path="lesson-sampler" element={<LessonSampler />} />
-            <Route path="assign-lesson" element={<AssignLesson />} />
+            <Route path="assign-lesson/:lessonId" element={<AssignLesson />} />
             <Route path="classes" element={<TeacherClasses />} />
             <Route path="schedule" element={<TeacherSchedules />} />
             <Route path="announcements" element={<TeacherAnnouncements />} />
@@ -132,6 +138,12 @@ export default function App() {
             <Route path="schedule" element={<StudentSchedule />} />
             <Route path="announcements" element={<StudentAnnouncements />} />
             <Route path="profile" element={<StudentProfile />} />
+
+            <Route path="subjects" element={<StudentSubjectsPage />} />
+            <Route path="subjects/:subjectId/lessons" element={<StudentSubjectLessonsPage />} />
+            <Route path="lessons/:lessonId" element={<StudentLessonDetailPage />} />
+
+
            
 
             {/* ✅ student change password route */}

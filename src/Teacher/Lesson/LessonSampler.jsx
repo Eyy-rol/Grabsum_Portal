@@ -1,23 +1,21 @@
-// Lesson/LessonSampler.jsx
-// DB-wired version (Draft Save + Publish) for React Router route: /lesson/edit/:lessonId
+// Teacher/Lesson/LessonSampler.jsx
+// DB-wired version (Draft Save + Publish + Unpublish lock) for React Router route: /teacher/lesson/edit/:lessonId
 //
-// Features:
-// - Loads existing lesson + parts from Supabase when :lessonId is a UUID
-// - If :lessonId === "new" (or missing), starts a new draft
-// - Saves Draft: upserts into lessons + replaces lesson_parts with proper sort_order
-// - Publish: same save pipeline but sets lessons.status = "Published"
-// - Owner-teacher can edit Published lessons (no readOnly lock based on status)
-// - Student Preview modal renders the whole lesson as Activity Cards (1 card per lesson part)
-// - Reorder parts (Up/Down) persisted to DB via sort_order
+// Key behaviors requested:
+// - Publish button is hidden until the lesson has been saved at least once (lessonId exists)
+// - After saving: Save Draft becomes disabled (until changes are detected)
+// - Once changes are detected: Save Draft becomes enabled
+// - Published lessons are NOT editable (locked). Teacher must Unpublish (back to Draft) to edit
+// - “Last saved at” shows updated_at from DB by re-fetching lesson row after save/publish/unpublish
 //
 // Tables used:
-// - lessons (includes objectives text[] column you added)
+// - lessons (includes objectives text[] column)
 // - lesson_parts
 // - grade_levels, tracks, strands, subjects (for dropdowns)
 //
-// Edge Function: "lesson-part" (unchanged)
+// Edge Function: "lesson-part"
 
-import React, { useEffect, useMemo, useState } from "react";
+import React, { useEffect, useMemo, useRef, useState } from "react";
 import { supabase } from "../../lib/supabaseClient";
 import { useParams, useNavigate } from "react-router-dom";
 import {
@@ -193,7 +191,37 @@ function isUuid(v) {
   );
 }
 
-/* ===================== Student Preview (1 Card per Part) ===================== */
+// Stable stringify for dirty tracking (sorts object keys recursively)
+function stableStringify(value) {
+  const seen = new WeakSet();
+
+  const norm = (v) => {
+    if (v === null || v === undefined) return v;
+    if (typeof v !== "object") return v;
+
+    if (seen.has(v)) return null;
+    seen.add(v);
+
+    if (Array.isArray(v)) return v.map(norm);
+
+    const keys = Object.keys(v).sort();
+    const out = {};
+    for (const k of keys) out[k] = norm(v[k]);
+    return out;
+  };
+
+  return JSON.stringify(norm(value));
+}
+
+function formatLastSaved(ts) {
+  if (!ts) return "—";
+  // ts from Postgres is usually ISO; show nice local time
+  const d = new Date(ts);
+  if (Number.isNaN(d.getTime())) return String(ts);
+  return d.toLocaleString();
+}
+
+/* ===================== Student Preview ===================== */
 
 function PreviewModal({ open, onClose, lesson }) {
   if (!open) return null;
@@ -390,7 +418,7 @@ export default function LessonSampler() {
   const toast = useToasts();
   const navigate = useNavigate();
   const params = useParams();
-  const routeLessonId = params.lessonId; // "/lesson/edit/:lessonId"
+  const routeLessonId = params.lessonId; // "/teacher/lesson/edit/:lessonId"
 
   // Core fields
   const [lessonTitle, setLessonTitle] = useState("");
@@ -414,23 +442,10 @@ export default function LessonSampler() {
   const [loadingLesson, setLoadingLesson] = useState(false);
   const [saving, setSaving] = useState(false);
 
-  // Convenience selected objects
-  const selectedGrade = useMemo(
-    () => gradeOptions.find((g) => g.grade_id === gradeId) || null,
-    [gradeOptions, gradeId]
-  );
-  const selectedTrack = useMemo(
-    () => trackOptions.find((t) => t.track_id === trackId) || null,
-    [trackOptions, trackId]
-  );
-  const selectedStrand = useMemo(
-    () => strandOptions.find((s) => s.strand_id === strandId) || null,
-    [strandOptions, strandId]
-  );
-  const selectedSubject = useMemo(
-    () => subjectOptions.find((s) => s.subject_id === subjectId) || null,
-    [subjectOptions, subjectId]
-  );
+  // Last saved + dirty tracking
+  const [lastSavedAt, setLastSavedAt] = useState(null);
+  const [isDirty, setIsDirty] = useState(false);
+  const serverSnapshotRef = useRef(null);
 
   // Lesson parts
   const [parts, setParts] = useState([]); // { id, type, title, content, aiBusy }
@@ -441,6 +456,9 @@ export default function LessonSampler() {
 
   // Preview modal
   const [previewOpen, setPreviewOpen] = useState(false);
+
+  const isPublished = lessonStatus === "Published";
+  const isLocked = isPublished;
 
   /* ===================== Init AI remaining ===================== */
 
@@ -471,7 +489,7 @@ export default function LessonSampler() {
 
   const canUseAi = aiRemaining > 0;
 
-  // Required prerequisites for AI + Save + Publish (your rule)
+  // Required prerequisites for AI + Save + Publish
   const prerequisitesOk = useMemo(() => {
     return (
       lessonTitle.trim().length >= 3 &&
@@ -491,7 +509,65 @@ export default function LessonSampler() {
         subjectId ||
         parts.some((p) => p.title.trim() || p.content.trim())
     );
-  }, [lessonTitle, objectives.length, gradeId, trackId, strandId, subjectId, parts]);
+  }, [
+    lessonTitle,
+    objectives.length,
+    gradeId,
+    trackId,
+    strandId,
+    subjectId,
+    parts,
+  ]);
+
+  // Button rules
+  const saveDraftEnabled =
+    prerequisitesOk && !saving && !isLocked && (isDirty || !lessonId);
+
+  const showPublishButton = Boolean(lessonId) && !isPublished;
+
+  const publishEnabled =
+    prerequisitesOk && Boolean(lessonId) && !saving && !isPublished;
+
+  /* ===================== Snapshot builder (for dirty tracking) ===================== */
+
+  const buildSnapshotPayload = () => ({
+    lessonId: lessonId || null,
+    status: lessonStatus || "Draft",
+    title: lessonTitle.trim(),
+    gradeId: gradeId || null,
+    trackId: trackId || null,
+    strandId: strandId || null,
+    subjectId: subjectId || null,
+    objectives: (objectives || []).map((x) => String(x || "").trim()),
+    parts: (parts || []).map((p) => ({
+      type: String(p.type || "").trim(),
+      title: String(p.title || "").trim(),
+      content: String(p.content || "").trim(),
+    })),
+  });
+
+  // Update isDirty whenever user edits (compares against serverSnapshotRef)
+  useEffect(() => {
+    if (!serverSnapshotRef.current) {
+      // Before first baseline is set, we keep dirty false (new draft starts clean).
+      setIsDirty(false);
+      return;
+    }
+
+    const now = stableStringify(buildSnapshotPayload());
+    setIsDirty(now !== serverSnapshotRef.current);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [
+    lessonId,
+    lessonStatus,
+    lessonTitle,
+    gradeId,
+    trackId,
+    strandId,
+    subjectId,
+    objectives,
+    parts,
+  ]);
 
   /* ===================== DB loads (dropdowns) ===================== */
 
@@ -536,7 +612,9 @@ export default function LessonSampler() {
       setSubjectId("");
       let q = supabase
         .from("subjects")
-        .select("subject_id, subject_code, subject_title, subject_type, grade_id, strand_id")
+        .select(
+          "subject_id, subject_code, subject_title, subject_type, grade_id, strand_id"
+        )
         .eq("is_archived", false)
         .order("subject_title", { ascending: true });
 
@@ -551,29 +629,28 @@ export default function LessonSampler() {
   /* ===================== Load existing lesson by route ===================== */
 
   useEffect(() => {
-    // If route is missing, just treat as "new"
     if (!routeLessonId) {
       setLessonId(null);
       setLessonStatus("Draft");
+      serverSnapshotRef.current = null;
+      setLastSavedAt(null);
+      setIsDirty(false);
       return;
     }
 
-    // if /lesson/edit/new => new draft
     if (routeLessonId === "new") {
-      setLessonId(null);
-      setLessonStatus("Draft");
-      // keep current local state (or reset, up to you). We'll reset for safety:
       resetAllLocal();
+      // baseline = clean “new”
+      serverSnapshotRef.current = stableStringify(buildSnapshotPayload());
+      setIsDirty(false);
       return;
     }
 
-    // if UUID, load it
     if (isUuid(routeLessonId)) {
       loadLesson(routeLessonId);
       return;
     }
 
-    // otherwise invalid
     toast.push({
       tone: "danger",
       title: "Invalid URL",
@@ -582,19 +659,27 @@ export default function LessonSampler() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [routeLessonId]);
 
+  async function fetchLessonRow(id) {
+    const { data, error } = await supabase
+      .from("lessons")
+      .select(
+        "lesson_id, owner_teacher_id, title, grade_id, track_id, strand_id, subject_id, duration_minutes, audience, status, objectives, updated_at"
+      )
+      .eq("lesson_id", id)
+      .single();
+
+    if (error) throw error;
+    return data;
+  }
+
   async function loadLesson(id) {
     setLoadingLesson(true);
     try {
-      const { data: lesson, error: lErr } = await supabase
-        .from("lessons")
-        .select("lesson_id, owner_teacher_id, title, grade_id, track_id, strand_id, subject_id, duration_minutes, audience, status, objectives")
-        .eq("lesson_id", id)
-        .single();
-
-      if (lErr) throw lErr;
+      const lesson = await fetchLessonRow(id);
 
       setLessonId(lesson.lesson_id);
       setLessonStatus(lesson.status || "Draft");
+      setLastSavedAt(lesson.updated_at || null);
 
       setLessonTitle(lesson.title || "");
       setGradeId(lesson.grade_id || "");
@@ -611,15 +696,37 @@ export default function LessonSampler() {
 
       if (pErr) throw pErr;
 
-      setParts(
-        (partsRows || []).map((r) => ({
-          id: r.part_id,
-          type: r.part_type,
-          title: r.title || r.part_type,
-          content: r.body || "",
-          aiBusy: false,
-        }))
-      );
+      const mappedParts = (partsRows || []).map((r) => ({
+        id: r.part_id,
+        type: r.part_type,
+        title: r.title || r.part_type,
+        content: r.body || "",
+        aiBusy: false,
+      }));
+
+      setParts(mappedParts);
+
+      // Baseline snapshot for dirty tracking (after load)
+      const baseline = stableStringify({
+        lessonId: lesson.lesson_id,
+        status: lesson.status || "Draft",
+        title: (lesson.title || "").trim(),
+        gradeId: lesson.grade_id || null,
+        trackId: lesson.track_id || null,
+        strandId: lesson.strand_id || null,
+        subjectId: lesson.subject_id || null,
+        objectives: (Array.isArray(lesson.objectives) ? lesson.objectives : []).map(
+          (x) => String(x || "").trim()
+        ),
+        parts: mappedParts.map((p) => ({
+          type: String(p.type || "").trim(),
+          title: String(p.title || "").trim(),
+          content: String(p.content || "").trim(),
+        })),
+      });
+
+      serverSnapshotRef.current = baseline;
+      setIsDirty(false);
     } catch (e) {
       toast.push({
         tone: "danger",
@@ -634,6 +741,8 @@ export default function LessonSampler() {
   /* ===================== Objectives ===================== */
 
   function addObjective() {
+    if (isLocked) return;
+
     const v = objectiveInput.trim();
     if (!v) return;
 
@@ -647,12 +756,15 @@ export default function LessonSampler() {
   }
 
   function removeObjective(idx) {
+    if (isLocked) return;
     setObjectives((p) => p.filter((_, i) => i !== idx));
   }
 
   /* ===================== Parts ===================== */
 
   function addPart() {
+    if (isLocked) return;
+
     const type = addPartType;
 
     if (parts.some((p) => p.type === type)) {
@@ -673,6 +785,8 @@ export default function LessonSampler() {
   }
 
   async function removePart(partId) {
+    if (isLocked) return;
+
     const part = parts.find((p) => p.id === partId);
     const ok = await toast.confirm({
       title: "Remove lesson part?",
@@ -687,10 +801,13 @@ export default function LessonSampler() {
   }
 
   function updatePart(partId, patch) {
+    if (isLocked) return;
     setParts((p) => p.map((x) => (x.id === partId ? { ...x, ...patch } : x)));
   }
 
   function movePart(partId, direction) {
+    if (isLocked) return;
+
     setParts((prev) => {
       const idx = prev.findIndex((p) => p.id === partId);
       if (idx === -1) return prev;
@@ -718,6 +835,15 @@ export default function LessonSampler() {
   /* ===================== AI Assist ===================== */
 
   async function onAiAssistPart(partId) {
+    if (isLocked) {
+      toast.push({
+        tone: "danger",
+        title: "Lesson is locked",
+        message: "Unpublish the lesson to edit and generate parts.",
+      });
+      return;
+    }
+
     if (!canUseAi) {
       toast.push({
         tone: "danger",
@@ -742,24 +868,16 @@ export default function LessonSampler() {
       const content = await generateLessonPart({
         lessonTitle: lessonTitle.trim(),
         objectives,
-        gradeLevel: selectedGrade ? `Grade ${selectedGrade.grade_level}` : "",
-        subject: selectedSubject ? selectedSubject.subject_title : "",
+        gradeLevel: gradeOptions.find((g) => g.grade_id === gradeId)
+          ? `Grade ${gradeOptions.find((g) => g.grade_id === gradeId).grade_level}`
+          : "",
+        subject: subjectOptions.find((s) => s.subject_id === subjectId)
+          ? subjectOptions.find((s) => s.subject_id === subjectId).subject_title
+          : "",
         partType: part.type,
         partTitle: part.title?.trim() || part.type,
-        track: selectedTrack
-          ? {
-              track_id: selectedTrack.track_id,
-              track_code: selectedTrack.track_code,
-              description: selectedTrack.description,
-            }
-          : null,
-        strand: selectedStrand
-          ? {
-              strand_id: selectedStrand.strand_id,
-              strand_code: selectedStrand.strand_code,
-              description: selectedStrand.description,
-            }
-          : null,
+        track: trackOptions.find((t) => t.track_id === trackId) || null,
+        strand: strandOptions.find((s) => s.strand_id === strandId) || null,
       });
 
       updatePart(partId, { content });
@@ -777,12 +895,21 @@ export default function LessonSampler() {
     }
   }
 
-  /* ===================== Save / Publish (DB wired) ===================== */
+  /* ===================== Save / Publish / Unpublish ===================== */
 
   async function saveLessonToDb({ nextStatus = "Draft" } = {}) {
     const missing = validatePrereqsForSave();
     if (missing) {
       toast.push({ tone: "danger", title: "Cannot save", message: missing });
+      return null;
+    }
+
+    if (isLocked) {
+      toast.push({
+        tone: "danger",
+        title: "Lesson is published",
+        message: "Unpublish the lesson to edit and save changes.",
+      });
       return null;
     }
 
@@ -793,7 +920,7 @@ export default function LessonSampler() {
       const user = userRes?.user;
       if (!user?.id) throw new Error("Not logged in.");
 
-      // 1) upsert lessons row
+      // 1) Upsert lessons row
       const lessonPayload = {
         owner_teacher_id: user.id,
         title: lessonTitle.trim(),
@@ -802,7 +929,6 @@ export default function LessonSampler() {
         strand_id: strandId || null,
         subject_id: subjectId || null,
         objectives: objectives || [],
-        // keep existing defaults unless you add UI for these later:
         duration_minutes: 45,
         audience: "Whole Class",
         status: nextStatus,
@@ -823,7 +949,7 @@ export default function LessonSampler() {
         setLessonId(savedLessonId);
         setLessonStatus(data.status || nextStatus);
 
-        // move URL from /lesson/edit/new -> /lesson/edit/:uuid
+        // Move URL from /teacher/lesson/edit/new -> /teacher/lesson/edit/:uuid
         navigate(`/teacher/lesson/edit/${savedLessonId}`, { replace: true });
       } else {
         const { error } = await supabase
@@ -832,7 +958,6 @@ export default function LessonSampler() {
           .eq("lesson_id", savedLessonId);
 
         if (error) throw error;
-
         setLessonStatus(nextStatus);
       }
 
@@ -850,25 +975,27 @@ export default function LessonSampler() {
         part_type: p.type,
         title: (String(p.title || p.type || "").trim() || p.type).slice(0, 200),
         body: String(p.content || "").trim(),
-        // optional fields exist in your table:
         is_collapsed: false,
       }));
 
       if (partsToInsert.length) {
-        const { error: insErr } = await supabase
-          .from("lesson_parts")
-          .insert(partsToInsert);
-
+        const { error: insErr } = await supabase.from("lesson_parts").insert(partsToInsert);
         if (insErr) throw insErr;
       }
+
+      // 3) Re-fetch lesson row for updated_at source of truth
+      const fresh = await fetchLessonRow(savedLessonId);
+      setLastSavedAt(fresh.updated_at || null);
+      setLessonStatus(fresh.status || nextStatus);
+
+      // 4) Sync baseline snapshot so Save Draft disables until new changes happen
+      serverSnapshotRef.current = stableStringify(buildSnapshotPayload());
+      setIsDirty(false);
 
       toast.push({
         tone: "success",
         title: nextStatus === "Published" ? "Published" : "Saved",
-        message:
-          nextStatus === "Published"
-            ? "Lesson is now published."
-            : "Draft saved.",
+        message: nextStatus === "Published" ? "Lesson is now published." : "Draft saved.",
       });
 
       return savedLessonId;
@@ -889,7 +1016,71 @@ export default function LessonSampler() {
   }
 
   async function onPublish() {
+    if (!lessonId) {
+      toast.push({
+        tone: "danger",
+        title: "Save first",
+        message: "You must save the lesson as a Draft before publishing.",
+      });
+      return;
+    }
+
+    if (isDirty) {
+      const ok = await toast.confirm({
+        title: "Publish with unsaved changes?",
+        message: "You have unsaved changes. We will save and publish in one step.",
+        confirmText: "Save & Publish",
+        cancelText: "Cancel",
+        tone: "danger",
+      });
+      if (!ok) return;
+    }
+
     await saveLessonToDb({ nextStatus: "Published" });
+  }
+
+  async function onUnpublish() {
+    if (!lessonId) return;
+
+    const ok = await toast.confirm({
+      title: "Unpublish this lesson?",
+      message: "This will set the lesson back to Draft so you can edit it again.",
+      confirmText: "Unpublish",
+      cancelText: "Cancel",
+      tone: "danger",
+    });
+    if (!ok) return;
+
+    setSaving(true);
+    try {
+      const { error } = await supabase
+        .from("lessons")
+        .update({ status: "Draft" })
+        .eq("lesson_id", lessonId);
+
+      if (error) throw error;
+
+      const fresh = await fetchLessonRow(lessonId);
+      setLessonStatus(fresh.status || "Draft");
+      setLastSavedAt(fresh.updated_at || null);
+
+      serverSnapshotRef.current = stableStringify(buildSnapshotPayload());
+      setIsDirty(false);
+
+      toast.push({
+        tone: "success",
+        title: "Unpublished",
+        message: "Lesson is now a draft and can be edited.",
+      });
+    } catch (e) {
+      toast.push({
+        tone: "danger",
+        title: "Unpublish failed",
+        message: String(e?.message || e),
+      });
+    } finally {
+      setSaving(false);
+    }
   }
 
   /* ===================== Actions ===================== */
@@ -909,23 +1100,47 @@ export default function LessonSampler() {
 
     setLessonStatus("Draft");
     setLessonId(null);
+
+    setLastSavedAt(null);
+    serverSnapshotRef.current = null;
+    setIsDirty(false);
   }
 
   async function resetAll() {
     const ok = await toast.confirm({
       title: "Reset this editor?",
-      message: "This clears the fields in the editor. (It does not delete the saved lesson in DB.)",
+      message:
+        "This clears the fields in the editor. (It does not delete the saved lesson in DB.)",
       confirmText: "Reset",
       cancelText: "Cancel",
       tone: "danger",
     });
     if (!ok) return;
 
-    // if on a real lesson URL, reset local state but keep route as is
     resetAllLocal();
+    // baseline clean after reset
+    serverSnapshotRef.current = stableStringify(buildSnapshotPayload());
+    setIsDirty(false);
   }
 
-  /* ===================== Preview ===================== */
+  /* ===================== Preview payload (always from current state) ===================== */
+
+  const selectedGrade = useMemo(
+    () => gradeOptions.find((g) => g.grade_id === gradeId) || null,
+    [gradeOptions, gradeId]
+  );
+  const selectedTrack = useMemo(
+    () => trackOptions.find((t) => t.track_id === trackId) || null,
+    [trackOptions, trackId]
+  );
+  const selectedStrand = useMemo(
+    () => strandOptions.find((s) => s.strand_id === strandId) || null,
+    [strandOptions, strandId]
+  );
+  const selectedSubject = useMemo(
+    () => subjectOptions.find((s) => s.subject_id === subjectId) || null,
+    [subjectOptions, subjectId]
+  );
 
   const previewLesson = useMemo(() => {
     return buildLessonPayload({
@@ -939,16 +1154,28 @@ export default function LessonSampler() {
       strand: selectedStrand,
       parts,
     });
-  }, [lessonId, lessonStatus, lessonTitle, objectives, selectedGrade, selectedSubject, selectedTrack, selectedStrand, parts]);
+  }, [
+    lessonId,
+    lessonStatus,
+    lessonTitle,
+    objectives,
+    selectedGrade,
+    selectedSubject,
+    selectedTrack,
+    selectedStrand,
+    parts,
+  ]);
 
   return (
     <div className={`${UI.pageBg} ${UI.text} space-y-4`}>
       <ToastHost toasts={toast.toasts} onDismiss={toast.dismiss} />
 
+      {/* Header */}
       <div className="flex flex-col gap-3 md:flex-row md:items-end md:justify-between">
         <div>
-          <div className="flex items-center gap-2">
+          <div className="flex flex-wrap items-center gap-2">
             <div className="text-lg font-extrabold">Lesson Sampler</div>
+
             <span
               className={`rounded-full border px-2.5 py-1 text-[11px] font-extrabold ${
                 lessonStatus === "Published"
@@ -957,42 +1184,42 @@ export default function LessonSampler() {
               }`}
             >
               {lessonStatus}
+              {isPublished ? " (locked)" : ""}
             </span>
+
             {loadingLesson ? (
-              <span className="text-xs font-semibold text-black/55">Loading…</span>
+              <span className="text-xs font-semibold text-black/55">
+                Loading…
+              </span>
+            ) : null}
+
+            <span className="ml-1 text-xs font-semibold text-black/55">
+              Last saved:{" "}
+              <span className="font-extrabold text-black/70">
+                {formatLastSaved(lastSavedAt)}
+              </span>
+            </span>
+
+            {isDirty ? (
+              <span className="rounded-full border border-amber-200 bg-amber-50 px-2.5 py-1 text-[11px] font-extrabold text-amber-800">
+                Unsaved changes
+              </span>
             ) : null}
           </div>
 
           <div className={`text-sm ${UI.muted}`}>
             Required: Lesson Title, Grade Level, Subject, and at least 1 Objective. AI Assist limit:{" "}
             <span className="font-bold">{AI_LIMIT}</span>.
+            {isPublished ? (
+              <span className="ml-2 font-semibold text-black/60">
+                Unpublish to edit.
+              </span>
+            ) : null}
           </div>
         </div>
 
+        {/* Actions */}
         <div className="flex flex-wrap items-center gap-2">
-          {/* Quick Status strip */}
-          <div className="hidden md:flex flex-wrap items-center gap-2 rounded-xl border border-black/10 bg-white px-3 py-2">
-            <span className="text-xs font-extrabold text-black/70">
-              AI: {prerequisitesOk ? "Enabled" : "Disabled"}
-            </span>
-            <span className="h-4 w-px bg-black/10" />
-            <span className="text-xs font-semibold text-black/55">
-              Objectives: <span className="font-extrabold text-black/70">{objectives.length}</span>
-            </span>
-            <span className="h-4 w-px bg-black/10" />
-            <span className="text-xs font-semibold text-black/55">
-              Parts: <span className="font-extrabold text-black/70">{parts.length}</span>
-            </span>
-            <span className="h-4 w-px bg-black/10" />
-            <span className="text-xs font-semibold text-black/55">
-              Selected:{" "}
-              <span className="font-extrabold text-black/70">
-                {selectedGrade ? `G${selectedGrade.grade_level}` : "—"}
-                {selectedSubject ? ` • ${selectedSubject.subject_title}` : ""}
-              </span>
-            </span>
-          </div>
-
           <AiCounter
             remaining={aiRemaining}
             limit={AI_LIMIT}
@@ -1021,27 +1248,56 @@ export default function LessonSampler() {
             Reset
           </button>
 
+          {isPublished ? (
+            <button
+              onClick={onUnpublish}
+              className="inline-flex items-center gap-2 rounded-xl border border-black/10 bg-white px-4 py-2 text-sm font-extrabold text-black/70 hover:bg-black/[0.02] disabled:opacity-60"
+              disabled={saving || !lessonId}
+              type="button"
+              title="Unpublish to edit"
+            >
+              Unpublish
+            </button>
+          ) : null}
+
           <button
             onClick={onSaveDraft}
             className={`inline-flex items-center gap-2 rounded-xl px-4 py-2 text-sm font-extrabold ${UI.goldBg} text-black hover:opacity-95 disabled:opacity-60`}
-            disabled={!prerequisitesOk || saving}
+            disabled={!saveDraftEnabled}
             type="button"
-            title="Save draft"
+            title={
+              isLocked
+                ? "Published lessons are locked. Unpublish to edit."
+                : !prerequisitesOk
+                ? validatePrereqsForSave() || "Missing required fields"
+                : !isDirty && lessonId
+                ? "No changes to save."
+                : "Save draft"
+            }
           >
             <Save className="h-4 w-4" />
             {saving ? "Saving…" : "Save Draft"}
           </button>
 
-          <button
-            onClick={onPublish}
-            className="inline-flex items-center gap-2 rounded-xl bg-emerald-600 px-4 py-2 text-sm font-extrabold text-white hover:opacity-95 disabled:opacity-60"
-            disabled={!prerequisitesOk || saving}
-            type="button"
-            title="Publish lesson"
-          >
-            <UploadCloud className="h-4 w-4" />
-            {saving ? "Publishing…" : "Publish"}
-          </button>
+          {/* Publish is HIDDEN until a lessonId exists */}
+          {showPublishButton ? (
+            <button
+              onClick={onPublish}
+              className="inline-flex items-center gap-2 rounded-xl bg-emerald-600 px-4 py-2 text-sm font-extrabold text-white hover:opacity-95 disabled:opacity-60"
+              disabled={!publishEnabled}
+              type="button"
+              title={
+                saving
+                  ? "Publishing..."
+                  : !prerequisitesOk
+                  ? validatePrereqsForSave() || "Missing required fields"
+                  : "Publish lesson"
+              }
+            >
+              <UploadCloud className="h-4 w-4" />
+              {saving ? "Publishing…" : "Publish"}
+            </button>
+          ) : null}
         </div>
       </div>
 
@@ -1055,6 +1311,7 @@ export default function LessonSampler() {
                 value={lessonTitle}
                 onChange={(e) => setLessonTitle(e.target.value)}
                 placeholder="e.g., Media and Information Literacy: Evaluating Sources"
+                disabled={isLocked}
               />
 
               <div className="grid gap-3 md:grid-cols-2">
@@ -1063,6 +1320,7 @@ export default function LessonSampler() {
                   value={gradeId}
                   onChange={(e) => setGradeId(e.target.value)}
                   placeholder="Select grade"
+                  disabled={isLocked}
                   options={gradeOptions.map((g) => ({
                     value: g.grade_id,
                     label: `Grade ${g.grade_level}${g.description ? ` • ${g.description}` : ""}`,
@@ -1074,6 +1332,7 @@ export default function LessonSampler() {
                   value={trackId}
                   onChange={(e) => setTrackId(e.target.value)}
                   placeholder="(optional) Select track"
+                  disabled={isLocked}
                   options={trackOptions.map((t) => ({
                     value: t.track_id,
                     label: `${t.track_code}${t.description ? ` • ${t.description}` : ""}`,
@@ -1087,7 +1346,7 @@ export default function LessonSampler() {
                   value={strandId}
                   onChange={(e) => setStrandId(e.target.value)}
                   placeholder={trackId ? "(optional) Select strand" : "Select track first"}
-                  disabled={!trackId}
+                  disabled={isLocked || !trackId}
                   options={strandOptions.map((s) => ({
                     value: s.strand_id,
                     label: `${s.strand_code}${s.description ? ` • ${s.description}` : ""}`,
@@ -1099,7 +1358,7 @@ export default function LessonSampler() {
                   value={subjectId}
                   onChange={(e) => setSubjectId(e.target.value)}
                   placeholder={gradeId ? "Select subject" : "Select grade first"}
-                  disabled={!gradeId}
+                  disabled={isLocked || !gradeId}
                   options={subjectOptions.map((s) => ({
                     value: s.subject_id,
                     label: `${s.subject_title} (${String(s.subject_type || "").trim() || "—"})`,
@@ -1111,6 +1370,7 @@ export default function LessonSampler() {
                 <div className="flex gap-2">
                   <input
                     value={objectiveInput}
+                    disabled={isLocked}
                     onChange={(e) => setObjectiveInput(e.target.value)}
                     onKeyDown={(e) => {
                       if (e.key === "Enter") {
@@ -1119,13 +1379,14 @@ export default function LessonSampler() {
                       }
                     }}
                     placeholder="Add an objective (press Enter)"
-                    className="mt-1 w-full rounded-xl border border-black/10 bg-white px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-[#C9A227]/40"
+                    className="mt-1 w-full rounded-xl border border-black/10 bg-white px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-[#C9A227]/40 disabled:bg-black/[0.03] disabled:text-black/40"
                   />
                   <button
                     type="button"
                     onClick={addObjective}
-                    className="mt-1 grid h-[38px] w-[44px] place-items-center rounded-xl border border-black/10 bg-white hover:bg-black/[0.02]"
-                    title="Add objective"
+                    disabled={isLocked}
+                    className="mt-1 grid h-[38px] w-[44px] place-items-center rounded-xl border border-black/10 bg-white hover:bg-black/[0.02] disabled:opacity-50"
+                    title={isLocked ? "Unpublish to edit" : "Add objective"}
                   >
                     <Plus className="h-4 w-4 text-black/70" />
                   </button>
@@ -1145,9 +1406,10 @@ export default function LessonSampler() {
                         {o}
                         <button
                           type="button"
+                          disabled={isLocked}
                           onClick={() => removeObjective(idx)}
-                          className="grid h-5 w-5 place-items-center rounded-full hover:bg-black/5"
-                          title="Remove"
+                          className="grid h-5 w-5 place-items-center rounded-full hover:bg-black/5 disabled:opacity-50"
+                          title={isLocked ? "Unpublish to edit" : "Remove"}
                         >
                           <X className="h-3 w-3 text-black/60" />
                         </button>
@@ -1167,6 +1429,7 @@ export default function LessonSampler() {
                     label="Add a lesson part"
                     value={addPartType}
                     onChange={(e) => setAddPartType(e.target.value)}
+                    disabled={isLocked}
                     options={LESSON_PART_TYPES.map((x) => ({ value: x, label: x }))}
                   />
                 </div>
@@ -1174,7 +1437,9 @@ export default function LessonSampler() {
                 <button
                   type="button"
                   onClick={addPart}
-                  className="inline-flex items-center justify-center gap-2 rounded-xl px-4 py-2 text-sm font-extrabold bg-[#C9A227] text-black hover:opacity-95"
+                  disabled={isLocked}
+                  className="inline-flex items-center justify-center gap-2 rounded-xl px-4 py-2 text-sm font-extrabold bg-[#C9A227] text-black hover:opacity-95 disabled:opacity-60"
+                  title={isLocked ? "Unpublish to edit" : "Add Part"}
                 >
                   <Plus className="h-4 w-4" />
                   Add Part
@@ -1191,6 +1456,7 @@ export default function LessonSampler() {
                     <PartCard
                       key={p.id}
                       part={p}
+                      locked={isLocked}
                       onChangeTitle={(v) => updatePart(p.id, { title: v })}
                       onChangeContent={(v) => updatePart(p.id, { content: v })}
                       onAiAssist={() => onAiAssistPart(p.id)}
@@ -1225,14 +1491,20 @@ export default function LessonSampler() {
           </Section>
 
           <div className="text-xs font-semibold text-black/55">
-            Route: <span className="font-bold">/lesson/edit/:lessonId</span> • Edge Function expected:{" "}
+            Route:{" "}
+            <span className="font-bold">/teacher/lesson/edit/:lessonId</span> •
+            Edge Function expected:{" "}
             <span className="font-bold">supabase/functions/lesson-part</span>
           </div>
         </div>
       </div>
 
       {/* Student Preview modal */}
-      <PreviewModal open={previewOpen} onClose={() => setPreviewOpen(false)} lesson={previewLesson} />
+      <PreviewModal
+        open={previewOpen}
+        onClose={() => setPreviewOpen(false)}
+        lesson={previewLesson}
+      />
     </div>
   );
 }
@@ -1246,13 +1518,16 @@ function AiCounter({ remaining, limit, onReset }) {
       <div className="flex items-center gap-2">
         <Sparkles className="h-4 w-4 text-black/70" />
         <div className="text-xs font-extrabold text-black">
-          AI: <span className="tabular-nums">{remaining}</span>/<span className="tabular-nums">{limit}</span>
+          AI: <span className="tabular-nums">{remaining}</span>/
+          <span className="tabular-nums">{limit}</span>
         </div>
       </div>
 
       <div className="h-5 w-px bg-black/10" />
 
-      <div className="text-xs font-semibold text-black/55 tabular-nums">used {used}</div>
+      <div className="text-xs font-semibold text-black/55 tabular-nums">
+        used {used}
+      </div>
 
       <button
         type="button"
@@ -1268,6 +1543,7 @@ function AiCounter({ remaining, limit, onReset }) {
 
 function PartCard({
   part,
+  locked,
   onChangeTitle,
   onChangeContent,
   onAiAssist,
@@ -1278,7 +1554,7 @@ function PartCard({
   disableMoveUp,
   disableMoveDown,
 }) {
-  const aiDisabled = Boolean(aiDisabledReason) || part.aiBusy;
+  const aiDisabled = Boolean(aiDisabledReason) || part.aiBusy || locked;
 
   return (
     <div className="rounded-2xl border border-black/10 bg-white p-4">
@@ -1292,9 +1568,9 @@ function PartCard({
           <button
             type="button"
             onClick={onMoveUp}
-            disabled={disableMoveUp}
+            disabled={locked || disableMoveUp}
             className="inline-flex items-center gap-2 rounded-xl border border-black/10 bg-white px-3 py-2 text-xs font-extrabold text-black/70 hover:bg-black/[0.02] disabled:opacity-40"
-            title="Move up"
+            title={locked ? "Unpublish to edit" : "Move up"}
           >
             ↑ Up
           </button>
@@ -1302,9 +1578,9 @@ function PartCard({
           <button
             type="button"
             onClick={onMoveDown}
-            disabled={disableMoveDown}
+            disabled={locked || disableMoveDown}
             className="inline-flex items-center gap-2 rounded-xl border border-black/10 bg-white px-3 py-2 text-xs font-extrabold text-black/70 hover:bg-black/[0.02] disabled:opacity-40"
-            title="Move down"
+            title={locked ? "Unpublish to edit" : "Move down"}
           >
             ↓ Down
           </button>
@@ -1316,7 +1592,13 @@ function PartCard({
             className={`inline-flex items-center gap-2 rounded-xl px-3 py-2 text-xs font-extrabold ${
               aiDisabled ? "bg-black/5 text-black/40" : "bg-[#C9A227] text-black hover:opacity-95"
             }`}
-            title={part.aiBusy ? "Generating..." : aiDisabledReason || "Generate student-facing content"}
+            title={
+              locked
+                ? "Published lessons are locked. Unpublish to edit."
+                : part.aiBusy
+                ? "Generating..."
+                : aiDisabledReason || "Generate student-facing content"
+            }
           >
             <Wand2 className="h-4 w-4" />
             {part.aiBusy ? "Generating…" : "AI Assist"}
@@ -1325,8 +1607,9 @@ function PartCard({
           <button
             type="button"
             onClick={onRemove}
-            className="inline-flex items-center gap-2 rounded-xl border border-black/10 bg-white px-3 py-2 text-xs font-extrabold text-black/70 hover:bg-black/[0.02]"
-            title="Remove this part"
+            disabled={locked}
+            className="inline-flex items-center gap-2 rounded-xl border border-black/10 bg-white px-3 py-2 text-xs font-extrabold text-black/70 hover:bg-black/[0.02] disabled:opacity-50"
+            title={locked ? "Unpublish to edit" : "Remove this part"}
           >
             <Trash2 className="h-4 w-4" />
             Remove
@@ -1340,14 +1623,16 @@ function PartCard({
           value={part.title}
           onChange={(e) => onChangeTitle(e.target.value)}
           placeholder={`e.g., ${part.type}`}
+          disabled={locked}
         />
 
         <Field label="Content">
           <textarea
             value={part.content}
+            disabled={locked}
             onChange={(e) => onChangeContent(e.target.value)}
             placeholder="Type content here, or use AI Assist..."
-            className="mt-1 min-h-[140px] w-full rounded-xl border border-black/10 bg-white px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-[#C9A227]/40"
+            className="mt-1 min-h-[140px] w-full rounded-xl border border-black/10 bg-white px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-[#C9A227]/40 disabled:bg-black/[0.03] disabled:text-black/40"
           />
         </Field>
       </div>
@@ -1373,20 +1658,28 @@ function Section({ title, children }) {
   );
 }
 
-function Input({ label, type = "text", ...rest }) {
+function Input({ label, type = "text", disabled = false, ...rest }) {
   return (
     <label className="block">
       <span className="text-xs font-semibold text-black/55">{label}</span>
       <input
         type={type}
+        disabled={disabled}
         {...rest}
-        className="mt-1 w-full rounded-xl border border-black/10 bg-white px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-[#C9A227]/40"
+        className="mt-1 w-full rounded-xl border border-black/10 bg-white px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-[#C9A227]/40 disabled:bg-black/[0.03] disabled:text-black/40"
       />
     </label>
   );
 }
 
-function SelectDB({ label, value, onChange, options, placeholder = "Select...", disabled = false }) {
+function SelectDB({
+  label,
+  value,
+  onChange,
+  options,
+  placeholder = "Select...",
+  disabled = false,
+}) {
   return (
     <label className="block">
       <span className="text-xs font-semibold text-black/55">{label}</span>
@@ -1409,13 +1702,27 @@ function SelectDB({ label, value, onChange, options, placeholder = "Select...", 
 
 /* ================= Builders ================= */
 
-function buildLessonPayload({ lessonId, status, lessonTitle, objectives, grade, subject, track, strand, parts }) {
+function buildLessonPayload({
+  lessonId,
+  status,
+  lessonTitle,
+  objectives,
+  grade,
+  subject,
+  track,
+  strand,
+  parts,
+}) {
   return {
     lesson_id: lessonId || null,
     status: status || "Draft",
     title: String(lessonTitle || "").trim(),
     grade: grade
-      ? { grade_id: grade.grade_id, grade_level: grade.grade_level, description: grade.description }
+      ? {
+          grade_id: grade.grade_id,
+          grade_level: grade.grade_level,
+          description: grade.description,
+        }
       : null,
     subject: subject
       ? {
@@ -1426,10 +1733,18 @@ function buildLessonPayload({ lessonId, status, lessonTitle, objectives, grade, 
         }
       : null,
     track: track
-      ? { track_id: track.track_id, track_code: track.track_code, description: track.description }
+      ? {
+          track_id: track.track_id,
+          track_code: track.track_code,
+          description: track.description,
+        }
       : null,
     strand: strand
-      ? { strand_id: strand.strand_id, strand_code: strand.strand_code, description: strand.description }
+      ? {
+          strand_id: strand.strand_id,
+          strand_code: strand.strand_code,
+          description: strand.description,
+        }
       : null,
     objectives: objectives || [],
     parts: (parts || []).map((p) => ({
@@ -1458,7 +1773,8 @@ async function generateLessonPart({
   } = await supabase.auth.getSession();
 
   if (sessionErr) throw new Error(`Auth session error: ${sessionErr.message}`);
-  if (!session?.access_token) throw new Error("You must be logged in to use AI Assist.");
+  if (!session?.access_token)
+    throw new Error("You must be logged in to use AI Assist.");
 
   const { data, error } = await supabase.functions.invoke(EDGE_FN_NAME, {
     body: {

@@ -1,8 +1,20 @@
 // src/layouts/StudentLayout.jsx
-import { useEffect, useMemo, useState } from "react";
+import React, { useEffect, useMemo, useState } from "react";
 import { NavLink, Outlet, useLocation, useNavigate } from "react-router-dom";
 import { AnimatePresence, motion } from "framer-motion";
-import { LayoutDashboard, BookOpen, CalendarDays, Megaphone, User, Bell, LogOut, Menu, X, ChevronDown } from "lucide-react";
+import {
+  LayoutDashboard,
+  CalendarDays,
+  Megaphone,
+  User,
+  Bell,
+  LogOut,
+  Menu,
+  X,
+  ChevronDown,
+  GraduationCap,
+  BookOpen,
+} from "lucide-react";
 import { supabase } from "../lib/supabaseClient";
 
 const BRAND = {
@@ -15,20 +27,37 @@ const BRAND = {
   softGoldBg: "rgba(212,166,47,0.14)",
 };
 
+// ✅ Updated nav: use Subjects as the entry point for lessons flow
 const NAV = [
   { key: "dash", label: "Dashboard", icon: LayoutDashboard, to: "/student/dashboard" },
-  { key: "courses", label: "Courses", icon: BookOpen, to: "/student/courses" },
+  { key: "courses", label: "Courses", icon: GraduationCap, to: "/student/courses" },
+
+  // Subjects (then inside it: lessons list + lesson detail)
+  { key: "subjects", label: "Subjects", icon: BookOpen, to: "/student/subjects" },
+
   { key: "schedule", label: "Schedule", icon: CalendarDays, to: "/student/schedule" },
   { key: "ann", label: "Announcements", icon: Megaphone, to: "/student/announcements" },
   { key: "profile", label: "Profile", icon: User, to: "/student/profile" },
 ];
 
 function titleFromPath(path) {
-  if (path.includes("/student/dashboard")) return "Dashboard";
-  if (path.includes("/student/courses")) return "Courses";
-  if (path.includes("/student/schedule")) return "Schedule";
-  if (path.includes("/student/announcements")) return "Announcements";
-  if (path.includes("/student/profile")) return "Profile";
+  // Student flow:
+  // /student/subjects
+  // /student/subjects/:subjectId/lessons
+  // /student/lessons/:lessonId
+  if (path.startsWith("/student/subjects")) {
+    if (path.includes("/lessons")) return "Lessons";
+    return "Subjects";
+  }
+  if (path.startsWith("/student/lessons/")) return "Lesson Detail";
+
+  // Existing pages
+  if (path.startsWith("/student/dashboard")) return "Dashboard";
+  if (path.startsWith("/student/courses")) return "Courses";
+  if (path.startsWith("/student/schedule")) return "Schedule";
+  if (path.startsWith("/student/announcements")) return "Announcements";
+  if (path.startsWith("/student/profile")) return "Profile";
+
   return "Student Portal";
 }
 
@@ -64,6 +93,11 @@ export default function StudentLayout() {
     notifications: 0,
   });
 
+  // ✅ Close mobile sidebar on route change
+  useEffect(() => {
+    setMobileOpen(false);
+  }, [location.pathname]);
+
   // ✅ Fetch: auth user -> students (preferred) + optional profiles fallback
   useEffect(() => {
     let alive = true;
@@ -75,17 +109,16 @@ export default function StudentLayout() {
 
         const user = authData?.user;
         if (!user?.id) {
-          if (alive) {
-            setMe({
-              loading: false,
-              err: "",
-              user_id: "",
-              name: "Student",
-              student_number: "",
-              email: "",
-              notifications: 0,
-            });
-          }
+          if (!alive) return;
+          setMe({
+            loading: false,
+            err: "",
+            user_id: "",
+            name: "Student",
+            student_number: "",
+            email: "",
+            notifications: 0,
+          });
           return;
         }
 
@@ -96,9 +129,8 @@ export default function StudentLayout() {
           .eq("user_id", user.id)
           .maybeSingle();
 
-        // 2) profiles table (fallback) - keep safe, don't assume columns exist
-        // If your profiles table does NOT have full_name, remove it here.
-        const { data: prof } = await supabase
+        // 2) profiles table (fallback)
+        const { data: prof, error: profErr } = await supabase
           .from("profiles")
           .select("user_id, full_name, email, role")
           .eq("user_id", user.id)
@@ -116,9 +148,15 @@ export default function StudentLayout() {
           user.email ||
           "Student";
 
+        // keep error quiet unless BOTH student/profile fetch failed badly
+        const errMsg =
+          (stuErr && profErr)
+            ? `Profile fetch error: ${String(stuErr?.message || stuErr)}`
+            : "";
+
         setMe({
           loading: false,
-          err: stuErr ? "" : "", // keep UI clean
+          err: errMsg,
           user_id: user.id,
           name: String(displayName),
           student_number: String(stu?.student_number || ""),
@@ -192,8 +230,11 @@ export default function StudentLayout() {
             </div>
           </div>
 
-        
-         
+          <div className="grid h-11 w-11 place-items-center rounded-2xl" style={{ background: BRAND.softGoldBg }}>
+            <span className="text-sm font-black" style={{ color: BRAND.gold }}>
+              {initialLetter(me.name)}
+            </span>
+          </div>
         </div>
 
         <div className="grid grid-cols-1 gap-4 md:grid-cols-[260px_1fr]">
@@ -269,11 +310,7 @@ export default function StudentLayout() {
               </div>
 
               <div className="px-4 pb-4">
-                <Sidebar
-                  me={me}
-                  onLogout={handleLogout}
-                  onNavigate={() => setMobileOpen(false)}
-                />
+                <Sidebar me={me} onLogout={handleLogout} onNavigate={() => setMobileOpen(false)} />
               </div>
             </motion.div>
           </motion.div>
@@ -371,7 +408,13 @@ function Sidebar({ onNavigate, me, onLogout }) {
 
 function Topbar({ title, me, onLogout }) {
   const nav = useNavigate();
+  const location = useLocation();
   const [open, setOpen] = useState(false);
+
+  // ✅ close account dropdown when route changes
+  useEffect(() => {
+    setOpen(false);
+  }, [location.pathname]);
 
   return (
     <header
@@ -403,6 +446,7 @@ function Topbar({ title, me, onLogout }) {
             style={{ borderColor: BRAND.stroke }}
             aria-label="Notifications"
             onClick={() => alert("Notifications UI (wire later)")}
+            type="button"
           >
             <Bell className="h-5 w-5" style={{ color: BRAND.muted }} />
             {me.notifications > 0 ? (
@@ -421,6 +465,7 @@ function Topbar({ title, me, onLogout }) {
               className="inline-flex items-center gap-2 rounded-2xl border bg-white/70 px-3 py-2 text-sm font-semibold transition hover:bg-white"
               style={{ borderColor: BRAND.stroke, color: BRAND.brown }}
               aria-label="Open profile menu"
+              type="button"
             >
               <span className="grid h-8 w-8 place-items-center rounded-2xl" style={{ background: BRAND.softGoldBg }}>
                 <span className="text-xs font-black" style={{ color: BRAND.gold }}>
@@ -448,6 +493,7 @@ function Topbar({ title, me, onLogout }) {
                     }}
                     className="w-full px-4 py-3 text-left text-sm font-semibold hover:bg-black/5"
                     style={{ color: BRAND.brown }}
+                    type="button"
                   >
                     View Profile
                   </button>
@@ -461,6 +507,7 @@ function Topbar({ title, me, onLogout }) {
                     }}
                     className="w-full px-4 py-3 text-left text-sm font-semibold hover:bg-black/5"
                     style={{ color: BRAND.brown }}
+                    type="button"
                   >
                     Logout
                   </button>
