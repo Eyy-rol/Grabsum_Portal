@@ -1,4 +1,4 @@
-import React, { useMemo, useState } from "react";
+import React, { useMemo, useState, useEffect } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { supabase } from "../../lib/supabaseClient";
 import {
@@ -278,7 +278,7 @@ export default function Sections() {
     },
   });
 
-  // Active SY
+  // ✅ Active SY (use .single() so we don't deal with array indexing)
   const activeSYQ = useQuery({
     queryKey: ["active_school_year"],
     queryFn: async () => {
@@ -287,13 +287,14 @@ export default function Sections() {
         .select("sy_id, sy_code, status, start_date, end_date")
         .eq("status", "Active")
         .order("start_date", { ascending: false })
-        .limit(1);
+        .limit(1)
+        .single();
       if (error) throw error;
-      return data?.[0] ?? null;
+      return data ?? null;
     },
   });
 
-  // Unclassified section (active SY only)
+  // ✅ Unclassified section (active SY only) (use .single())
   const unclassifiedQ = useQuery({
     queryKey: ["unclassified_section", activeSYQ.data?.sy_id],
     enabled: !!activeSYQ.data?.sy_id,
@@ -301,14 +302,82 @@ export default function Sections() {
       const sy = activeSYQ.data;
       const { data, error } = await supabase
         .from("sections")
-        .select("section_id, section_name")
+        .select("section_id, section_name, sy_id")
         .eq("sy_id", sy.sy_id)
         .eq("section_name", "Unclassified")
-        .limit(1);
+        .limit(1)
+        .single();
       if (error) throw error;
-      return data?.[0] ?? null;
+      return data ?? null;
     },
   });
+
+  // ✅ Optional debug (remove later)
+  useEffect(() => {
+    console.log("ACTIVE SY:", activeSYQ.data);
+    console.log("UNCLASSIFIED:", unclassifiedQ.data);
+  }, [activeSYQ.data, unclassifiedQ.data]);
+
+  useEffect(() => {
+  const run = async () => {
+    const syId = activeSYQ.data?.sy_id;
+    const ucId = unclassifiedQ.data?.section_id;
+
+    if (!syId || !ucId) return;
+
+    const logCount = async (label, q) => {
+      const { count, error } = await q;
+      console.log(label, { count, error });
+    };
+
+    // 1) Just SY
+    await logCount(
+      "TEST 1 (sy only)",
+      supabase.from("students").select("id", { count: "exact", head: true }).eq("sy_id", syId)
+    );
+
+    // 2) SY + status
+    await logCount(
+      "TEST 2 (sy + status Enrolled)",
+      supabase.from("students").select("id", { count: "exact", head: true }).eq("sy_id", syId).eq("status", "Enrolled")
+    );
+
+    // 3) SY + section only (uc or null)
+    await logCount(
+      "TEST 3 (sy + uc/null)",
+      supabase
+        .from("students")
+        .select("id", { count: "exact", head: true })
+        .eq("sy_id", syId)
+        .or(`section_id.is.null,section_id.eq.${ucId}`)
+    );
+
+    // 4) SY + status + uc/null (your real logic)
+    await logCount(
+      "TEST 4 (sy + status + uc/null)",
+      supabase
+        .from("students")
+        .select("id", { count: "exact", head: true })
+        .eq("sy_id", syId)
+        .eq("status", "Enrolled")
+        .or(`section_id.is.null,section_id.eq.${ucId}`)
+    );
+
+    // 5) sanity: exact uc only
+    await logCount(
+      "TEST 5 (sy + status + exact uc only)",
+      supabase
+        .from("students")
+        .select("id", { count: "exact", head: true })
+        .eq("sy_id", syId)
+        .eq("status", "Enrolled")
+        .eq("section_id", ucId)
+    );
+  };
+
+  run();
+}, [activeSYQ.data?.sy_id, unclassifiedQ.data?.section_id]);
+
 
   // Sections list + joins (active SY)
   const sectionsQ = useQuery({
@@ -385,13 +454,17 @@ export default function Sections() {
     },
   });
 
-  // Unclassified students list (active SY, Enrolled only)
+  // ✅ FIXED: Unclassified students list (active SY, Enrolled only)
+  // IMPORTANT: only run when BOTH sy_id and unclassified section_id exist
   const unclassifiedStudentsQ = useQuery({
     queryKey: ["unclassified_students", activeSYQ.data?.sy_id, unclassifiedQ.data?.section_id],
-    enabled: !!activeSYQ.data?.sy_id,
+    enabled: !!activeSYQ.data?.sy_id && !!unclassifiedQ.data?.section_id,
     queryFn: async () => {
       const sy = activeSYQ.data;
-      const ucId = unclassifiedQ.data?.section_id || null;
+      const ucId = unclassifiedQ.data?.section_id;
+
+      // extra safety (shouldn't happen due to enabled)
+      if (!sy?.sy_id || !ucId) return [];
 
       const { data, error } = await supabase
         .from("students")
@@ -400,15 +473,13 @@ export default function Sections() {
         )
         .eq("sy_id", sy.sy_id)
         .eq("status", "Enrolled")
+        // include legacy null section_id AND explicit Unclassified section_id
+        .or(`section_id.is.null,section_id.eq.${ucId}`)
         .order("last_name", { ascending: true });
 
       if (error) throw error;
 
-      return (data ?? []).filter((s) => {
-        if (!s.section_id) return true; // legacy
-        if (!ucId) return false;
-        return s.section_id === ucId;
-      });
+      return data ?? [];
     },
   });
 
@@ -1417,6 +1488,8 @@ function SectionModal({ mode, row, onClose, onCreate, onUpdate, busy, grades, tr
     </>
   );
 }
+
+// (rest of your modals + components unchanged)
 
 function StudentsModal({ section, activeSY, counts, unclassifiedSectionId, onClose, onRemove, removing }) {
   const [q, setQ] = useState("");

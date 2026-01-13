@@ -1,12 +1,12 @@
-// src/Admin/Admins/AdminHome.jsx
-// Admin Home (wired to Supabase) — UI refresh (Tailwind + shadcn)
-// ✅ Keeps Supabase + React Query wiring intact
-// ✅ Retains gold brand accent
-// ✅ Removes Tabs (shows all recent activities)
-// ✅ Recent Activity uses divider lines (no box borders)
-// ✅ Reduced white blank space in Recent Activity
-// ✅ Adds Enrollment visualizations (perfect donut; no extra deps)
-// ✅ Removes “Status mix / Snapshot…” text (per request) + prevents donut distortion on wide screens
+// src/admin/AdminHome.jsx
+// Admin Home (wired to Supabase) — Stats + Quick shortcuts + Activity Logs + Calendar
+// Changes (per request):
+// ✅ “Recent Activity” card smaller to make room for calendar
+// ✅ Removed “View all” from Calendar
+// ✅ Removed Shortcuts card (chips) at the bottom
+// ✅ Everything is routable/clickable (cards + activity rows)
+// ✅ Teachers count is fetched (kept + improved; supports fallback column)
+// ✅ Recent activity logs modernized (card-like rows + hover + icon + pill time)
 
 import React, { useMemo } from "react";
 import { useQuery } from "@tanstack/react-query";
@@ -24,35 +24,32 @@ import {
   Bell,
   ShieldCheck,
   BookOpenCheck,
-  PieChart,
-  BarChart3,
 } from "lucide-react";
 import { formatDistanceToNow } from "date-fns";
 import CalendarWidget from "../../components/CalendarWidget";
 
-import { Card, CardHeader, CardTitle, CardDescription, CardContent } from "@/components/ui/card";
-import { Button } from "@/components/ui/button";
-import { Badge } from "@/components/ui/badge";
-import { ScrollArea } from "@/components/ui/scroll-area";
-import { Skeleton } from "@/components/ui/skeleton";
-import { cn } from "@/lib/utils";
-
 /* =======================
-   BRAND TOKENS (gold)
+   TOKENS (light + gold)
 ======================= */
-const BRAND = {
+
+const TOKENS = {
+  bg: "#FFFFFF",
+  card: "#FFFFFF",
+  border: "#E5E7EB",
+  text: "#111827",
+  muted: "#6B7280",
   gold: "#DAA520",
   goldSoft: "rgba(218,165,32,0.14)",
-  goldBorder: "rgba(218,165,32,0.28)",
-  goldBorderSoft: "rgba(218,165,32,0.25)",
 };
 
 /* =======================
-   DATA FETCHERS (UNCHANGED)
+   DATA FETCHERS
 ======================= */
 
 async function fetchEnrollmentStats() {
-  const totalRes = await supabase.from("enrollment").select("id", { count: "exact", head: true });
+  const totalRes = await supabase
+    .from("enrollment")
+    .select("id", { count: "exact", head: true });
   if (totalRes.error) throw totalRes.error;
 
   const pendingRes = await supabase
@@ -75,12 +72,14 @@ async function fetchEnrollmentStats() {
 }
 
 async function fetchTeachersCount() {
+  // Handles both `id` or `user_id` column setups gracefully.
   const r1 = await supabase.from("teachers").select("id", { count: "exact", head: true });
   if (!r1.error) return r1.count ?? 0;
 
   const r2 = await supabase.from("teachers").select("user_id", { count: "exact", head: true });
   if (!r2.error) return r2.count ?? 0;
 
+  // If both fail, surface the original error to React Query (so you can see it).
   throw r1.error;
 }
 
@@ -125,6 +124,7 @@ async function fetchActivities() {
     const e = a.enrollment;
     const studentName = formatStudentName(e);
 
+    // classify type
     let type = "system";
     const action = String(a.action || "");
     if (action.startsWith("enrollment")) type = "student";
@@ -221,485 +221,157 @@ export default function AdminHome({ onNavigate }) {
     return fetching ? "Refreshing data…" : null;
   }, [statsQ.isFetching, teachersQ.isFetching, activityQ.isFetching]);
 
-  const viz = useMemo(() => {
-    const total = statsQ.data?.total ?? 0;
-    const pending = statsQ.data?.pending ?? 0;
-    const enrolled = statsQ.data?.enrolled ?? 0;
-    const other = Math.max(0, total - pending - enrolled);
-
-    const pct = (n) => (total > 0 ? Math.round((n / total) * 100) : 0);
-
-    return {
-      total,
-      pending,
-      enrolled,
-      other,
-      pPending: pct(pending),
-      pEnrolled: pct(enrolled),
-      pOther: pct(other),
-    };
-  }, [statsQ.data]);
-
   return (
-    <div className="min-h-full bg-background">
-      <div className="mx-auto w-full max-w-6xl px-4 py-6">
-        {/* Header */}
-        <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
-          <div className="space-y-1">
-            <h1 className="text-2xl font-extrabold tracking-tight text-foreground sm:text-3xl">
-              Admin Home
-            </h1>
-            <p className="text-sm text-muted-foreground">Overview of enrollment and school activity</p>
-          </div>
-
-          <div className="inline-flex items-center gap-2 rounded-full border bg-card px-3 py-2 shadow-sm">
-            <span
-              className="grid h-7 w-7 place-items-center rounded-full border"
-              style={{ background: BRAND.goldSoft, borderColor: BRAND.goldBorder }}
-            >
-              <Activity size={16} style={{ color: BRAND.gold }} />
-            </span>
-            <span className="font-extrabold text-foreground">Live</span>
-            <span className="text-muted-foreground">updates</span>
-          </div>
+    <div style={styles.page}>
+      {/* Header */}
+      <div style={styles.headerRow}>
+        <div>
+          <h1 style={styles.pageTitle}>Admin Home</h1>
+          <p style={styles.pageSub}>Overview of enrollment and school activity</p>
         </div>
 
-        {anyError ? (
-          <div className="mt-4 rounded-xl border border-destructive/30 bg-card p-4 text-sm text-destructive">
-            <strong>Dashboard data error:</strong> {String(anyError?.message || anyError)}
-          </div>
-        ) : null}
-
-        {/* Stats */}
-        <div className="mt-5 grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-4">
-          <StatCard
-            title="Total Applications"
-            value={statsQ.data?.total}
-            icon={<Users className="h-4 w-4" />}
-            loading={statsQ.isLoading}
-            onClick={() => onNavigate?.("enrollment")}
-          />
-          <StatCard
-            title="Pending Applications"
-            value={statsQ.data?.pending}
-            icon={<Clock className="h-4 w-4" />}
-            loading={statsQ.isLoading}
-            onClick={() => onNavigate?.("enrollment")}
-          />
-          <StatCard
-            title="Total Enrolled"
-            value={statsQ.data?.enrolled}
-            icon={<GraduationCap className="h-4 w-4" />}
-            loading={statsQ.isLoading}
-            onClick={() => onNavigate?.("students")}
-          />
-          <StatCard
-            title="Total Teachers"
-            value={teachersQ.data}
-            icon={<Users className="h-4 w-4" />}
-            loading={teachersQ.isLoading}
-            onClick={() => onNavigate?.("teachers")}
-          />
-        </div>
-
-        {/* Enrollment Visualizations */}
-        <div className="mt-4 grid grid-cols-1 gap-4 lg:grid-cols-5">
-          <Card className="lg:col-span-2 overflow-hidden">
-            <CardHeader className="space-y-1">
-              <div className="flex items-start justify-between gap-3">
-                <div className="min-w-0">
-                  <CardTitle className="text-base font-extrabold">Enrollment Overview</CardTitle>
-                  <CardDescription className="text-xs">
-                    Status distribution based on current applications
-                  </CardDescription>
-                </div>
-
-                <div
-                  className="grid h-9 w-9 place-items-center rounded-xl border"
-                  style={{ background: BRAND.goldSoft, borderColor: BRAND.goldBorderSoft }}
-                  aria-hidden="true"
-                >
-                  <PieChart className="h-4 w-4" style={{ color: BRAND.gold }} />
-                </div>
-              </div>
-            </CardHeader>
-
-            <CardContent className="pt-0">
-              {statsQ.isLoading ? (
-                <div className="space-y-3">
-                  <Skeleton className="h-24 w-full rounded-xl" />
-                  <Skeleton className="h-10 w-full rounded-xl" />
-                </div>
-              ) : (
-                <EnrollmentViz
-                  total={viz.total}
-                  pending={viz.pending}
-                  enrolled={viz.enrolled}
-                  other={viz.other}
-                  pPending={viz.pPending}
-                  pEnrolled={viz.pEnrolled}
-                  pOther={viz.pOther}
-                />
-              )}
-
-              <div className="mt-3">
-                <Button
-                  type="button"
-                  variant="outline"
-                  size="sm"
-                  className="rounded-full"
-                  onClick={() => onNavigate?.("enrollment")}
-                >
-                  View enrollment <ArrowRight className="ml-2 h-4 w-4" />
-                </Button>
-              </div>
-            </CardContent>
-          </Card>
-
-          <Card className="lg:col-span-3 overflow-hidden">
-            <CardHeader className="space-y-1">
-              <div className="flex items-start justify-between gap-3">
-                <div className="min-w-0">
-                  <CardTitle className="text-base font-extrabold">Enrollment Breakdown</CardTitle>
-                  <CardDescription className="text-xs">Quick comparison of statuses</CardDescription>
-                </div>
-
-                <div
-                  className="grid h-9 w-9 place-items-center rounded-xl border"
-                  style={{ background: BRAND.goldSoft, borderColor: BRAND.goldBorderSoft }}
-                  aria-hidden="true"
-                >
-                  <BarChart3 className="h-4 w-4" style={{ color: BRAND.gold }} />
-                </div>
-              </div>
-            </CardHeader>
-
-            <CardContent className="pt-0">
-              {statsQ.isLoading ? (
-                <div className="space-y-3">
-                  <Skeleton className="h-10 w-full rounded-xl" />
-                  <Skeleton className="h-10 w-full rounded-xl" />
-                  <Skeleton className="h-10 w-full rounded-xl" />
-                </div>
-              ) : (
-                <MiniBars total={viz.total} pending={viz.pending} enrolled={viz.enrolled} other={viz.other} />
-              )}
-            </CardContent>
-          </Card>
-        </div>
-
-        {/* Quick Actions */}
-        <div className="mt-6">
-          <div className="mb-3 space-y-0.5">
-            <h2 className="text-base font-extrabold text-foreground">Quick actions</h2>
-            <p className="text-xs text-muted-foreground">Shortcuts to common admin tasks</p>
-          </div>
-
-          <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-3">
-            <QuickCard
-              icon={<LayoutList className="h-4 w-4" />}
-              label="Teacher Schedule"
-              hint="View schedules"
-              onClick={() => onNavigate?.("admin/teacher/schedule")}
-            />
-            <QuickCard
-              icon={<CalendarDays className="h-4 w-4" />}
-              label="Calendar Events"
-              hint="School year schedule"
-              onClick={() => onNavigate?.("calendar")}
-            />
-            <QuickCard
-              icon={<Megaphone className="h-4 w-4" />}
-              label="Announcements"
-              hint="Post updates"
-              onClick={() => onNavigate?.("announcements")}
-            />
-          </div>
-        </div>
-
-        <div className="my-6 h-px w-full bg-border" />
-
-        {/* Lower Grid */}
-        <div className="relative grid grid-cols-1 gap-4 lg:grid-cols-5">
-          {/* Recent Activity */}
-          <Card className="lg:col-span-2 min-w-0 overflow-hidden">
-            <CardHeader className="space-y-1 pb-3">
-              <div className="flex items-start justify-between gap-3">
-                <button
-                  type="button"
-                  onClick={() => onNavigate?.("activity_logs")}
-                  className="text-left outline-none"
-                  title="Open full activity logs"
-                >
-                  <CardTitle className="text-base font-extrabold">Recent Activity</CardTitle>
-                  <CardDescription className="text-xs">Latest actions (auto-refresh)</CardDescription>
-                </button>
-
-                <Button
-                  type="button"
-                  variant="outline"
-                  size="sm"
-                  onClick={() => onNavigate?.("activity_logs")}
-                  className="rounded-full"
-                >
-                  Open logs <ArrowRight className="ml-2 h-4 w-4" />
-                </Button>
-              </div>
-            </CardHeader>
-
-            <CardContent className="pt-0 pb-2">
-              <ActivityList activityQ={activityQ} onNavigate={onNavigate} />
-            </CardContent>
-          </Card>
-
-          {/* Calendar */}
-          <Card className="lg:col-span-3 min-w-0 overflow-hidden">
-            <CardHeader className="space-y-1">
-              <button
-                type="button"
-                onClick={() => onNavigate?.("calendar")}
-                className="text-left outline-none"
-                title="Open calendar"
-              >
-                <CardTitle className="text-base font-extrabold">Calendar</CardTitle>
-                <CardDescription className="text-xs">Read-only view of school events</CardDescription>
-              </button>
-            </CardHeader>
-
-            <CardContent className="pt-0 overflow-hidden">
-              <div className="relative isolate overflow-hidden rounded-xl border bg-card p-2">
-                <CalendarWidget readOnly />
-              </div>
-            </CardContent>
-          </Card>
-        </div>
-
-        {liveText ? <div className="mt-4 text-xs font-semibold text-muted-foreground">{liveText}</div> : null}
-      </div>
-    </div>
-  );
-}
-
-/* =======================
-   Enrollment Viz (Perfect Donut + stacked bar)
-   - Removes Status mix text
-   - Prevents donut distortion on wide screens
-======================= */
-
-function EnrollmentViz({ total, pending, enrolled, other, pPending, pEnrolled, pOther }) {
-  const cEnrolled = BRAND.gold;
-  const cPending = "rgba(17,24,39,0.28)";
-  const cOther = "rgba(17,24,39,0.12)";
-
-  // Angles from raw counts (prevents rounding slivers)
-  const totalSafe = Math.max(0, total);
-  const ang = (n) => (totalSafe > 0 ? (n / totalSafe) * 360 : 0);
-
-  const a = ang(enrolled);
-  const b = ang(pending);
-
-  const donutBg =
-    totalSafe === 0
-      ? `conic-gradient(rgba(17,24,39,0.10) 0deg 360deg)`
-      : `conic-gradient(
-          ${cEnrolled} 0deg ${a}deg,
-          ${cPending} ${a}deg ${a + b}deg,
-          ${cOther} ${a + b}deg 360deg
-        )`;
-
-  const aria = `Enrollment distribution: ${pEnrolled}% enrolled (${enrolled}), ${pPending}% pending (${pending}), ${pOther}% other (${other}), total ${totalSafe}.`;
-
-  return (
-    <div className="space-y-4">
-      {/* Donut + Legend */}
-      <div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
-        {/* Donut (never shrinks; stays perfectly round) */}
-        <div
-          className="relative aspect-square w-24 min-w-[96px] shrink-0 rounded-full"
-          style={{ background: donutBg }}
-          role="img"
-          aria-label={aria}
-        >
-          {/* proportional cutout */}
-          <div className="absolute inset-[14%] rounded-full bg-card shadow-sm" />
-
-          {/* label */}
-          <div className="absolute inset-0 grid place-items-center">
-            <div className="text-center leading-tight">
-              <div className="text-lg font-extrabold text-foreground">{totalSafe}</div>
-              <div className="text-[10px] font-semibold text-muted-foreground">Total</div>
-            </div>
-          </div>
-        </div>
-
-        {/* Legend */}
-        <div className="w-full space-y-2 sm:max-w-[260px]">
-          <LegendRow label="Enrolled" color={cEnrolled} value={`${enrolled} (${pEnrolled}%)`} />
-          <LegendRow label="Pending" color={cPending} value={`${pending} (${pPending}%)`} />
-          <LegendRow label="Other" color={cOther} value={`${other} (${pOther}%)`} />
+        <div style={styles.headerBadge}>
+          <Activity size={16} color={TOKENS.gold} />
+          <span style={{ fontWeight: 900, color: TOKENS.text }}>Live</span>
+          <span style={{ color: TOKENS.muted }}>updates</span>
         </div>
       </div>
 
-      {/* Stacked bar */}
-      <div>
-        <div className="mb-2 flex items-center justify-between">
-          <div className="text-xs font-extrabold text-foreground">Distribution</div>
-          <div className="text-[11px] font-semibold text-muted-foreground">Total: {totalSafe}</div>
+      {anyError ? (
+        <div style={styles.errorBox}>
+          <strong>Dashboard data error:</strong> {String(anyError?.message || anyError)}
         </div>
+      ) : null}
 
-        <div
-          className="h-3 w-full overflow-hidden rounded-full border bg-muted/30"
-          style={{ borderColor: "hsl(var(--border))" }}
-          aria-hidden="true"
-        >
-          <div className="flex h-full w-full">
-            <div style={{ width: `${pEnrolled}%`, background: cEnrolled }} />
-            <div style={{ width: `${pPending}%`, background: cPending }} />
-            <div style={{ width: `${pOther}%`, background: cOther }} />
-          </div>
-        </div>
+      {/* Stats */}
+      <div style={styles.statsGrid}>
+        <StatCard
+          title="Total Applications"
+          value={statsQ.data?.total}
+          icon={<Users size={18} />}
+          loading={statsQ.isLoading}
+          onClick={() => onNavigate?.("enrollment")}
+        />
+        <StatCard
+          title="Pending Applications"
+          value={statsQ.data?.pending}
+          icon={<Clock size={18} />}
+          loading={statsQ.isLoading}
+          onClick={() => onNavigate?.("enrollment")}
+        />
+        <StatCard
+          title="Total Enrolled"
+          value={statsQ.data?.enrolled}
+          icon={<GraduationCap size={18} />}
+          loading={statsQ.isLoading}
+          onClick={() => onNavigate?.("students")}
+        />
+        <StatCard
+          title="Total Teachers"
+          value={teachersQ.data}
+          icon={<Users size={18} />}
+          loading={teachersQ.isLoading}
+          onClick={() => onNavigate?.("teachers")}
+        />
       </div>
-    </div>
-  );
-}
 
-function LegendRow({ label, color, value }) {
-  return (
-    <div className="flex items-center justify-between gap-3">
-      <div className="flex items-center gap-2">
-        <span className="h-2.5 w-2.5 rounded-full" style={{ background: color }} aria-hidden="true" />
-        <span className="text-xs font-extrabold text-foreground">{label}</span>
+      {/* Quick Actions (routable) */}
+      <div style={styles.quickGrid}>
+        <QuickCard
+          icon={<LayoutList size={18} />}
+          label="Teacher Schedule"
+          hint="View schedules"
+          onClick={() => onNavigate?.("admin/teacher/schedule")}
+        />
+        <QuickCard
+          icon={<CalendarDays size={18} />}
+          label="Calendar Events"
+          hint="School year schedule"
+          onClick={() => onNavigate?.("calendar")}
+        />
+        <QuickCard
+          icon={<Megaphone size={18} />}
+          label="Announcements"
+          hint="Post updates"
+          onClick={() => onNavigate?.("announcements")}
+        />
       </div>
-      <span className="text-xs font-semibold text-muted-foreground">{value}</span>
-    </div>
-  );
-}
 
-function MiniBars({ total, pending, enrolled, other }) {
-  const safePct = (n) => (total > 0 ? Math.round((n / total) * 100) : 0);
-
-  return (
-    <div className="space-y-3">
-      <MetricBar label="Enrolled" value={enrolled} pct={safePct(enrolled)} accent />
-      <MetricBar label="Pending" value={pending} pct={safePct(pending)} />
-      <MetricBar label="Other" value={other} pct={safePct(other)} subtle />
-    </div>
-  );
-}
-
-function MetricBar({ label, value, pct, accent, subtle }) {
-  const fill = accent ? BRAND.gold : subtle ? "rgba(17,24,39,0.18)" : "rgba(17,24,39,0.30)";
-  return (
-    <div>
-      <div className="mb-1 flex items-center justify-between">
-        <div className="text-xs font-extrabold text-foreground">{label}</div>
-        <div className="text-xs font-semibold text-muted-foreground">
-          {value} <span className="text-[11px]">({pct}%)</span>
-        </div>
-      </div>
-      <div className="h-2 w-full overflow-hidden rounded-full bg-muted/30">
-        <div className="h-full rounded-full" style={{ width: `${pct}%`, background: fill }} />
-      </div>
-    </div>
-  );
-}
-
-/* =======================
-   Activity list (DIVIDERS)
-======================= */
-
-function ActivityList({ activityQ, onNavigate }) {
-  if (activityQ.isLoading) {
-    return (
-      <div className="space-y-2 pb-2">
-        <Skeleton className="h-12 w-full rounded-xl" />
-        <Skeleton className="h-12 w-full rounded-xl" />
-        <Skeleton className="h-12 w-full rounded-xl" />
-      </div>
-    );
-  }
-
-  const items = activityQ.data || [];
-
-  if (items.length === 0) {
-    return (
-      <div className="rounded-xl border bg-card p-4 text-sm text-muted-foreground">
-        No recent activity yet.
-      </div>
-    );
-  }
-
-  return (
-    <ScrollArea className="h-[290px]">
-      <ul className="divide-y divide-border" role="list" aria-label="Recent activity">
-        {items.map((a) => (
-          <li key={a.id} className="first:pt-1">
+      {/* Lower Grid */}
+      <div style={styles.lowerGrid}>
+        {/* Recent Activity — smaller + modern list */}
+        <Card
+          title="Recent Activity"
+          subtitle="Latest actions (auto-refresh)"
+          onClickHeader={() => onNavigate?.("activity_logs")}
+          headerHint="Open full activity logs"
+          rightAction={
             <button
               type="button"
-              onClick={() => routeForActivity(a, onNavigate)}
-              title="Open related page"
-              className={cn(
-                "group w-full px-1 py-3 text-left transition",
-                "hover:bg-muted/40",
-                "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-offset-2"
-              )}
-              style={{ outlineColor: BRAND.gold }}
+              onClick={() => onNavigate?.("activity_logs")}
+              style={styles.headerLinkBtn}
+              title="Open full activity logs"
             >
-              <div className="flex items-start gap-3">
-                <div
-                  className="mt-0.5 grid h-9 w-9 shrink-0 place-items-center rounded-xl"
-                  style={{ background: "rgba(17,24,39,0.04)" }}
-                >
-                  {activityIcon(a.type)}
-                </div>
-
-                <div className="min-w-0 flex-1">
-                  <div
-                    className="text-sm font-extrabold text-foreground"
-                    style={{
-                      display: "-webkit-box",
-                      WebkitLineClamp: 2,
-                      WebkitBoxOrient: "vertical",
-                      overflow: "hidden",
-                    }}
-                  >
-                    {a.text}
-                  </div>
-
-                  <div className="mt-1.5 flex flex-wrap items-center gap-2">
-                    <Badge
-                      variant="secondary"
-                      className="rounded-full border px-2 py-0.5 text-[11px] font-extrabold"
-                      style={{
-                        background: BRAND.goldSoft,
-                        borderColor: BRAND.goldBorderSoft,
-                        color: "hsl(var(--foreground))",
-                      }}
-                    >
-                      {labelForType(a.type)}
-                    </Badge>
-
-                    <span className="text-xs font-semibold text-muted-foreground">
-                      {formatDistanceToNow(a.at, { addSuffix: true })}
-                    </span>
-                  </div>
-                </div>
-
-                <ArrowRight
-                  className="mt-1 h-4 w-4 shrink-0 opacity-60 transition group-hover:opacity-100"
-                  style={{ color: BRAND.gold }}
-                />
-              </div>
+              Open logs <ArrowRight size={16} />
             </button>
-          </li>
-        ))}
-      </ul>
-    </ScrollArea>
+          }
+          compact
+        >
+          {activityQ.isLoading ? (
+            <div style={{ color: TOKENS.muted }}>Loading activity…</div>
+          ) : (
+            <div style={styles.activityListCompact}>
+              {(activityQ.data || []).map((a) => (
+                <button
+                  key={a.id}
+                  type="button"
+                  style={styles.activityRowBtn}
+                  onClick={() => routeForActivity(a, onNavigate)}
+                  title="Open related page"
+                >
+                  <div style={styles.activityIconWrap}>{activityIcon(a.type)}</div>
+
+                  <div style={{ minWidth: 0, flex: 1 }}>
+                    <div style={styles.activityTextModern}>{a.text}</div>
+                    <div style={styles.activityMetaRow}>
+                      <span style={styles.activityPill}>{labelForType(a.type)}</span>
+                      <span style={styles.activityTime}>
+                        {formatDistanceToNow(a.at, { addSuffix: true })}
+                      </span>
+                    </div>
+                  </div>
+
+                  <ArrowRight size={16} style={{ color: TOKENS.gold }} />
+                </button>
+              ))}
+
+              {(activityQ.data || []).length === 0 ? (
+                <div style={{ color: TOKENS.muted }}>No recent activity yet.</div>
+              ) : null}
+            </div>
+          )}
+        </Card>
+
+        {/* Calendar — removed View All + clickable header */}
+        <Card
+          title="Calendar"
+          subtitle="Read-only view of school events"
+          onClickHeader={() => onNavigate?.("calendar")}
+          headerHint="Open calendar"
+        >
+          <CalendarWidget readOnly />
+        </Card>
+      </div>
+
+      {liveText ? (
+        <div style={{ marginTop: 12, color: TOKENS.muted, fontSize: 12 }}>{liveText}</div>
+      ) : null}
+    </div>
   );
 }
 
 /* =======================
-   HELPERS
+   HELPERS (routing + icons)
 ======================= */
 
 function routeForActivity(a, onNavigate) {
@@ -722,7 +394,7 @@ function labelForType(type) {
 }
 
 function activityIcon(type) {
-  const common = { className: "h-4 w-4 text-foreground" };
+  const common = { size: 16 };
   if (type === "teacher") return <UserCog {...common} />;
   if (type === "student") return <BookOpenCheck {...common} />;
   if (type === "announcement") return <Bell {...common} />;
@@ -737,70 +409,298 @@ function activityIcon(type) {
 
 function StatCard({ title, value, icon, loading, onClick }) {
   return (
-    <button
-      type="button"
-      onClick={onClick}
-      title={`Open ${title}`}
-      className={cn(
-        "group relative w-full overflow-hidden rounded-2xl border bg-card p-4 text-left shadow-sm transition",
-        "hover:shadow-md",
-        "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-offset-2"
-      )}
-      style={{ outlineColor: BRAND.gold }}
-    >
-      <div className="absolute right-0 top-0 h-full w-1.5 opacity-90" style={{ background: BRAND.gold }} />
-
-      <div className="flex items-center gap-3">
-        <div
-          className="grid h-11 w-11 place-items-center rounded-2xl border"
-          style={{ background: BRAND.goldSoft, borderColor: BRAND.goldBorder }}
-        >
-          <span className="text-foreground">{icon}</span>
-        </div>
-
-        <div className="min-w-0">
-          <div className="text-2xl font-extrabold leading-none text-foreground">
-            {loading ? "…" : value ?? 0}
-          </div>
-          <div className="mt-1 text-sm font-semibold text-muted-foreground">{title}</div>
-        </div>
+    <button type="button" onClick={onClick} style={styles.statCardBtn} title={`Open ${title}`}>
+      <div style={styles.statIcon}>{icon}</div>
+      <div style={{ minWidth: 0, textAlign: "left" }}>
+        <div style={styles.statValue}>{loading ? "…" : value ?? 0}</div>
+        <div style={styles.statLabel}>{title}</div>
       </div>
+      <div style={styles.goldEdge} />
     </button>
   );
 }
 
 function QuickCard({ icon, label, hint, onClick }) {
   return (
-    <button
-      type="button"
-      onClick={onClick}
-      className={cn(
-        "group w-full rounded-2xl border bg-card p-4 text-left shadow-sm transition",
-        "hover:shadow-md",
-        "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-offset-2"
-      )}
-      style={{ outlineColor: BRAND.gold }}
-    >
-      <div className="flex items-center gap-3">
-        <div
-          className="grid h-10 w-10 place-items-center rounded-2xl border"
-          style={{ background: BRAND.goldSoft, borderColor: BRAND.goldBorder }}
-        >
-          <span className="text-foreground">{icon}</span>
-        </div>
-
-        <div className="min-w-0">
-          <div className="truncate text-sm font-extrabold text-foreground">{label}</div>
-          <div className="truncate text-xs font-semibold text-muted-foreground">{hint}</div>
-        </div>
-
-        <div
-          className="ml-auto grid h-9 w-9 place-items-center rounded-full border"
-          style={{ borderColor: BRAND.goldBorderSoft, color: BRAND.gold }}
-        >
-          <ArrowRight className="h-4 w-4" />
-        </div>
+    <button type="button" onClick={onClick} style={styles.quickCard}>
+      <div style={styles.quickIcon}>{icon}</div>
+      <div style={{ textAlign: "left" }}>
+        <div style={{ fontWeight: 900, color: TOKENS.text }}>{label}</div>
+        <div style={{ fontSize: 12, color: TOKENS.muted }}>{hint}</div>
+      </div>
+      <div style={styles.quickChevron}>
+        <ArrowRight size={18} />
       </div>
     </button>
   );
 }
+
+function Card({ title, subtitle, rightAction, children, onClickHeader, headerHint, compact }) {
+  return (
+    <div style={{ ...styles.card, ...(compact ? styles.cardCompact : null) }}>
+      <div style={styles.cardHeaderRow}>
+        <button
+          type="button"
+          onClick={onClickHeader}
+          style={styles.cardHeaderBtn}
+          title={headerHint || ""}
+        >
+          <div>
+            <h3 style={styles.cardTitle}>{title}</h3>
+            {subtitle ? <div style={styles.cardSub}>{subtitle}</div> : null}
+          </div>
+        </button>
+
+        {rightAction ? <div>{rightAction}</div> : null}
+      </div>
+
+      <div style={{ marginTop: 12 }}>{children}</div>
+    </div>
+  );
+}
+
+/* =======================
+   STYLES
+======================= */
+
+const styles = {
+  page: {
+    background: TOKENS.bg,
+    minHeight: "100%",
+  },
+
+  headerRow: {
+    display: "flex",
+    alignItems: "flex-start",
+    justifyContent: "space-between",
+    gap: 12,
+    flexWrap: "wrap",
+    marginBottom: 10,
+  },
+
+  headerBadge: {
+    display: "inline-flex",
+    alignItems: "center",
+    gap: 8,
+    background: "#fff",
+    border: `1px solid ${TOKENS.border}`,
+    borderRadius: 999,
+    padding: "8px 12px",
+    boxShadow: "0 8px 20px rgba(0,0,0,0.06)",
+  },
+
+  pageTitle: { margin: 0, fontWeight: 900, color: TOKENS.text },
+  pageSub: { color: TOKENS.muted, marginBottom: 10, marginTop: 6 },
+
+  errorBox: {
+    background: "#fff",
+    border: "1px solid rgba(239,68,68,0.35)",
+    borderRadius: 12,
+    padding: 12,
+    color: "#991B1B",
+    marginBottom: 16,
+  },
+
+  statsGrid: {
+    display: "grid",
+    gridTemplateColumns: "repeat(auto-fit, minmax(220px, 1fr))",
+    gap: 14,
+  },
+
+  statCardBtn: {
+    position: "relative",
+    background: TOKENS.card,
+    borderRadius: 16,
+    padding: 16,
+    display: "flex",
+    gap: 14,
+    border: `1px solid ${TOKENS.border}`,
+    boxShadow: "0 10px 25px rgba(0,0,0,0.06)",
+    overflow: "hidden",
+    cursor: "pointer",
+    textAlign: "left",
+  },
+
+  goldEdge: {
+    position: "absolute",
+    right: 0,
+    top: 0,
+    width: 6,
+    height: "100%",
+    background: TOKENS.gold,
+    opacity: 0.9,
+  },
+
+  statIcon: {
+    width: 44,
+    height: 44,
+    borderRadius: 14,
+    background: TOKENS.goldSoft,
+    border: `1px solid rgba(218,165,32,0.28)`,
+    display: "grid",
+    placeItems: "center",
+    color: TOKENS.text,
+    flex: "0 0 auto",
+  },
+
+  statValue: { fontSize: 28, fontWeight: 900, lineHeight: 1.1, color: TOKENS.text },
+  statLabel: { color: TOKENS.muted, marginTop: 4 },
+
+  quickGrid: {
+    marginTop: 16,
+    display: "grid",
+    gridTemplateColumns: "repeat(auto-fit, minmax(220px, 1fr))",
+    gap: 14,
+  },
+
+  quickCard: {
+    background: "#fff",
+    borderRadius: 16,
+    padding: 16,
+    display: "flex",
+    alignItems: "center",
+    gap: 12,
+    cursor: "pointer",
+    border: `1px solid ${TOKENS.border}`,
+    boxShadow: "0 8px 20px rgba(0,0,0,0.05)",
+  },
+
+  quickIcon: {
+    width: 40,
+    height: 40,
+    borderRadius: 12,
+    display: "grid",
+    placeItems: "center",
+    background: TOKENS.goldSoft,
+    border: "1px solid rgba(218,165,32,0.28)",
+    color: TOKENS.text,
+    flex: "0 0 auto",
+  },
+
+  quickChevron: {
+    marginLeft: "auto",
+    color: TOKENS.gold,
+    display: "grid",
+    placeItems: "center",
+  },
+
+  // Make Recent Activity smaller so Calendar has space
+  lowerGrid: {
+    marginTop: 16,
+    display: "grid",
+    gridTemplateColumns: "1fr 1.15fr", // calendar slightly bigger
+    gap: 14,
+    alignItems: "start",
+  },
+
+  card: {
+    background: "#fff",
+    borderRadius: 16,
+    padding: 16,
+    border: `1px solid ${TOKENS.border}`,
+    boxShadow: "0 10px 25px rgba(0,0,0,0.05)",
+  },
+
+  cardCompact: {
+    padding: 14,
+  },
+
+  cardHeaderRow: {
+    display: "flex",
+    alignItems: "flex-start",
+    justifyContent: "space-between",
+    gap: 10,
+  },
+
+  cardHeaderBtn: {
+    all: "unset",
+    cursor: "pointer",
+    display: "block",
+    flex: 1,
+  },
+
+  cardTitle: { margin: 0, fontWeight: 900, color: TOKENS.text },
+  cardSub: { marginTop: 4, color: TOKENS.muted, fontSize: 12 },
+
+  headerLinkBtn: {
+    display: "inline-flex",
+    alignItems: "center",
+    gap: 8,
+    border: `1px solid ${TOKENS.border}`,
+    background: "#fff",
+    borderRadius: 999,
+    padding: "8px 12px",
+    cursor: "pointer",
+    fontWeight: 900,
+    color: TOKENS.text,
+    boxShadow: "0 8px 20px rgba(0,0,0,0.06)",
+  },
+
+  // Modern activity list (smaller height)
+  activityListCompact: {
+    maxHeight: 260,
+    overflowY: "auto",
+    display: "grid",
+    gap: 10,
+    paddingRight: 6,
+  },
+
+  activityRowBtn: {
+    width: "100%",
+    display: "flex",
+    gap: 12,
+    alignItems: "flex-start",
+    textAlign: "left",
+    cursor: "pointer",
+    borderRadius: 14,
+    border: `1px solid ${TOKENS.border}`,
+    background: "linear-gradient(180deg, rgba(255,255,255,1), rgba(0,0,0,0.01))",
+    padding: 12,
+    boxShadow: "0 10px 22px rgba(0,0,0,0.04)",
+  },
+
+  activityIconWrap: {
+    width: 34,
+    height: 34,
+    borderRadius: 12,
+    background: "rgba(17,24,39,0.04)",
+    border: "1px solid rgba(0,0,0,0.06)",
+    display: "grid",
+    placeItems: "center",
+    color: TOKENS.text,
+    flex: "0 0 auto",
+  },
+
+  activityTextModern: {
+    color: TOKENS.text,
+    fontWeight: 800,
+    overflow: "hidden",
+    textOverflow: "ellipsis",
+    whiteSpace: "nowrap",
+    maxWidth: "100%",
+  },
+
+  activityMetaRow: {
+    marginTop: 6,
+    display: "flex",
+    alignItems: "center",
+    gap: 8,
+    flexWrap: "wrap",
+  },
+
+  activityPill: {
+    fontSize: 11,
+    fontWeight: 900,
+    color: TOKENS.text,
+    background: TOKENS.goldSoft,
+    border: "1px solid rgba(218,165,32,0.25)",
+    padding: "4px 8px",
+    borderRadius: 999,
+  },
+
+  activityTime: {
+    color: "#9CA3AF",
+    fontSize: 12,
+    fontWeight: 700,
+  },
+};

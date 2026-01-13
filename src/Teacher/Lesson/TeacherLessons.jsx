@@ -156,18 +156,12 @@ function PreviewPane({ lesson }) {
         <CardHeader>
           <div className="flex flex-wrap items-start justify-between gap-3">
             <div>
-              <CardTitle className="text-xl">
-                {lesson.title || "Untitled Lesson"}
-              </CardTitle>
+              <CardTitle className="text-xl">{lesson.title || "Untitled Lesson"}</CardTitle>
               <CardDescription>
-                {lesson.subjectLabel || "Subject"} • SHS Grade{" "}
-                {lesson.gradeLabel || "—"} • {lesson.durationMinutes} min
+                {lesson.subjectLabel || "Subject"} • SHS Grade {lesson.gradeLabel || "—"} • {lesson.durationMinutes} min
               </CardDescription>
             </div>
-            <Badge
-              variant={statusBadgeVariant(lesson.status)}
-              className="rounded-xl"
-            >
+            <Badge variant={statusBadgeVariant(lesson.status)} className="rounded-xl">
               {lesson.status}
             </Badge>
           </div>
@@ -190,34 +184,22 @@ function PreviewPane({ lesson }) {
             {lesson.parts.length ? (
               lesson.parts.map((p) => (
                 <div key={p.id} className="space-y-2">
-                  <div className="text-base font-semibold">
-                    {p.title || p.type}
-                  </div>
+                  <div className="text-base font-semibold">{p.title || p.type}</div>
                   {p.body ? (
-                    <div className="whitespace-pre-wrap text-sm leading-relaxed opacity-80">
-                      {p.body}
-                    </div>
+                    <div className="whitespace-pre-wrap text-sm leading-relaxed opacity-80">{p.body}</div>
                   ) : (
                     <div className="text-sm opacity-60">No content yet.</div>
                   )}
                   {p.activities?.length ? (
                     <div className="mt-3 rounded-2xl border bg-muted/30 p-4">
-                      <div className="mb-2 text-sm font-semibold">
-                        Activities
-                      </div>
+                      <div className="mb-2 text-sm font-semibold">Activities</div>
                       <div className="space-y-3">
                         {p.activities.map((a) => (
-                          <div
-                            key={a.id}
-                            className="rounded-2xl border bg-background p-3 shadow-sm"
-                          >
+                          <div key={a.id} className="rounded-2xl border bg-background p-3 shadow-sm">
                             <div className="flex items-start justify-between gap-3">
                               <div>
                                 <div className="flex flex-wrap items-center gap-2">
-                                  <Badge
-                                    variant="outline"
-                                    className="rounded-xl"
-                                  >
+                                  <Badge variant="outline" className="rounded-xl">
                                     {a.type}
                                   </Badge>
                                   <div className="font-medium">{a.title}</div>
@@ -248,12 +230,6 @@ function PreviewPane({ lesson }) {
   );
 }
 
-/**
- * ✅ Updated: AiGenerateDialog wired to Supabase Edge Function `lesson-generate`
- * - Generates based on tone/difficulty/include/prompt + lesson metadata
- * - Shows preview output
- * - Apply will APPEND via onApply (your existing applyAiPatch)
- */
 function AiGenerateDialog({ open, onOpenChange, onApply, lesson }) {
   const [tone, setTone] = useState("Friendly");
   const [difficulty, setDifficulty] = useState("On-level");
@@ -267,10 +243,6 @@ function AiGenerateDialog({ open, onOpenChange, onApply, lesson }) {
     "Generate engaging content and classroom-ready activities aligned to the lesson details."
   );
 
-  const [loading, setLoading] = useState(false);
-  const [genError, setGenError] = useState(null);
-  const [result, setResult] = useState(null); // expected: { parts, tags, summary?, used?, limit? }
-
   const includeOptions = useMemo(
     () => [
       { key: "objectives", label: "Objectives" },
@@ -281,101 +253,115 @@ function AiGenerateDialog({ open, onOpenChange, onApply, lesson }) {
     []
   );
 
-  // Extract nicer error body from functions.invoke error object
-  async function extractInvokeError(err) {
-    try {
-      const ctx = err?.context;
-      if (ctx?.text) {
-        const txt = await ctx.text();
-        try {
-          const j = JSON.parse(txt);
-          const message =
-            j?.detail
-              ? `${j.error}${j.status ? ` (HTTP ${j.status})` : ""}: ${j.detail}`
-              : (j?.error || txt);
-          return { message, meta: j };
-        } catch {
-          return { message: txt, meta: null };
-        }
-      }
-    } catch {}
-    return { message: err?.message || "Failed to send a request to the Edge Function", meta: null };
-  }
+  const mockOutput = useMemo(() => {
+    const baseParts = [];
 
-
-  async function generate() {
-    setLoading(true);
-    setGenError(null);
-    setResult(null);
-
-    // keep payload small & stable
-    const payload = {
-      lesson: {
-        title: lesson.title,
-        subjectLabel: lesson.subjectLabel,
-        gradeLabel: lesson.gradeLabel,
-        trackLabel: lesson.trackLabel,
-        strandLabel: lesson.strandLabel,
-        durationMinutes: lesson.durationMinutes,
-        audience: lesson.audience,
-        tags: lesson.tags,
-      },
-      tone,
-      difficulty,
-      include,
-      prompt,
-      mode: "append",
-    };
-
-const {
-  data: { session },
-  error: sessionErr,
-} = await supabase.auth.getSession();
-
-if (sessionErr) throw new Error(sessionErr.message);
-if (!session?.access_token) throw new Error("You must be logged in to use AI.");
-
-const overviewPayload = {
-  title: lesson.title,
-  // You can optionally pass objectives as an array (if your lesson-overview function supports it)
-  objectives: lesson.parts
-    .find((p) => (p.type || "").toLowerCase() === "objectives")
-    ?.body?.split("\n")
-    .map((s) => s.trim())
-    .filter(Boolean) || [],
-  tone: (tone || "Friendly").toLowerCase(), // adapt if your edge fn expects "simple|standard|detailed"
-};
-
-const { data, error } = await supabase.functions.invoke("lesson-overview", {
-  body: overviewPayload,
-  headers: {
-    Authorization: `Bearer ${session.access_token}`,
-  },
-});
-
-
-
-    if (error) {
-      const parsed = await extractInvokeError(error);
-      const msg = parsed.message || "Generation failed.";
-
-      // friendlier quota message
-      if (msg.toLowerCase().includes("daily ai generation limit")) {
-        setGenError("You’ve reached today’s AI limit (10/day). Try again tomorrow (UTC reset).");
-      } else {
-        setGenError(msg);
-      }
-
-      setLoading(false);
-      return;
+    if (include.objectives) {
+      baseParts.push({
+        id: uuid(),
+        type: "Objectives",
+        title: "Learning Objectives",
+        body: `By the end of the lesson, students will be able to:
+• Explain the key concept in their own words.
+• Apply the concept to a short example.
+• Reflect on how the concept shows up in real life.`,
+        activities: [],
+      });
     }
 
-    setResult(data);
-    setLoading(false);
-  }
+    if (include.warmup) {
+      baseParts.push({
+        id: uuid(),
+        type: "Warm-up",
+        title: "Warm-up (5 minutes)",
+        body:
+          "Quick prompt: Write one thing you already know about today’s topic, and one question you have. Share with a partner.",
+        activities: include.activities
+          ? [
+              {
+                id: uuid(),
+                type: "Discussion",
+                title: "Turn-and-Talk",
+                instructions:
+                  "Students pair up and share their prior knowledge and questions. Teacher collects 3–5 questions to guide the lesson.",
+                estimatedMinutes: 5,
+                attachable: false,
+              },
+            ]
+          : [],
+      });
+    }
 
-  const previewParts = result?.parts || [];
-  const previewTags = result?.tags || [];
+    if (include.activities) {
+      baseParts.push({
+        id: uuid(),
+        type: "Guided Practice",
+        title: "Guided Practice",
+        body:
+          "Model a worked example, then practice together. Use checks for understanding after each step.",
+        activities: [
+          {
+            id: uuid(),
+            type: "Worksheet",
+            title: "Guided Worksheet (Differentiated)",
+            instructions:
+              "Provide 8 items: 3 basic, 3 on-level, 2 challenge. Students complete in pairs; teacher circulates and supports.",
+            estimatedMinutes: 15,
+            attachable: true,
+          },
+          {
+            id: uuid(),
+            type: "Game",
+            title: "Quick Review Game",
+            instructions:
+              "Use a 5-question lightning round. Students answer on mini whiteboards. Celebrate multiple strategies.",
+            estimatedMinutes: 7,
+            attachable: false,
+          },
+        ],
+      });
+    }
+
+    if (include.assessment) {
+      baseParts.push({
+        id: uuid(),
+        type: "Assessment",
+        title: "Exit Ticket",
+        body:
+          "Students answer 2 questions: one concept check and one application question. Collect before dismissal.",
+        activities: [
+          {
+            id: uuid(),
+            type: "Quiz",
+            title: "2-Question Exit Ticket",
+            instructions: `Q1: Define the concept in one sentence.
+Q2: Solve/apply the concept to a short scenario.`,
+            estimatedMinutes: 5,
+            attachable: true,
+          },
+        ],
+      });
+    }
+
+    const toneLine = `Tone: ${tone}. Difficulty: ${difficulty}.`;
+    const tags = [
+      lesson.subjectLabel,
+      `SHS Grade ${lesson.gradeLabel}`,
+      lesson.trackLabel,
+      lesson.strandLabel,
+      tone,
+      difficulty,
+    ].filter(Boolean);
+
+    return {
+      summary: `${toneLine} Includes: ${Object.entries(include)
+        .filter(([, v]) => v)
+        .map(([k]) => k)
+        .join(", ")}.`,
+      parts: baseParts,
+      tags,
+    };
+  }, [tone, difficulty, include, lesson.subjectLabel, lesson.gradeLabel, lesson.trackLabel, lesson.strandLabel]);
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
@@ -393,14 +379,12 @@ const { data, error } = await supabase.functions.invoke("lesson-overview", {
           <Card className="rounded-2xl">
             <CardHeader>
               <CardTitle className="text-base">Settings</CardTitle>
-              <CardDescription>
-                Control tone, difficulty, and which components to include.
-              </CardDescription>
+              <CardDescription>Control tone, difficulty, and which components to include.</CardDescription>
             </CardHeader>
             <CardContent className="space-y-4">
               <div className="grid gap-2">
                 <Label>Tone</Label>
-                <Select value={tone} onValueChange={setTone} disabled={loading}>
+                <Select value={tone} onValueChange={setTone}>
                   <SelectTrigger className="rounded-2xl">
                     <SelectValue placeholder="Select tone" />
                   </SelectTrigger>
@@ -415,11 +399,7 @@ const { data, error } = await supabase.functions.invoke("lesson-overview", {
 
               <div className="grid gap-2">
                 <Label>Difficulty</Label>
-                <Select
-                  value={difficulty}
-                  onValueChange={setDifficulty}
-                  disabled={loading}
-                >
+                <Select value={difficulty} onValueChange={setDifficulty}>
                   <SelectTrigger className="rounded-2xl">
                     <SelectValue placeholder="Select difficulty" />
                   </SelectTrigger>
@@ -435,17 +415,11 @@ const { data, error } = await supabase.functions.invoke("lesson-overview", {
                 <Label>Include</Label>
                 <div className="grid gap-3 rounded-2xl border bg-muted/30 p-3">
                   {includeOptions.map(({ key, label }) => (
-                    <div
-                      key={key}
-                      className="flex items-center justify-between gap-3"
-                    >
+                    <div key={key} className="flex items-center justify-between gap-3">
                       <div className="text-sm">{label}</div>
                       <Switch
                         checked={Boolean(include[key])}
-                        disabled={loading}
-                        onCheckedChange={(v) =>
-                          setInclude((p) => ({ ...p, [key]: v }))
-                        }
+                        onCheckedChange={(v) => setInclude((p) => ({ ...p, [key]: v }))}
                       />
                     </div>
                   ))}
@@ -459,93 +433,41 @@ const { data, error } = await supabase.functions.invoke("lesson-overview", {
                   onChange={(e) => setPrompt(e.target.value)}
                   className="min-h-[96px] rounded-2xl"
                   placeholder="Describe what you want the AI to generate…"
-                  disabled={loading}
                 />
                 <div className="text-xs opacity-70">
-                  Tip: Mention standards, vocabulary, or any student needs (ELL,
-                  SPED, enrichment).
+                  Tip: Mention standards, vocabulary, or any student needs (ELL, SPED, enrichment).
                 </div>
               </div>
-
-              <div className="flex gap-2">
-                <Button
-                  type="button"
-                  className="rounded-2xl w-full"
-                  onClick={generate}
-                  disabled={loading}
-                >
-                  <Sparkles className="mr-2 h-4 w-4" />
-                  {loading ? "Generating…" : "Generate"}
-                </Button>
-                <Button
-                  type="button"
-                  variant="outline"
-                  className="rounded-2xl"
-                  onClick={() => {
-                    setResult(null);
-                    setGenError(null);
-                  }}
-                  disabled={loading}
-                >
-                  Clear
-                </Button>
-              </div>
-
-              {genError ? (
-                <div className="rounded-2xl border border-destructive/40 bg-destructive/10 p-3 text-sm">
-                  <div className="font-medium">Generation error</div>
-                  <div className="mt-1 opacity-80">{genError}</div>
-                </div>
-              ) : null}
             </CardContent>
           </Card>
 
           <Card className="rounded-2xl">
             <CardHeader>
               <CardTitle className="text-base">Preview Output</CardTitle>
-              <CardDescription>
-                Output returned from your Edge Function.
-              </CardDescription>
+              <CardDescription>Mock output (replace with real generation results).</CardDescription>
             </CardHeader>
             <CardContent className="space-y-4">
               <div className="rounded-2xl border bg-muted/30 p-3 text-sm">
                 <div className="font-medium">Generation summary</div>
-                <div className="mt-1 opacity-80">
-                  {result?.summary
-                    ? result.summary
-                    : loading
-                    ? "Generating…"
-                    : previewParts.length
-                    ? `Generated ${previewParts.length} part(s).`
-                    : "No output yet. Click Generate."}
-                </div>
+                <div className="mt-1 opacity-80">{mockOutput.summary}</div>
                 <div className="mt-2 opacity-70">Prompt: {prompt}</div>
               </div>
 
               <div className="space-y-3">
-                {previewParts.length ? (
-                  previewParts.map((p) => (
-                    <div
-                      key={p.id || `${p.type}-${p.title}`}
-                      className="rounded-2xl border bg-background p-3 shadow-sm"
-                    >
+                {mockOutput.parts.length ? (
+                  mockOutput.parts.map((p) => (
+                    <div key={p.id} className="rounded-2xl border bg-background p-3 shadow-sm">
                       <div className="flex items-center justify-between">
                         <div className="text-sm font-semibold">{p.title}</div>
                         <Badge variant="outline" className="rounded-xl">
                           {p.type}
                         </Badge>
                       </div>
-                      <div className="mt-2 line-clamp-4 whitespace-pre-wrap text-sm opacity-80">
-                        {p.body}
-                      </div>
+                      <div className="mt-2 line-clamp-4 whitespace-pre-wrap text-sm opacity-80">{p.body}</div>
                       {p.activities?.length ? (
                         <div className="mt-3 flex flex-wrap gap-2">
                           {p.activities.map((a) => (
-                            <Badge
-                              key={a.id || `${a.type}-${a.title}`}
-                              variant="secondary"
-                              className="rounded-xl"
-                            >
+                            <Badge key={a.id} variant="secondary" className="rounded-xl">
                               {a.type}
                             </Badge>
                           ))}
@@ -554,24 +476,18 @@ const { data, error } = await supabase.functions.invoke("lesson-overview", {
                     </div>
                   ))
                 ) : (
-                  <div className="text-sm opacity-60">
-                    {loading ? "Generating…" : "No output yet."}
-                  </div>
+                  <div className="text-sm opacity-60">No parts selected.</div>
                 )}
               </div>
 
               <div className="rounded-2xl border bg-muted/30 p-3">
-                <div className="mb-2 text-sm font-semibold">Suggested tags</div>
+                <div className="mb-2 text-sm font-semibold">Suggested tags (UI-only)</div>
                 <div className="flex flex-wrap gap-2">
-                  {previewTags.length ? (
-                    previewTags.map((t) => (
-                      <Badge key={t} variant="secondary" className="rounded-xl">
-                        {t}
-                      </Badge>
-                    ))
-                  ) : (
-                    <div className="text-sm opacity-60">No tags returned.</div>
-                  )}
+                  {mockOutput.tags.map((t) => (
+                    <Badge key={t} variant="secondary" className="rounded-xl">
+                      {t}
+                    </Badge>
+                  ))}
                 </div>
               </div>
             </CardContent>
@@ -579,19 +495,13 @@ const { data, error } = await supabase.functions.invoke("lesson-overview", {
         </div>
 
         <DialogFooter className="gap-2 sm:gap-0 mt-4">
-          <Button
-            variant="outline"
-            className="rounded-2xl"
-            onClick={() => onOpenChange(false)}
-            disabled={loading}
-          >
+          <Button variant="outline" className="rounded-2xl" onClick={() => onOpenChange(false)}>
             Cancel
           </Button>
           <Button
             className="rounded-2xl"
-            disabled={loading || !result || !previewParts.length}
             onClick={() => {
-              onApply({ parts: previewParts, tags: previewTags });
+              onApply({ parts: mockOutput.parts, tags: mockOutput.tags });
               onOpenChange(false);
             }}
           >
@@ -624,9 +534,7 @@ function PartEditor({
             </div>
             <div>
               <div className="flex flex-wrap items-center gap-2">
-                <CardTitle className="text-base">
-                  {part.title || part.type}
-                </CardTitle>
+                <CardTitle className="text-base">{part.title || part.type}</CardTitle>
                 <Badge variant="outline" className="rounded-xl">
                   {part.type}
                 </Badge>
@@ -636,47 +544,24 @@ function PartEditor({
           </div>
 
           <div className="flex items-center gap-2">
-            <Button
-              variant="outline"
-              size="sm"
-              className="rounded-2xl"
-              onClick={() => onMove("up")}
-            >
-              ↑
-            </Button>
-            <Button
-              variant="outline"
-              size="sm"
-              className="rounded-2xl"
-              onClick={() => onMove("down")}
-            >
-              ↓
-            </Button>
+            <Button variant="outline" size="sm" className="rounded-2xl" onClick={() => onMove("up")}>↑</Button>
+            <Button variant="outline" size="sm" className="rounded-2xl" onClick={() => onMove("down")}>↓</Button>
 
             <DropdownMenu>
               <DropdownMenuTrigger asChild>
-                <Button
-                  variant="outline"
-                  size="sm"
-                  className="rounded-2xl"
-                >
+                <Button variant="outline" size="sm" className="rounded-2xl">
                   <MoreHorizontal className="h-4 w-4" />
                 </Button>
               </DropdownMenuTrigger>
               <DropdownMenuContent align="end" className="rounded-2xl">
                 <DropdownMenuLabel>Part actions</DropdownMenuLabel>
                 <DropdownMenuSeparator />
-                <DropdownMenuItem onClick={onToggleCollapse}>
-                  {part.collapsed ? "Expand" : "Collapse"}
-                </DropdownMenuItem>
+                <DropdownMenuItem onClick={onToggleCollapse}>{part.collapsed ? "Expand" : "Collapse"}</DropdownMenuItem>
                 <DropdownMenuItem onClick={onAddActivity}>
                   <Plus className="mr-2 h-4 w-4" /> Add activity
                 </DropdownMenuItem>
                 <DropdownMenuSeparator />
-                <DropdownMenuItem
-                  className="text-destructive"
-                  onClick={onDelete}
-                >
+                <DropdownMenuItem className="text-destructive" onClick={onDelete}>
                   <Trash2 className="mr-2 h-4 w-4" /> Delete part
                 </DropdownMenuItem>
               </DropdownMenuContent>
@@ -696,10 +581,7 @@ function PartEditor({
           </div>
           <div className="grid gap-2">
             <Label>Type</Label>
-            <Select
-              value={part.type}
-              onValueChange={(v) => onUpdate({ type: v })}
-            >
+            <Select value={part.type} onValueChange={(v) => onUpdate({ type: v })}>
               <SelectTrigger className="rounded-2xl">
                 <SelectValue placeholder="Select type" />
               </SelectTrigger>
@@ -733,16 +615,8 @@ function PartEditor({
                   placeholder="Write lesson content…"
                 />
                 <div className="flex items-center justify-between gap-3">
-                  <div className="text-xs opacity-70">
-                    Tip: Use the AI generator to draft content and activities,
-                    then tweak.
-                  </div>
-                  <Button
-                    variant="outline"
-                    size="sm"
-                    className="rounded-2xl"
-                    onClick={onAddActivity}
-                  >
+                  <div className="text-xs opacity-70">Tip: Use the AI generator to draft content and activities, then tweak.</div>
+                  <Button variant="outline" size="sm" className="rounded-2xl" onClick={onAddActivity}>
                     <Plus className="mr-2 h-4 w-4" /> Activity
                   </Button>
                 </div>
@@ -751,26 +625,16 @@ function PartEditor({
               <div className="space-y-3">
                 <div className="flex items-center justify-between">
                   <div className="text-sm font-semibold">Activities</div>
-                  <div className="text-xs opacity-70">
-                    Attachable is a flag for instance-level file uploads later.
-                  </div>
+                  <div className="text-xs opacity-70">Attachable is a flag for instance-level file uploads later.</div>
                 </div>
 
                 {part.activities.length ? (
                   part.activities.map((a) => (
-                    <div
-                      key={a.id}
-                      className="rounded-2xl border bg-muted/30 p-4"
-                    >
+                    <div key={a.id} className="rounded-2xl border bg-muted/30 p-4">
                       <div className="grid gap-3 md:grid-cols-2">
                         <div className="grid gap-2">
                           <Label>Type</Label>
-                          <Select
-                            value={a.type}
-                            onValueChange={(v) =>
-                              onUpdateActivity(a.id, { type: v })
-                            }
-                          >
+                          <Select value={a.type} onValueChange={(v) => onUpdateActivity(a.id, { type: v })}>
                             <SelectTrigger className="rounded-2xl">
                               <SelectValue placeholder="Select type" />
                             </SelectTrigger>
@@ -788,9 +652,7 @@ function PartEditor({
                           <Label>Title</Label>
                           <Input
                             value={a.title}
-                            onChange={(e) =>
-                              onUpdateActivity(a.id, { title: e.target.value })
-                            }
+                            onChange={(e) => onUpdateActivity(a.id, { title: e.target.value })}
                             className="rounded-2xl"
                             placeholder="e.g., 5-question quick check"
                           />
@@ -800,11 +662,7 @@ function PartEditor({
                           <Label>Instructions</Label>
                           <Textarea
                             value={a.instructions}
-                            onChange={(e) =>
-                              onUpdateActivity(a.id, {
-                                instructions: e.target.value,
-                              })
-                            }
+                            onChange={(e) => onUpdateActivity(a.id, { instructions: e.target.value })}
                             className="min-h-[90px] rounded-2xl"
                             placeholder="What will students do? What will the teacher do?"
                           />
@@ -819,11 +677,7 @@ function PartEditor({
                                 value={a.estimatedMinutes}
                                 onChange={(e) =>
                                   onUpdateActivity(a.id, {
-                                    estimatedMinutes: clamp(
-                                      Number(e.target.value || 0),
-                                      0,
-                                      999
-                                    ),
+                                    estimatedMinutes: clamp(Number(e.target.value || 0), 0, 999),
                                   })
                                 }
                                 className="w-32 rounded-2xl"
@@ -833,11 +687,7 @@ function PartEditor({
                             <div className="flex items-center gap-2 pt-6">
                               <Checkbox
                                 checked={a.attachable}
-                                onCheckedChange={(v) =>
-                                  onUpdateActivity(a.id, {
-                                    attachable: Boolean(v),
-                                  })
-                                }
+                                onCheckedChange={(v) => onUpdateActivity(a.id, { attachable: Boolean(v) })}
                               />
                               <Label className="text-sm">Attachable</Label>
                             </div>
@@ -904,20 +754,8 @@ export default function TeacherLessonBuilderPage() {
     audience: "Whole Class",
     status: "Draft",
     parts: [
-      {
-        id: uuid(),
-        type: "Overview",
-        title: "Lesson Overview",
-        body: "",
-        activities: [],
-      },
-      {
-        id: uuid(),
-        type: "Objectives",
-        title: "Learning Objectives",
-        body: "",
-        activities: [],
-      },
+      { id: uuid(), type: "Overview", title: "Lesson Overview", body: "", activities: [] },
+      { id: uuid(), type: "Objectives", title: "Learning Objectives", body: "", activities: [] },
     ],
     lastSavedAt: "",
   }));
@@ -928,14 +766,8 @@ export default function TeacherLessonBuilderPage() {
     (async () => {
       setErrorMsg(null);
       const [t, s, g] = await Promise.all([
-        supabase
-          .from("tracks")
-          .select("track_id, track_code, description")
-          .order("track_code"),
-        supabase
-          .from("strands")
-          .select("strand_id, track_id, strand_code, description")
-          .order("strand_code"),
+        supabase.from("tracks").select("track_id, track_code, description").order("track_code"),
+        supabase.from("strands").select("strand_id, track_id, strand_code, description").order("strand_code"),
         supabase
           .from("grade_levels")
           .select("grade_id, grade_level")
@@ -965,9 +797,7 @@ export default function TeacherLessonBuilderPage() {
 
       // Default gradeId from gradeLabel
       const initialGradeLevel = Number(lesson.gradeLabel || "11");
-      const foundGrade = (g.data ?? []).find(
-        (x) => x.grade_level === initialGradeLevel
-      );
+      const foundGrade = (g.data ?? []).find((x) => x.grade_level === initialGradeLevel);
       if (foundGrade?.grade_id) {
         setLesson((p) => ({ ...p, gradeId: foundGrade.grade_id }));
       }
@@ -975,9 +805,7 @@ export default function TeacherLessonBuilderPage() {
       // Default track/strand
       if ((t.data ?? []).length && !lesson.trackId) {
         const firstTrack = t.data[0];
-        const firstStrand = (s.data ?? []).find(
-          (x) => x.track_id === firstTrack.track_id
-        );
+        const firstStrand = (s.data ?? []).find((x) => x.track_id === firstTrack.track_id);
         setLesson((p) => ({
           ...p,
           trackId: firstTrack.track_id,
@@ -996,9 +824,7 @@ export default function TeacherLessonBuilderPage() {
 
   // Load lesson by ?lessonId=...
   useEffect(() => {
-    const params = new URLSearchParams(
-      typeof window !== "undefined" ? window.location.search : ""
-    );
+    const params = new URLSearchParams(typeof window !== "undefined" ? window.location.search : "");
     const lessonId = params.get("lessonId");
     if (!lessonId) return;
 
@@ -1009,18 +835,14 @@ export default function TeacherLessonBuilderPage() {
       try {
         const lRes = await supabase
           .from("lessons")
-          .select(
-            "lesson_id, title, grade_id, track_id, strand_id, subject_id, duration_minutes, audience, status"
-          )
+          .select("lesson_id, title, grade_id, track_id, strand_id, subject_id, duration_minutes, audience, status")
           .eq("lesson_id", lessonId)
           .single();
         if (lRes.error) throw lRes.error;
 
         const pRes = await supabase
           .from("lesson_parts")
-          .select(
-            "part_id, lesson_id, sort_order, part_type, title, body, is_collapsed"
-          )
+          .select("part_id, lesson_id, sort_order, part_type, title, body, is_collapsed")
           .eq("lesson_id", lessonId)
           .order("sort_order", { ascending: true });
         if (pRes.error) throw pRes.error;
@@ -1030,9 +852,7 @@ export default function TeacherLessonBuilderPage() {
         const aRes = partIds.length
           ? await supabase
               .from("lesson_activities")
-              .select(
-                "activity_id, part_id, sort_order, activity_type, title, instructions, estimated_minutes, attachable"
-              )
+              .select("activity_id, part_id, sort_order, activity_type, title, instructions, estimated_minutes, attachable")
               .in("part_id", partIds)
               .order("sort_order", { ascending: true })
           : { data: [], error: null };
@@ -1109,21 +929,15 @@ export default function TeacherLessonBuilderPage() {
   const subjectOptions = useMemo(() => {
     return subjects
       .filter((s) => !s.is_archived)
-      .filter((s) =>
-        lesson.strandId ? s.strand_id === lesson.strandId || s.strand_id == null : true
-      )
-      .filter((s) =>
-        lesson.gradeId ? s.grade_id === lesson.gradeId || s.grade_id == null : true
-      )
+      .filter((s) => (lesson.strandId ? s.strand_id === lesson.strandId || s.strand_id == null : true))
+      .filter((s) => (lesson.gradeId ? s.grade_id === lesson.gradeId || s.grade_id == null : true))
       .map((s) => ({ id: s.subject_id, label: s.subject_title }));
   }, [subjects, lesson.strandId, lesson.gradeId]);
 
   const canPublish = useMemo(() => {
     if (lesson.status === "Archived") return false;
     const hasTitle = lesson.title.trim().length > 0;
-    const hasAnyContent = lesson.parts.some(
-      (p) => p.body.trim().length > 0 || p.activities.length > 0
-    );
+    const hasAnyContent = lesson.parts.some((p) => p.body.trim().length > 0 || p.activities.length > 0);
     return hasTitle && hasAnyContent;
   }, [lesson]);
 
@@ -1172,10 +986,7 @@ export default function TeacherLessonBuilderPage() {
         .single();
       if (upsertLesson.error) throw upsertLesson.error;
 
-      const delParts = await supabase
-        .from("lesson_parts")
-        .delete()
-        .eq("lesson_id", lesson.id);
+      const delParts = await supabase.from("lesson_parts").delete().eq("lesson_id", lesson.id);
       if (delParts.error) throw delParts.error;
 
       const partsRows = lesson.parts.map((p, idx) => ({
@@ -1195,10 +1006,7 @@ export default function TeacherLessonBuilderPage() {
 
       const partIds = partsRows.map((x) => x.part_id);
       if (partIds.length) {
-        const delActs = await supabase
-          .from("lesson_activities")
-          .delete()
-          .in("part_id", partIds);
+        const delActs = await supabase.from("lesson_activities").delete().in("part_id", partIds);
         if (delActs.error) throw delActs.error;
       }
 
@@ -1247,10 +1055,7 @@ export default function TeacherLessonBuilderPage() {
   function addPart() {
     setLesson((p) => ({
       ...p,
-      parts: [
-        ...p.parts,
-        { id: uuid(), type: "Notes", title: "New Part", body: "", activities: [] },
-      ],
+      parts: [...p.parts, { id: uuid(), type: "Notes", title: "New Part", body: "", activities: [] }],
     }));
   }
 
@@ -1304,9 +1109,7 @@ export default function TeacherLessonBuilderPage() {
         if (x.id !== partId) return x;
         return {
           ...x,
-          activities: x.activities.map((a) =>
-            a.id === activityId ? { ...a, ...patch } : a
-          ),
+          activities: x.activities.map((a) => (a.id === activityId ? { ...a, ...patch } : a)),
         };
       }),
     }));
@@ -1333,9 +1136,7 @@ export default function TeacherLessonBuilderPage() {
         collapsed: false,
       }));
 
-      const mergedTags = Array.from(
-        new Set([...(prev.tags || []), ...(patch.tags || [])])
-      )
+      const mergedTags = Array.from(new Set([...(prev.tags || []), ...(patch.tags || [])]))
         .filter(Boolean)
         .slice(0, 12);
 
@@ -1363,16 +1164,7 @@ export default function TeacherLessonBuilderPage() {
       gradeLabel: g ? String(g.grade_level) : p.gradeLabel,
     }));
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [
-    lesson.trackId,
-    lesson.strandId,
-    lesson.subjectId,
-    lesson.gradeId,
-    tracks.length,
-    strands.length,
-    subjects.length,
-    grades.length,
-  ]);
+  }, [lesson.trackId, lesson.strandId, lesson.subjectId, lesson.gradeId, tracks.length, strands.length, subjects.length, grades.length]);
 
   return (
     <div className="min-h-screen bg-background">
@@ -1392,9 +1184,7 @@ export default function TeacherLessonBuilderPage() {
                     <BookOpen className="h-5 w-5" />
                   </div>
                   <div>
-                    <div className="text-2xl font-semibold">
-                      Lesson Builder (Library)
-                    </div>
+                    <div className="text-2xl font-semibold">Lesson Builder (Library)</div>
                     <div className="text-sm opacity-70">
                       Draft, publish (ready-to-assign), and archive lesson templates. Student visibility is controlled by assigned instances.
                     </div>
@@ -1403,30 +1193,17 @@ export default function TeacherLessonBuilderPage() {
               </div>
 
               <div className="flex flex-wrap items-center gap-2">
-                <Button
-                  variant="outline"
-                  className="rounded-2xl"
-                  onClick={() => setAiOpen(true)}
-                >
+                <Button variant="outline" className="rounded-2xl" onClick={() => setAiOpen(true)}>
                   <Sparkles className="mr-2 h-4 w-4" /> Generate with AI
                 </Button>
 
-                <Button
-                  variant="outline"
-                  className="rounded-2xl"
-                  onClick={saveDraft}
-                  disabled={saving}
-                >
-                  <Save className="mr-2 h-4 w-4" />{" "}
-                  {saving ? "Saving…" : "Save Draft"}
+                <Button variant="outline" className="rounded-2xl" onClick={saveDraft} disabled={saving}>
+                  <Save className="mr-2 h-4 w-4" /> {saving ? "Saving…" : "Save Draft"}
                 </Button>
 
                 <Dialog open={publishOpen} onOpenChange={setPublishOpen}>
                   <DialogTrigger asChild>
-                    <Button
-                      className="rounded-2xl"
-                      disabled={!canPublish || saving}
-                    >
+                    <Button className="rounded-2xl" disabled={!canPublish || saving}>
                       <Upload className="mr-2 h-4 w-4" /> Publish
                     </Button>
                   </DialogTrigger>
@@ -1444,17 +1221,11 @@ export default function TeacherLessonBuilderPage() {
                     ) : (
                       <div className="rounded-2xl border bg-muted/30 p-3 text-sm">
                         <div className="font-medium">Ready to publish</div>
-                        <div className="mt-1 opacity-80">
-                          This will appear in your “Ready to assign” library list.
-                        </div>
+                        <div className="mt-1 opacity-80">This will appear in your “Ready to assign” library list.</div>
                       </div>
                     )}
                     <DialogFooter>
-                      <Button
-                        variant="outline"
-                        className="rounded-2xl"
-                        onClick={() => setPublishOpen(false)}
-                      >
+                      <Button variant="outline" className="rounded-2xl" onClick={() => setPublishOpen(false)}>
                         Cancel
                       </Button>
                       <Button
@@ -1480,19 +1251,13 @@ export default function TeacherLessonBuilderPage() {
                   <DialogContent className="rounded-2xl">
                     <DialogHeader>
                       <DialogTitle>Archive lesson template?</DialogTitle>
-                      <DialogDescription>
-                        Archiving hides the lesson from your active library list.
-                      </DialogDescription>
+                      <DialogDescription>Archiving hides the lesson from your active library list.</DialogDescription>
                     </DialogHeader>
                     <div className="rounded-2xl border bg-muted/30 p-3 text-sm">
                       You can duplicate an archived template later if you want to reuse it.
                     </div>
                     <DialogFooter>
-                      <Button
-                        variant="outline"
-                        className="rounded-2xl"
-                        onClick={() => setArchiveOpen(false)}
-                      >
+                      <Button variant="outline" className="rounded-2xl" onClick={() => setArchiveOpen(false)}>
                         Cancel
                       </Button>
                       <Button
@@ -1527,11 +1292,7 @@ export default function TeacherLessonBuilderPage() {
               </div>
             </div>
 
-            {loadingLesson ? (
-              <div className="rounded-2xl border bg-muted/30 p-3 text-sm">
-                Loading lesson…
-              </div>
-            ) : null}
+            {loadingLesson ? <div className="rounded-2xl border bg-muted/30 p-3 text-sm">Loading lesson…</div> : null}
             {errorMsg ? (
               <div className="rounded-2xl border border-destructive/40 bg-destructive/10 p-3 text-sm">
                 <div className="font-medium">Error</div>
@@ -1564,9 +1325,7 @@ export default function TeacherLessonBuilderPage() {
               <Card className="rounded-2xl">
                 <CardHeader>
                   <CardTitle className="text-base">Lesson details</CardTitle>
-                  <CardDescription>
-                    Saved to Supabase: lessons, lesson_parts, lesson_activities.
-                  </CardDescription>
+                  <CardDescription>Saved to Supabase: lessons, lesson_parts, lesson_activities.</CardDescription>
                 </CardHeader>
                 <CardContent className="grid gap-4 md:grid-cols-2">
                   <div className="grid gap-2 md:col-span-2">
@@ -1723,9 +1482,7 @@ export default function TeacherLessonBuilderPage() {
                           </Badge>
                         ))
                       ) : (
-                        <div className="text-sm opacity-60">
-                          No tags yet. Add tags using AI or type below.
-                        </div>
+                        <div className="text-sm opacity-60">No tags yet. Add tags using AI or type below.</div>
                       )}
                       <div className="ml-auto flex w-full gap-2 md:w-auto">
                         <Input
@@ -1751,8 +1508,7 @@ export default function TeacherLessonBuilderPage() {
                     <div className="rounded-2xl border bg-muted/30 p-3 text-sm">
                       <div className="font-medium">Database wiring</div>
                       <div className="mt-1 opacity-80">
-                        Saving will write to <code>lessons</code>, <code>lesson_parts</code>, and{" "}
-                        <code>lesson_activities</code>. Publishing here only marks it as ready to assign.
+                        Saving will write to <code>lessons</code>, <code>lesson_parts</code>, and <code>lesson_activities</code>. Publishing here only marks it as ready to assign.
                       </div>
                       <div className="mt-2 text-xs opacity-70">
                         Tip: You can open a saved lesson by adding <code>?lessonId=YOUR_UUID</code> to the URL.
@@ -1767,23 +1523,13 @@ export default function TeacherLessonBuilderPage() {
                   <div className="flex flex-wrap items-start justify-between gap-3">
                     <div>
                       <CardTitle className="text-base">Lesson parts</CardTitle>
-                      <CardDescription>
-                        Structured parts + activities (persisted to Supabase on save).
-                      </CardDescription>
+                      <CardDescription>Structured parts + activities (persisted to Supabase on save).</CardDescription>
                     </div>
                     <div className="flex items-center gap-2">
-                      <Button
-                        variant="outline"
-                        className="rounded-2xl"
-                        onClick={() => setAiOpen(true)}
-                      >
+                      <Button variant="outline" className="rounded-2xl" onClick={() => setAiOpen(true)}>
                         <Wand2 className="mr-2 h-4 w-4" /> AI assist
                       </Button>
-                      <Button
-                        className="rounded-2xl"
-                        onClick={addPart}
-                        disabled={lesson.status === "Archived"}
-                      >
+                      <Button className="rounded-2xl" onClick={addPart} disabled={lesson.status === "Archived"}>
                         <Plus className="mr-2 h-4 w-4" /> Add part
                       </Button>
                     </div>
@@ -1791,9 +1537,7 @@ export default function TeacherLessonBuilderPage() {
                 </CardHeader>
                 <CardContent className="space-y-4">
                   {lesson.status === "Archived" ? (
-                    <div className="rounded-2xl border bg-muted/30 p-3 text-sm">
-                      This lesson is archived. Duplicate to edit.
-                    </div>
+                    <div className="rounded-2xl border bg-muted/30 p-3 text-sm">This lesson is archived. Duplicate to edit.</div>
                   ) : null}
 
                   {lesson.parts.length ? (
@@ -1806,16 +1550,10 @@ export default function TeacherLessonBuilderPage() {
                           onUpdate={(patch) => updatePart(part.id, patch)}
                           onDelete={() => deletePart(part.id)}
                           onMove={(dir) => movePart(part.id, dir)}
-                          onToggleCollapse={() =>
-                            updatePart(part.id, { collapsed: !part.collapsed })
-                          }
+                          onToggleCollapse={() => updatePart(part.id, { collapsed: !part.collapsed })}
                           onAddActivity={() => addActivity(part.id)}
-                          onUpdateActivity={(activityId, patch) =>
-                            updateActivity(part.id, activityId, patch)
-                          }
-                          onDeleteActivity={(activityId) =>
-                            deleteActivity(part.id, activityId)
-                          }
+                          onUpdateActivity={(activityId, patch) => updateActivity(part.id, activityId, patch)}
+                          onDeleteActivity={(activityId) => deleteActivity(part.id, activityId)}
                         />
                       ))}
                     </div>
@@ -1837,30 +1575,20 @@ export default function TeacherLessonBuilderPage() {
             <div className="space-y-6">
               <Tabs value={tab} onValueChange={(v) => setTab(v)}>
                 <TabsList className="w-full rounded-2xl">
-                  <TabsTrigger value="build" className="w-full rounded-2xl">
-                    Build
-                  </TabsTrigger>
-                  <TabsTrigger value="preview" className="w-full rounded-2xl">
-                    Preview
-                  </TabsTrigger>
+                  <TabsTrigger value="build" className="w-full rounded-2xl">Build</TabsTrigger>
+                  <TabsTrigger value="preview" className="w-full rounded-2xl">Preview</TabsTrigger>
                 </TabsList>
 
                 <TabsContent value="build" className="mt-4 space-y-6">
                   <Card className="rounded-2xl">
                     <CardHeader>
-                      <CardTitle className="text-base">
-                        Publishing checklist
-                      </CardTitle>
-                      <CardDescription>
-                        A quick guide to help you get this lesson ready to assign.
-                      </CardDescription>
+                      <CardTitle className="text-base">Publishing checklist</CardTitle>
+                      <CardDescription>A quick guide to help you get this lesson ready to assign.</CardDescription>
                     </CardHeader>
                     <CardContent className="space-y-3">
                       <div className="flex items-center justify-between">
                         <div className="text-sm">Completion</div>
-                        <Badge variant="secondary" className="rounded-xl">
-                          {progress}%
-                        </Badge>
+                        <Badge variant="secondary" className="rounded-xl">{progress}%</Badge>
                       </div>
                       <Separator />
                       <ChecklistItem label="Title added" ok={lesson.title.trim().length > 0} />
@@ -1869,11 +1597,7 @@ export default function TeacherLessonBuilderPage() {
                       <ChecklistItem label="Activity included" ok={lesson.parts.some((p) => p.activities.length > 0)} />
                       <ChecklistItem label="Not archived" ok={lesson.status !== "Archived"} />
                       <div className="pt-2">
-                        <Button
-                          className="w-full rounded-2xl"
-                          disabled={!canPublish || saving}
-                          onClick={() => setPublishOpen(true)}
-                        >
+                        <Button className="w-full rounded-2xl" disabled={!canPublish || saving} onClick={() => setPublishOpen(true)}>
                           <Upload className="mr-2 h-4 w-4" /> Publish (Ready to assign)
                         </Button>
                       </div>
@@ -1883,20 +1607,14 @@ export default function TeacherLessonBuilderPage() {
                   <Card className="rounded-2xl">
                     <CardHeader>
                       <CardTitle className="text-base">AI generation tips</CardTitle>
-                      <CardDescription>
-                        Make AI output more classroom-ready with a few key details.
-                      </CardDescription>
+                      <CardDescription>Make AI output more classroom-ready with a few key details.</CardDescription>
                     </CardHeader>
                     <CardContent className="space-y-3 text-sm">
                       <TipLine>Mention student needs: ELL, SPED accommodations, enrichment.</TipLine>
                       <TipLine>Ask for differentiation: basic, on-level, challenge.</TipLine>
                       <TipLine>Request rubrics for projects or writing tasks.</TipLine>
                       <div className="pt-2">
-                        <Button
-                          variant="outline"
-                          className="w-full rounded-2xl"
-                          onClick={() => setAiOpen(true)}
-                        >
+                        <Button variant="outline" className="w-full rounded-2xl" onClick={() => setAiOpen(true)}>
                           <Sparkles className="mr-2 h-4 w-4" /> Open AI Generator
                         </Button>
                       </div>
@@ -1909,28 +1627,13 @@ export default function TeacherLessonBuilderPage() {
                       <CardDescription>Common lesson management actions.</CardDescription>
                     </CardHeader>
                     <CardContent className="grid gap-2">
-                      <Button
-                        variant="outline"
-                        className="rounded-2xl justify-start"
-                        onClick={saveDraft}
-                        disabled={saving}
-                      >
+                      <Button variant="outline" className="rounded-2xl justify-start" onClick={saveDraft} disabled={saving}>
                         <Save className="mr-2 h-4 w-4" /> Save as Draft
                       </Button>
-                      <Button
-                        variant="outline"
-                        className="rounded-2xl justify-start"
-                        onClick={() => setPublishOpen(true)}
-                        disabled={!canPublish || saving}
-                      >
+                      <Button variant="outline" className="rounded-2xl justify-start" onClick={() => setPublishOpen(true)} disabled={!canPublish || saving}>
                         <Upload className="mr-2 h-4 w-4" /> Publish
                       </Button>
-                      <Button
-                        variant="outline"
-                        className="rounded-2xl justify-start"
-                        onClick={() => setArchiveOpen(true)}
-                        disabled={saving}
-                      >
+                      <Button variant="outline" className="rounded-2xl justify-start" onClick={() => setArchiveOpen(true)} disabled={saving}>
                         <Archive className="mr-2 h-4 w-4" /> Archive
                       </Button>
                     </CardContent>
@@ -1944,12 +1647,7 @@ export default function TeacherLessonBuilderPage() {
             </div>
           </div>
 
-          <AiGenerateDialog
-            open={aiOpen}
-            onOpenChange={setAiOpen}
-            onApply={applyAiPatch}
-            lesson={lesson}
-          />
+          <AiGenerateDialog open={aiOpen} onOpenChange={setAiOpen} onApply={applyAiPatch} lesson={lesson} />
         </motion.div>
       </div>
     </div>
