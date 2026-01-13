@@ -38,7 +38,7 @@ const BRAND = {
 
 const TEACHER_NAV = [
   { key: "dash", label: "Dashboard", to: "/teacher/dashboard", icon: LayoutDashboard },
-  { key: "lessons", label: "Lessons", to: "/teacher/lessons", icon: BookOpen },
+
   { key: "lesson-sampler", label: "Lesson Sampler", to: "/teacher/lesson-sampler", icon: Sparkles },
   { key: "lesson-library", label: "Lesson Library", to: "/teacher/lesson-library", icon: BookOpen },
   { key: "assign-lesson", label: "Assign Lesson", to: "/teacher/assign-lesson", icon: BookOpen },
@@ -51,7 +51,6 @@ const TEACHER_NAV = [
 
 function titleFromPath(path) {
   if (path.includes("/teacher/dashboard")) return "Dashboard";
-  if (path.includes("/teacher/lessons")) return "Lessons";
   if (path.includes("/teacher/lesson-sampler")) return "Lesson Sampler";
   if (path.includes("/teacher/classes")) return "My Classes";
   if (path.includes("/teacher/schedule")) return "Schedule";
