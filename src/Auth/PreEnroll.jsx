@@ -24,7 +24,6 @@ import logo from "../assets/grabsum-logo.png";
 import html2canvas from "html2canvas";
 import jsPDF from "jspdf";
 
-
 const BRAND = {
   bg: "#fbf6ef",
   brown: "#2b1a12",
@@ -363,9 +362,7 @@ export default function PreEnroll() {
     try {
       setLoading(true);
 
-      // ✅ IMPORTANT:
-      // Returning students MUST NOT send st_lrn and st_previous_school
-      // (these are locked server-side and should come from old enrollment)
+      // ✅ Returning students MUST NOT send st_lrn and st_previous_school
       const payload = {
         student_number: studentNumber || null,
 
@@ -427,7 +424,7 @@ export default function PreEnroll() {
   }
 
   /* =========================================================
-     Receipt: Print + Download (HTML file)
+     Receipt: Print + Download (PDF)
   ========================================================= */
   function buildSlipHTML() {
     const content = printRef.current;
@@ -466,57 +463,50 @@ export default function PreEnroll() {
   }
 
   async function downloadSlipPDF() {
-  try {
-    if (!printRef.current) return;
+    try {
+      if (!printRef.current) return;
 
-    // Make sure it’s visible (in case you later hide it in UI)
-    const node = printRef.current;
+      const node = printRef.current;
 
-    // Render DOM to canvas
-    const canvas = await html2canvas(node, {
-      scale: 2,               // sharper
-      useCORS: true,
-      backgroundColor: "#ffffff",
-      logging: false,
-    });
+      const canvas = await html2canvas(node, {
+        scale: 2,
+        useCORS: true,
+        backgroundColor: "#ffffff",
+        logging: false,
+      });
 
-    const imgData = canvas.toDataURL("image/png");
+      const imgData = canvas.toDataURL("image/png");
 
-    // Create PDF (A4 portrait)
-    const pdf = new jsPDF("p", "mm", "a4");
+      const pdf = new jsPDF("p", "mm", "a4");
+      const pageWidth = pdf.internal.pageSize.getWidth();
+      const pageHeight = pdf.internal.pageSize.getHeight();
 
-    const pageWidth = pdf.internal.pageSize.getWidth();
-    const pageHeight = pdf.internal.pageSize.getHeight();
+      const imgProps = pdf.getImageProperties(imgData);
+      const imgWidth = pageWidth;
+      const imgHeight = (imgProps.height * imgWidth) / imgProps.width;
 
-    // Convert canvas px to mm with scaling that fits width
-    const imgProps = pdf.getImageProperties(imgData);
-    const imgWidth = pageWidth;
-    const imgHeight = (imgProps.height * imgWidth) / imgProps.width;
+      let heightLeft = imgHeight;
+      let position = 0;
 
-    // If content is longer than one page, split into pages
-    let heightLeft = imgHeight;
-    let position = 0;
-
-    pdf.addImage(imgData, "PNG", 0, position, imgWidth, imgHeight);
-    heightLeft -= pageHeight;
-
-    while (heightLeft > 0) {
-      position = position - pageHeight;
-      pdf.addPage();
       pdf.addImage(imgData, "PNG", 0, position, imgWidth, imgHeight);
       heightLeft -= pageHeight;
+
+      while (heightLeft > 0) {
+        position = position - pageHeight;
+        pdf.addPage();
+        pdf.addImage(imgData, "PNG", 0, position, imgWidth, imgHeight);
+        heightLeft -= pageHeight;
+      }
+
+      const appId = receipt?.application_id || "application";
+      pdf.save(`pre-enrollment-slip-${appId}.pdf`);
+    } catch (e) {
+      alert(e?.message || "Failed to download PDF.");
     }
-
-    const appId = receipt?.application_id || "application";
-    pdf.save(`pre-enrollment-slip-${appId}.pdf`);
-  } catch (e) {
-    alert(e?.message || "Failed to download PDF.");
   }
-}
-
 
   /* =========================================================
-     Returning student lookup
+     Returning Student Lookup
   ========================================================= */
   async function onCheckReturningStudent() {
     setReturningError("");
@@ -609,30 +599,39 @@ export default function PreEnroll() {
               <div className="text-2xl font-extrabold" style={{ color: BRAND.brown }}>
                 Grabsum School Inc. • Pre-enrollment
               </div>
-            
             </div>
           </div>
 
-          <div className="flex items-center gap-2">
-            <button
-              type="button"
-              onClick={() => {
-                setReturningError("");
-                setReturningNumber(studentNumber || "");
-                setShowReturning(true);
-              }}
-              className="rounded-2xl px-4 py-2 text-sm font-semibold border border-black/10 bg-white/80 hover:bg-white transition"
-            >
-              Old student?
-            </button>
+          {/* ✅ Disable/hide “Old student?” once submitted */}
+          {!receipt ? (
+            <div className="flex items-center gap-2">
+              <button
+                type="button"
+                onClick={() => {
+                  setReturningError("");
+                  setReturningNumber(studentNumber || "");
+                  setShowReturning(true);
+                }}
+                className="rounded-2xl px-4 py-2 text-sm font-semibold border border-black/10 bg-white/80 hover:bg-white transition"
+              >
+                Old student?
+              </button>
 
+              <div
+                className="rounded-2xl px-4 py-2 text-sm font-semibold"
+                style={{ background: "rgba(0,0,0,0.03)", border: `1px solid ${BRAND.stroke}`, color: BRAND.brown }}
+              >
+                Step {step} of 4: {STEPS[step - 1]?.title}
+              </div>
+            </div>
+          ) : (
             <div
               className="rounded-2xl px-4 py-2 text-sm font-semibold"
               style={{ background: "rgba(0,0,0,0.03)", border: `1px solid ${BRAND.stroke}`, color: BRAND.brown }}
             >
-              Step {step} of 4: {STEPS[step - 1]?.title}
+              Submitted
             </div>
-          </div>
+          )}
         </div>
       </div>
 
@@ -648,74 +647,91 @@ export default function PreEnroll() {
           <div className="grid grid-cols-1 lg:grid-cols-[360px_1fr]">
             {/* Left stepper */}
             <div className="p-6 lg:p-8" style={{ background: "rgba(251,246,239,0.55)", borderRight: `1px solid ${BRAND.stroke}` }}>
-              <div className="text-lg font-extrabold" style={{ color: BRAND.brown }}>
-                Registration Steps
-              </div>
-              <div className="mt-1 text-xs" style={{ color: BRAND.muted }}>
-                You must complete each section to proceed.
-              </div>
+              {!receipt ? (
+                <>
+                  <div className="text-lg font-extrabold" style={{ color: BRAND.brown }}>
+                    Registration Steps
+                  </div>
+                  <div className="mt-1 text-xs" style={{ color: BRAND.muted }}>
+                    You must complete each section to proceed.
+                  </div>
 
-              <div className="mt-5 space-y-2">
-                {STEPS.map((s) => {
-                  const isActive = s.id === step;
-                  const isUnlocked = canGoTo(s.id);
-                  const done = stepIsComplete(s.id);
+                  <div className="mt-5 space-y-2">
+                    {STEPS.map((s) => {
+                      const isActive = s.id === step;
+                      const isUnlocked = canGoTo(s.id);
+                      const done = stepIsComplete(s.id);
 
-                  return (
-                    <button
-                      key={s.id}
-                      type="button"
-                      onClick={() => {
-                        if (!isUnlocked) return;
-                        setStep(s.id);
-                      }}
-                      className="w-full text-left rounded-2xl px-4 py-3 transition"
-                      style={{
-                        background: isActive ? "rgba(212,166,47,0.18)" : "rgba(255,255,255,0.8)",
-                        border: `1px solid ${isActive ? "rgba(212,166,47,0.35)" : BRAND.stroke}`,
-                        opacity: isUnlocked ? 1 : 0.55,
-                        cursor: isUnlocked ? "pointer" : "not-allowed",
-                      }}
-                    >
-                      <div className="flex items-center justify-between gap-2">
-                        <div className="flex items-center gap-2">
-                          <div
-                            className="grid h-8 w-8 place-items-center rounded-xl"
-                            style={{
-                              background: isActive ? "rgba(251,246,239,0.9)" : "rgba(0,0,0,0.03)",
-                              border: `1px solid ${BRAND.stroke}`,
-                            }}
-                          >
-                            {done ? (
-                              <CheckCircle2 className="h-4 w-4" style={{ color: BRAND.brown }} />
-                            ) : (
-                              <span className="text-xs font-black" style={{ color: BRAND.brown }}>
-                                {s.id}
-                              </span>
-                            )}
-                          </div>
-                          <div>
-                            <div className="text-sm font-extrabold" style={{ color: BRAND.brown }}>
-                              {s.title}
+                      return (
+                        <button
+                          key={s.id}
+                          type="button"
+                          onClick={() => {
+                            if (!isUnlocked) return;
+                            setStep(s.id);
+                          }}
+                          className="w-full text-left rounded-2xl px-4 py-3 transition"
+                          style={{
+                            background: isActive ? "rgba(212,166,47,0.18)" : "rgba(255,255,255,0.8)",
+                            border: `1px solid ${isActive ? "rgba(212,166,47,0.35)" : BRAND.stroke}`,
+                            opacity: isUnlocked ? 1 : 0.55,
+                            cursor: isUnlocked ? "pointer" : "not-allowed",
+                          }}
+                        >
+                          <div className="flex items-center justify-between gap-2">
+                            <div className="flex items-center gap-2">
+                              <div
+                                className="grid h-8 w-8 place-items-center rounded-xl"
+                                style={{
+                                  background: isActive ? "rgba(251,246,239,0.9)" : "rgba(0,0,0,0.03)",
+                                  border: `1px solid ${BRAND.stroke}`,
+                                }}
+                              >
+                                {done ? (
+                                  <CheckCircle2 className="h-4 w-4" style={{ color: BRAND.brown }} />
+                                ) : (
+                                  <span className="text-xs font-black" style={{ color: BRAND.brown }}>
+                                    {s.id}
+                                  </span>
+                                )}
+                              </div>
+                              <div>
+                                <div className="text-sm font-extrabold" style={{ color: BRAND.brown }}>
+                                  {s.title}
+                                </div>
+                                <div className="text-xs" style={{ color: BRAND.muted }}>
+                                  {done ? "Completed" : isUnlocked ? "In progress" : "Complete previous step first"}
+                                </div>
+                              </div>
                             </div>
-                            <div className="text-xs" style={{ color: BRAND.muted }}>
-                              {done ? "Completed" : isUnlocked ? "In progress" : "Complete previous step first"}
+
+                            <div className="text-xs font-semibold" style={{ color: BRAND.muted }}>
+                              {isActive ? "●" : " "}
                             </div>
                           </div>
-                        </div>
+                        </button>
+                      );
+                    })}
+                  </div>
 
-                        <div className="text-xs font-semibold" style={{ color: BRAND.muted }}>
-                          {isActive ? "●" : " "}
-                        </div>
-                      </div>
-                    </button>
-                  );
-                })}
-              </div>
-
-              <div className="mt-5 rounded-2xl px-4 py-3 text-xs" style={{ background: "rgba(255,255,255,0.8)", border: `1px solid ${BRAND.stroke}`, color: BRAND.muted }}>
-                Tip: If you see red messages, complete required fields to unlock the next section.
-              </div>
+                  <div
+                    className="mt-5 rounded-2xl px-4 py-3 text-xs"
+                    style={{ background: "rgba(255,255,255,0.8)", border: `1px solid ${BRAND.stroke}`, color: BRAND.muted }}
+                  >
+                    Tip: If you see red messages, complete required fields to unlock the next section.
+                  </div>
+                </>
+              ) : (
+                <div
+                  className="rounded-2xl px-4 py-3 text-sm"
+                  style={{ background: "rgba(212,166,47,0.10)", border: `1px solid ${BRAND.stroke}`, color: BRAND.brown }}
+                >
+                  <div className="font-extrabold">Done!</div>
+                  <div className="mt-1 text-xs" style={{ color: BRAND.muted }}>
+                    Your pre-enrollment has been submitted. Please use the receipt on the right.
+                  </div>
+                </div>
+              )}
 
               <div className="mt-6 text-xs" style={{ color: "rgba(43,26,18,0.45)" }}>
                 © {new Date().getFullYear()} GRABSUM School, Inc.
@@ -751,13 +767,13 @@ export default function PreEnroll() {
 
                           <div className="flex items-center gap-2">
                             <button
-  onClick={downloadSlipPDF}
-  className="inline-flex items-center gap-2 rounded-2xl border border-black/10 bg-white/80 px-3 py-2 text-sm font-semibold hover:bg-white"
-  type="button"
->
-  <Download className="h-4 w-4 text-black/60" />
-  Download
-</button>
+                              onClick={downloadSlipPDF}
+                              className="inline-flex items-center gap-2 rounded-2xl border border-black/10 bg-white/80 px-3 py-2 text-sm font-semibold hover:bg-white"
+                              type="button"
+                            >
+                              <Download className="h-4 w-4 text-black/60" />
+                              Download
+                            </button>
 
                             <button
                               onClick={printSlip}
@@ -817,6 +833,14 @@ export default function PreEnroll() {
                                 <div className="mt-1 text-sm font-semibold" style={{ color: BRAND.brown }}>
                                   {receiptProgram}
                                 </div>
+
+                                {/* ✅ School Year */}
+                                {receipt?.active_school_year?.sy_code ? (
+                                  <div className="mt-1 text-xs" style={{ color: BRAND.muted }}>
+                                    School Year: {receipt.active_school_year.sy_code}
+                                  </div>
+                                ) : null}
+
                                 <div className="mt-1 text-xs" style={{ color: BRAND.muted }}>
                                   Submitted: {formatDateTime(receipt.st_submission_date)}
                                 </div>
@@ -825,7 +849,7 @@ export default function PreEnroll() {
 
                             <div className="mt-3 rounded-2xl p-3" style={{ background: "rgba(212,166,47,0.12)", border: `1px solid ${BRAND.stroke}` }}>
                               <div className="text-xs font-bold" style={{ color: BRAND.brown }}>
-                                Scheduled Date & Time
+                                Reporting Date & Time
                               </div>
                               <div className="mt-1 text-sm font-extrabold" style={{ color: BRAND.brown }}>
                                 {formatDateOnly(receipt.st_scheduled_date)} • {formatTimeOnly(receipt.st_scheduled_time)}
@@ -854,400 +878,402 @@ export default function PreEnroll() {
                 ) : null}
               </AnimatePresence>
 
-              <div>
-                <h2 className="text-xl font-extrabold" style={{ color: BRAND.brown }}>
-                  {STEPS[step - 1]?.title}
-                </h2>
-                <div className="mt-1 text-sm" style={{ color: BRAND.muted }}>
-                  Fields marked <b>*</b> are required.
-                  {studentNumber ? (
-                    <span
-                      className="ml-2 inline-flex items-center gap-2 rounded-full px-3 py-1 text-xs font-bold"
-                      style={{ background: "rgba(0,0,0,0.03)", border: `1px solid ${BRAND.stroke}`, color: BRAND.brown }}
-                    >
-                      Returning Student: {studentNumber}
-                    </span>
-                  ) : null}
-                </div>
-              </div>
-
-              {formError ? (
-                <div className="mt-4 rounded-2xl border border-red-200 bg-red-50 px-4 py-3 text-sm font-semibold text-red-700">
-                  {formError}
-                </div>
-              ) : null}
-
-              {lookupLoading ? (
-                <div className="mt-4 rounded-2xl border border-black/10 bg-black/[0.02] px-4 py-3 text-sm font-semibold text-black/60">
-                  Loading program options…
-                </div>
-              ) : null}
-
-              <form onSubmit={onSubmit} className="mt-6">
-                {/* STEP 1 */}
-                {step === 1 ? (
-                  <motion.div initial={{ opacity: 0, y: 6 }} animate={{ opacity: 1, y: 0 }} transition={{ duration: 0.18 }} className="space-y-4">
-                    <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
-                      <Field
-                        label="First Name *"
-                        icon={User}
-                        value={fname}
-                        placeholder="Juan"
-                        onChange={setFname}
-                        onBlur={() => touch("fname")}
-                        error={touched.fname && errorsStep1.fname}
-                      />
-                      <Field
-                        label="Last Name *"
-                        icon={User}
-                        value={lname}
-                        placeholder="Dela Cruz"
-                        onChange={setLname}
-                        onBlur={() => touch("lname")}
-                        error={touched.lname && errorsStep1.lname}
-                      />
-                    </div>
-
-                    <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
-                      <Field label="Middle Initial" icon={User} value={mi} placeholder="M" onChange={setMi} maxLength={2} />
-                      <Field label="Extension" icon={User} value={ext} placeholder="Jr. / III" onChange={setExt} />
-                    </div>
-
-                    <Field
-                      label="Email Address *"
-                      icon={Mail}
-                      value={email}
-                      placeholder="your.email@grabsum.edu.ph"
-                      onChange={setEmail}
-                      onBlur={() => touch("email")}
-                      error={touched.email && errorsStep1.email}
-                    />
-
-                    {/* LRN hidden for returning students */}
-                    {!isReturning ? (
-                      <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
-                        <Field
-                          label="LRN (12 digits) *"
-                          icon={Hash}
-                          value={lrn}
-                          placeholder="123456789012"
-                          onChange={(v) => {
-                            const d = onlyDigits(v);
-                            setLrn(d);
-                            setLrnCheck({ status: "idle", message: "" });
-                          }}
-                          onBlur={async () => {
-                            touch("lrn");
-                            await checkLRNAsync(lrn);
-                          }}
-                          error={touched.lrn && errorsStep1.lrn}
-                          maxLength={12}
-                          helper={
-                            lrnCheck.status === "checking"
-                              ? "Checking LRN…"
-                              : lrnCheck.status === "ok"
-                              ? lrnCheck.message
-                              : lrnCheck.status === "error"
-                              ? lrnCheck.message
-                              : ""
-                          }
-                          helperTone={lrnCheck.status === "ok" ? "ok" : lrnCheck.status === "error" ? "error" : "muted"}
-                        />
-
-                        <SelectField
-                          label="Gender"
-                          icon={User}
-                          value={gender}
-                          onChange={setGender}
-                          options={["Male", "Female"]}
-                          placeholder="Select gender"
-                        />
-                      </div>
-                    ) : (
-                      <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
-                        <LockedNote title="LRN (Locked)" subtitle="Returning students use the LRN from your existing record." />
-                        <SelectField
-                          label="Gender"
-                          icon={User}
-                          value={gender}
-                          onChange={setGender}
-                          options={["Male", "Female"]}
-                          placeholder="Select gender"
-                        />
-                      </div>
-                    )}
-
-                    <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
-                      <DateField label="Birthdate" icon={Calendar} value={bdate} onChange={setBdate} />
-                      <Field label="Birthplace" icon={MapPin} value={bplace} placeholder="City / Province" onChange={setBplace} />
-                    </div>
-
-                    <TextareaField
-                      label="Current Address"
-                      icon={MapPin}
-                      value={address}
-                      placeholder="House no., street, barangay, city"
-                      onChange={setAddress}
-                    />
-
-                    <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
-                      <SelectField
-                        label="Civil Status"
-                        icon={User}
-                        value={civilStatus}
-                        onChange={setCivilStatus}
-                        options={["Single", "Married", "Separated", "Widowed"]}
-                        placeholder="Select status"
-                      />
-
-                      {!isReturning ? (
-                        <Field
-                          label="Previous School"
-                          icon={GraduationCap}
-                          value={prevSchool}
-                          placeholder="Last school attended"
-                          onChange={setPrevSchool}
-                        />
-                      ) : (
-                        <LockedNote title="Previous School (Locked)" subtitle="Returning students use the Previous School from your existing record." />
-                      )}
-                    </div>
-                  </motion.div>
-                ) : null}
-
-                {/* STEP 2 */}
-                {step === 2 ? (
-                  <motion.div initial={{ opacity: 0, y: 6 }} animate={{ opacity: 1, y: 0 }} transition={{ duration: 0.18 }} className="space-y-4">
-                    <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
-                      <Field
-                        label="Guardian Name *"
-                        icon={Users}
-                        value={guardianName}
-                        placeholder="Full name of guardian"
-                        onChange={setGuardianName}
-                        onBlur={() => touch("guardianName")}
-                        error={touched.guardianName && errorsStep2.guardianName}
-                      />
-                      <Field
-                        label="Guardian Contact *"
-                        icon={Phone}
-                        value={guardianContact}
-                        placeholder="09xxxxxxxxx"
-                        onChange={(v) => setGuardianContact(onlyDigits(v))}
-                        onBlur={() => touch("guardianContact")}
-                        error={touched.guardianContact && errorsStep2.guardianContact}
-                        maxLength={11}
-                      />
-                    </div>
-
-                    <Field
-                      label="Relationship"
-                      icon={Users}
-                      value={guardianRelationship}
-                      placeholder="Mother / Father / Aunt / etc."
-                      onChange={setGuardianRelationship}
-                    />
-
-                    <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
-                      <Field label="Father Name" icon={Users} value={fatherName} placeholder="Father's full name" onChange={setFatherName} />
-                      <Field label="Mother Name" icon={Users} value={motherName} placeholder="Mother's full name" onChange={setMotherName} />
-                    </div>
-                  </motion.div>
-                ) : null}
-
-                {/* STEP 3 */}
-                {step === 3 ? (
-                  <motion.div initial={{ opacity: 0, y: 6 }} animate={{ opacity: 1, y: 0 }} transition={{ duration: 0.18 }} className="space-y-4">
-                    <div
-                      className="rounded-2xl px-4 py-3 text-sm"
-                      style={{ background: "rgba(212,166,47,0.10)", border: `1px solid ${BRAND.stroke}`, color: BRAND.brown }}
-                    >
-                      <b>Important:</b> Select your Grade, Track, and Strand for the next School Year.
-                    </div>
-
-                    <div className="grid grid-cols-1 gap-3 sm:grid-cols-3">
-                      <SelectField
-                        label="Year Level (Grade) *"
-                        icon={GraduationCap}
-                        value={gradeId}
-                        onChange={setGradeId}
-                        options={(grades ?? []).map((g) => ({ value: g.grade_id, label: `Grade ${g.grade_level}` }))}
-                        placeholder="Select grade"
-                        onBlur={() => touch("gradeId")}
-                        error={touched.gradeId && errorsStep3.gradeId}
-                      />
-
-                      <SelectField
-                        label="Track *"
-                        icon={GraduationCap}
-                        value={trackId}
-                        onChange={setTrackId}
-                        options={(tracks ?? []).map((t) => ({ value: t.track_id, label: t.track_code }))}
-                        placeholder="Select track"
-                        onBlur={() => touch("trackId")}
-                        error={touched.trackId && errorsStep3.trackId}
-                      />
-
-                      <SelectField
-                        label="Strand *"
-                        icon={GraduationCap}
-                        value={strandId}
-                        onChange={setStrandId}
-                        options={strandsForTrack.map((s) => ({ value: s.strand_id, label: s.strand_code }))}
-                        placeholder={trackId ? "Select strand" : "Select track first"}
-                        onBlur={() => touch("strandId")}
-                        error={touched.strandId && errorsStep3.strandId}
-                        disabled={!trackId}
-                      />
-                    </div>
-                  </motion.div>
-                ) : null}
-
-                {/* STEP 4 */}
-                {step === 4 ? (
-                  <motion.div initial={{ opacity: 0, y: 6 }} animate={{ opacity: 1, y: 0 }} transition={{ duration: 0.18 }} className="space-y-4">
-                    <ReviewCard
-                      title="Basic Information"
-                      onEdit={() => setStep(1)}
-                      rows={[
-                        ["Full Name", `${fname} ${mi ? `${mi}.` : ""} ${lname} ${ext || ""}`.replace(/\s+/g, " ").trim()],
-                        ["Email", email],
-                        ["Gender", gender || "—"],
-                        ["Birthdate", bdate || "—"],
-                        ["Birthplace", bplace || "—"],
-                        ["Address", address || "—"],
-                        ...(isReturning ? [["LRN", "Locked (Returning Student)"]] : [["LRN", lrn || "—"]]),
-                        ...(isReturning ? [["Previous School", "Locked (Returning Student)"]] : [["Previous School", prevSchool || "—"]]),
-                      ]}
-                    />
-
-                    <ReviewCard
-                      title="Family Information"
-                      onEdit={() => setStep(2)}
-                      rows={[
-                        ["Guardian Name", guardianName],
-                        ["Guardian Contact", guardianContact],
-                        ["Relationship", guardianRelationship || "—"],
-                        ["Father", fatherName || "—"],
-                        ["Mother", motherName || "—"],
-                      ]}
-                    />
-
-                    <ReviewCard
-                      title="Academic Information"
-                      onEdit={() => setStep(3)}
-                      rows={[
-                        [
-                          "Program",
-                          `${gradeMap.get(String(gradeId)) ? `Grade ${gradeMap.get(String(gradeId))}` : "—"} • ${
-                            trackMap.get(String(trackId)) || "—"
-                          } • ${strandMap.get(String(strandId)) || "—"}`,
-                        ],
-                      ]}
-                    />
-
-                    <div className="pt-1">
-                      <label className="inline-flex items-start gap-2 text-sm" style={{ color: BRAND.muted }}>
-                        <input
-                          type="checkbox"
-                          checked={agreed}
-                          onChange={(e) => setAgreed(e.target.checked)}
-                          onBlur={() => touch("agreed")}
-                          className="mt-1 h-4 w-4 rounded border-black/20"
-                        />
-                        <span>
-                          I agree to the <span style={{ color: BRAND.link, fontWeight: 800 }}>Terms & Conditions</span>.
-                          {touched.agreed && errorsStep4.agreed ? (
-                            <span className="block mt-1 text-xs font-semibold text-red-500">{errorsStep4.agreed}</span>
-                          ) : null}
+              {/* ✅ Hide/Disable form when receipt exists */}
+              {!receipt && (
+                <>
+                  <div>
+                    <h2 className="text-xl font-extrabold" style={{ color: BRAND.brown }}>
+                      {STEPS[step - 1]?.title}
+                    </h2>
+                    <div className="mt-1 text-sm" style={{ color: BRAND.muted }}>
+                      Fields marked <b>*</b> are required.
+                      {studentNumber ? (
+                        <span
+                          className="ml-2 inline-flex items-center gap-2 rounded-full px-3 py-1 text-xs font-bold"
+                          style={{ background: "rgba(0,0,0,0.03)", border: `1px solid ${BRAND.stroke}`, color: BRAND.brown }}
+                        >
+                          Returning Student: {studentNumber}
                         </span>
-                      </label>
+                      ) : null}
                     </div>
+                  </div>
 
-                    <div className="rounded-2xl px-4 py-3 text-xs" style={{ background: "rgba(0,0,0,0.03)", border: `1px solid ${BRAND.stroke}`, color: BRAND.muted }}>
-                      After submission, you will receive an <b>Application Code</b> and schedule. Bring the listed requirements during on-site enrollment.
+                  {formError ? (
+                    <div className="mt-4 rounded-2xl border border-red-200 bg-red-50 px-4 py-3 text-sm font-semibold text-red-700">
+                      {formError}
                     </div>
-                  </motion.div>
-                ) : null}
+                  ) : null}
 
-                {/* Bottom controls */}
-                <div className="mt-8 flex flex-col-reverse gap-3 sm:flex-row sm:items-center sm:justify-between">
-                  <button
-                    type="button"
-                    onClick={() => setStep((s) => Math.max(1, s - 1))}
-                    className="rounded-2xl px-5 py-3 text-sm font-semibold border border-black/10 bg-white hover:bg-black/[0.02] transition"
-                    disabled={step === 1}
-                    style={{ opacity: step === 1 ? 0.6 : 1, cursor: step === 1 ? "not-allowed" : "pointer" }}
-                  >
-                    Back
-                  </button>
+                  {lookupLoading ? (
+                    <div className="mt-4 rounded-2xl border border-black/10 bg-black/[0.02] px-4 py-3 text-sm font-semibold text-black/60">
+                      Loading program options…
+                    </div>
+                  ) : null}
 
-                  <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-end">
-                    {step < 4 ? (
+                  <form onSubmit={onSubmit} className="mt-6">
+                    {/* STEP 1 */}
+                    {step === 1 ? (
+                      <motion.div initial={{ opacity: 0, y: 6 }} animate={{ opacity: 1, y: 0 }} transition={{ duration: 0.18 }} className="space-y-4">
+                        <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+                          <Field
+                            label="First Name *"
+                            icon={User}
+                            value={fname}
+                            placeholder="Juan"
+                            onChange={setFname}
+                            onBlur={() => touch("fname")}
+                            error={touched.fname && errorsStep1.fname}
+                          />
+                          <Field
+                            label="Last Name *"
+                            icon={User}
+                            value={lname}
+                            placeholder="Dela Cruz"
+                            onChange={setLname}
+                            onBlur={() => touch("lname")}
+                            error={touched.lname && errorsStep1.lname}
+                          />
+                        </div>
+
+                        <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+                          <Field label="Middle Initial" icon={User} value={mi} placeholder="M" onChange={setMi} maxLength={2} />
+                          <Field label="Extension" icon={User} value={ext} placeholder="Jr. / III" onChange={setExt} />
+                        </div>
+
+                        <Field
+                          label="Email Address *"
+                          icon={Mail}
+                          value={email}
+                          placeholder="your.email@grabsum.edu.ph"
+                          onChange={setEmail}
+                          onBlur={() => touch("email")}
+                          error={touched.email && errorsStep1.email}
+                        />
+
+                        {/* LRN hidden for returning students */}
+                        {!isReturning ? (
+                          <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+                            <Field
+                              label="LRN (12 digits) *"
+                              icon={Hash}
+                              value={lrn}
+                              placeholder="123456789012"
+                              onChange={(v) => {
+                                const d = onlyDigits(v);
+                                setLrn(d);
+                                setLrnCheck({ status: "idle", message: "" });
+                              }}
+                              onBlur={async () => {
+                                touch("lrn");
+                                await checkLRNAsync(lrn);
+                              }}
+                              error={touched.lrn && errorsStep1.lrn}
+                              maxLength={12}
+                              helper={
+                                lrnCheck.status === "checking"
+                                  ? "Checking LRN…"
+                                  : lrnCheck.status === "ok"
+                                  ? lrnCheck.message
+                                  : lrnCheck.status === "error"
+                                  ? lrnCheck.message
+                                  : ""
+                              }
+                              helperTone={lrnCheck.status === "ok" ? "ok" : lrnCheck.status === "error" ? "error" : "muted"}
+                            />
+
+                            <SelectField
+                              label="Gender"
+                              icon={User}
+                              value={gender}
+                              onChange={setGender}
+                              options={["Male", "Female"]}
+                              placeholder="Select gender"
+                            />
+                          </div>
+                        ) : (
+                          <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+                            <LockedNote title="LRN (Locked)" subtitle="Returning students use the LRN from your existing record." />
+                            <SelectField
+                              label="Gender"
+                              icon={User}
+                              value={gender}
+                              onChange={setGender}
+                              options={["Male", "Female"]}
+                              placeholder="Select gender"
+                            />
+                          </div>
+                        )}
+
+                        <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+                          <DateField label="Birthdate" icon={Calendar} value={bdate} onChange={setBdate} />
+                          <Field label="Birthplace" icon={MapPin} value={bplace} placeholder="City / Province" onChange={setBplace} />
+                        </div>
+
+                        <TextareaField
+                          label="Current Address"
+                          icon={MapPin}
+                          value={address}
+                          placeholder="House no., street, barangay, city"
+                          onChange={setAddress}
+                        />
+
+                        <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+                          <SelectField
+                            label="Civil Status"
+                            icon={User}
+                            value={civilStatus}
+                            onChange={setCivilStatus}
+                            options={["Single", "Married", "Separated", "Widowed"]}
+                            placeholder="Select status"
+                          />
+
+                          {!isReturning ? (
+                            <Field label="Previous School" icon={GraduationCap} value={prevSchool} placeholder="Last school attended" onChange={setPrevSchool} />
+                          ) : (
+                            <LockedNote title="Previous School (Locked)" subtitle="Returning students use the Previous School from your existing record." />
+                          )}
+                        </div>
+                      </motion.div>
+                    ) : null}
+
+                    {/* STEP 2 */}
+                    {step === 2 ? (
+                      <motion.div initial={{ opacity: 0, y: 6 }} animate={{ opacity: 1, y: 0 }} transition={{ duration: 0.18 }} className="space-y-4">
+                        <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+                          <Field
+                            label="Guardian Name *"
+                            icon={Users}
+                            value={guardianName}
+                            placeholder="Full name of guardian"
+                            onChange={setGuardianName}
+                            onBlur={() => touch("guardianName")}
+                            error={touched.guardianName && errorsStep2.guardianName}
+                          />
+                          <Field
+                            label="Guardian Contact *"
+                            icon={Phone}
+                            value={guardianContact}
+                            placeholder="09xxxxxxxxx"
+                            onChange={(v) => setGuardianContact(onlyDigits(v))}
+                            onBlur={() => touch("guardianContact")}
+                            error={touched.guardianContact && errorsStep2.guardianContact}
+                            maxLength={11}
+                          />
+                        </div>
+
+                        <Field
+                          label="Relationship"
+                          icon={Users}
+                          value={guardianRelationship}
+                          placeholder="Mother / Father / Aunt / etc."
+                          onChange={setGuardianRelationship}
+                        />
+
+                        <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+                          <Field label="Father Name" icon={Users} value={fatherName} placeholder="Father's full name" onChange={setFatherName} />
+                          <Field label="Mother Name" icon={Users} value={motherName} placeholder="Mother's full name" onChange={setMotherName} />
+                        </div>
+                      </motion.div>
+                    ) : null}
+
+                    {/* STEP 3 */}
+                    {step === 3 ? (
+                      <motion.div initial={{ opacity: 0, y: 6 }} animate={{ opacity: 1, y: 0 }} transition={{ duration: 0.18 }} className="space-y-4">
+                        <div
+                          className="rounded-2xl px-4 py-3 text-sm"
+                          style={{ background: "rgba(212,166,47,0.10)", border: `1px solid ${BRAND.stroke}`, color: BRAND.brown }}
+                        >
+                          <b>Important:</b> Select your Grade, Track, and Strand for the next School Year.
+                        </div>
+
+                        <div className="grid grid-cols-1 gap-3 sm:grid-cols-3">
+                          <SelectField
+                            label="Year Level (Grade) *"
+                            icon={GraduationCap}
+                            value={gradeId}
+                            onChange={setGradeId}
+                            options={(grades ?? []).map((g) => ({ value: g.grade_id, label: `Grade ${g.grade_level}` }))}
+                            placeholder="Select grade"
+                            onBlur={() => touch("gradeId")}
+                            error={touched.gradeId && errorsStep3.gradeId}
+                          />
+
+                          <SelectField
+                            label="Track *"
+                            icon={GraduationCap}
+                            value={trackId}
+                            onChange={setTrackId}
+                            options={(tracks ?? []).map((t) => ({ value: t.track_id, label: t.track_code }))}
+                            placeholder="Select track"
+                            onBlur={() => touch("trackId")}
+                            error={touched.trackId && errorsStep3.trackId}
+                          />
+
+                          <SelectField
+                            label="Strand *"
+                            icon={GraduationCap}
+                            value={strandId}
+                            onChange={setStrandId}
+                            options={strandsForTrack.map((s) => ({ value: s.strand_id, label: s.strand_code }))}
+                            placeholder={trackId ? "Select strand" : "Select track first"}
+                            onBlur={() => touch("strandId")}
+                            error={touched.strandId && errorsStep3.strandId}
+                            disabled={!trackId}
+                          />
+                        </div>
+                      </motion.div>
+                    ) : null}
+
+                    {/* STEP 4 */}
+                    {step === 4 ? (
+                      <motion.div initial={{ opacity: 0, y: 6 }} animate={{ opacity: 1, y: 0 }} transition={{ duration: 0.18 }} className="space-y-4">
+                        <ReviewCard
+                          title="Basic Information"
+                          onEdit={() => setStep(1)}
+                          rows={[
+                            ["Full Name", `${fname} ${mi ? `${mi}.` : ""} ${lname} ${ext || ""}`.replace(/\s+/g, " ").trim()],
+                            ["Email", email],
+                            ["Gender", gender || "—"],
+                            ["Birthdate", bdate || "—"],
+                            ["Birthplace", bplace || "—"],
+                            ["Address", address || "—"],
+                            ...(isReturning ? [["LRN", "Locked (Returning Student)"]] : [["LRN", lrn || "—"]]),
+                            ...(isReturning ? [["Previous School", "Locked (Returning Student)"]] : [["Previous School", prevSchool || "—"]]),
+                          ]}
+                        />
+
+                        <ReviewCard
+                          title="Family Information"
+                          onEdit={() => setStep(2)}
+                          rows={[
+                            ["Guardian Name", guardianName],
+                            ["Guardian Contact", guardianContact],
+                            ["Relationship", guardianRelationship || "—"],
+                            ["Father", fatherName || "—"],
+                            ["Mother", motherName || "—"],
+                          ]}
+                        />
+
+                        <ReviewCard
+                          title="Academic Information"
+                          onEdit={() => setStep(3)}
+                          rows={[
+                            [
+                              "Program",
+                              `${gradeMap.get(String(gradeId)) ? `Grade ${gradeMap.get(String(gradeId))}` : "—"} • ${trackMap.get(String(trackId)) || "—"} • ${
+                                strandMap.get(String(strandId)) || "—"
+                              }`,
+                            ],
+                          ]}
+                        />
+
+                        <div className="pt-1">
+                          <label className="inline-flex items-start gap-2 text-sm" style={{ color: BRAND.muted }}>
+                            <input
+                              type="checkbox"
+                              checked={agreed}
+                              onChange={(e) => setAgreed(e.target.checked)}
+                              onBlur={() => touch("agreed")}
+                              className="mt-1 h-4 w-4 rounded border-black/20"
+                            />
+                            <span>
+                              I agree to the <span style={{ color: BRAND.link, fontWeight: 800 }}>Terms & Conditions</span>.
+                              {touched.agreed && errorsStep4.agreed ? (
+                                <span className="block mt-1 text-xs font-semibold text-red-500">{errorsStep4.agreed}</span>
+                              ) : null}
+                            </span>
+                          </label>
+                        </div>
+
+                        <div
+                          className="rounded-2xl px-4 py-3 text-xs"
+                          style={{ background: "rgba(0,0,0,0.03)", border: `1px solid ${BRAND.stroke}`, color: BRAND.muted }}
+                        >
+                          After submission, you will receive an <b>Application Code</b> and schedule. Bring the listed requirements during on-site enrollment.
+                        </div>
+                      </motion.div>
+                    ) : null}
+
+                    {/* Bottom controls */}
+                    <div className="mt-8 flex flex-col-reverse gap-3 sm:flex-row sm:items-center sm:justify-between">
                       <button
                         type="button"
-                        onClick={async () => {
-                          if (step === 1) {
-                            setTouched((t) => ({ ...t, fname: true, lname: true, email: true, lrn: true }));
-
-                            // ✅ LRN check only for NEW students
-                            if (!isReturning && lrnCheck.status !== "ok") {
-                              await checkLRNAsync(lrn);
-                            }
-                          }
-
-                          if (step === 2) setTouched((t) => ({ ...t, guardianName: true, guardianContact: true }));
-                          if (step === 3) setTouched((t) => ({ ...t, gradeId: true, trackId: true, strandId: true }));
-
-                          const next = step + 1;
-                          if (canGoTo(next)) setStep(next);
-                        }}
-                        className="rounded-2xl px-6 py-3 text-sm font-semibold transition"
-                        style={{
-                          background: BRAND.gold,
-                          color: BRAND.brown,
-                          boxShadow: "0 10px 18px rgba(212,166,47,0.28)",
-                          opacity: canGoTo(step + 1) ? 1 : 0.65,
-                          cursor: canGoTo(step + 1) ? "pointer" : "not-allowed",
-                        }}
+                        onClick={() => setStep((s) => Math.max(1, s - 1))}
+                        className="rounded-2xl px-5 py-3 text-sm font-semibold border border-black/10 bg-white hover:bg-black/[0.02] transition"
+                        disabled={step === 1}
+                        style={{ opacity: step === 1 ? 0.6 : 1, cursor: step === 1 ? "not-allowed" : "pointer" }}
                       >
-                        Continue
+                        Back
                       </button>
-                    ) : (
-                      <button
-                        type="submit"
-                        className="rounded-2xl px-6 py-3 text-sm font-semibold transition"
-                        style={{
-                          background: BRAND.gold,
-                          color: BRAND.brown,
-                          boxShadow: "0 10px 18px rgba(212,166,47,0.28)",
-                          opacity: canSubmit ? 1 : 0.65,
-                          cursor: canSubmit ? "pointer" : "not-allowed",
-                        }}
-                        onMouseEnter={(e) => {
-                          if (!canSubmit) return;
-                          e.currentTarget.style.background = BRAND.goldHover;
-                          e.currentTarget.style.transform = "translateY(-1px)";
-                        }}
-                        onMouseLeave={(e) => {
-                          e.currentTarget.style.background = BRAND.gold;
-                          e.currentTarget.style.transform = "translateY(0px)";
-                        }}
-                        disabled={!canSubmit}
-                      >
-                        {loading ? "Submitting…" : "Submit Pre-enrollment"}
-                      </button>
-                    )}
-                  </div>
-                </div>
 
-                <div className="pt-4 text-center text-sm" style={{ color: BRAND.muted }}>
-                  Already have an account?{" "}
-                  <Link to="/login" className="hover:underline" style={{ color: BRAND.link }}>
-                    Sign in
-                  </Link>
-                </div>
-              </form>
+                      <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-end">
+                        {step < 4 ? (
+                          <button
+                            type="button"
+                            onClick={async () => {
+                              if (step === 1) {
+                                setTouched((t) => ({ ...t, fname: true, lname: true, email: true, lrn: true }));
+
+                                // ✅ LRN check only for NEW students
+                                if (!isReturning && lrnCheck.status !== "ok") {
+                                  await checkLRNAsync(lrn);
+                                }
+                              }
+
+                              if (step === 2) setTouched((t) => ({ ...t, guardianName: true, guardianContact: true }));
+                              if (step === 3) setTouched((t) => ({ ...t, gradeId: true, trackId: true, strandId: true }));
+
+                              const next = step + 1;
+                              if (canGoTo(next)) setStep(next);
+                            }}
+                            className="rounded-2xl px-6 py-3 text-sm font-semibold transition"
+                            style={{
+                              background: BRAND.gold,
+                              color: BRAND.brown,
+                              boxShadow: "0 10px 18px rgba(212,166,47,0.28)",
+                              opacity: canGoTo(step + 1) ? 1 : 0.65,
+                              cursor: canGoTo(step + 1) ? "pointer" : "not-allowed",
+                            }}
+                          >
+                            Continue
+                          </button>
+                        ) : (
+                          <button
+                            type="submit"
+                            className="rounded-2xl px-6 py-3 text-sm font-semibold transition"
+                            style={{
+                              background: BRAND.gold,
+                              color: BRAND.brown,
+                              boxShadow: "0 10px 18px rgba(212,166,47,0.28)",
+                              opacity: canSubmit ? 1 : 0.65,
+                              cursor: canSubmit ? "pointer" : "not-allowed",
+                            }}
+                            onMouseEnter={(e) => {
+                              if (!canSubmit) return;
+                              e.currentTarget.style.background = BRAND.goldHover;
+                              e.currentTarget.style.transform = "translateY(-1px)";
+                            }}
+                            onMouseLeave={(e) => {
+                              e.currentTarget.style.background = BRAND.gold;
+                              e.currentTarget.style.transform = "translateY(0px)";
+                            }}
+                            disabled={!canSubmit}
+                          >
+                            {loading ? "Submitting…" : "Submit Pre-enrollment"}
+                          </button>
+                        )}
+                      </div>
+                    </div>
+
+                    <div className="pt-4 text-center text-sm" style={{ color: BRAND.muted }}>
+                      Already have an account?{" "}
+                      <Link to="/login" className="hover:underline" style={{ color: BRAND.link }}>
+                        Sign in
+                      </Link>
+                    </div>
+                  </form>
+                </>
+              )}
             </div>
           </div>
         </motion.div>
