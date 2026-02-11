@@ -1,16 +1,55 @@
-# React + Vite
+GSI-IntelliSys
 
-This template provides a minimal setup to get React working in Vite with HMR and some ESLint rules.
+AI-Integrated School Administration System
 
-Currently, two official plugins are available:
+📌 Overview
 
-- [@vitejs/plugin-react](https://github.com/vitejs/vite-plugin-react/blob/main/packages/plugin-react) uses [Babel](https://babeljs.io/) (or [oxc](https://oxc.rs) when used in [rolldown-vite](https://vite.dev/guide/rolldown)) for Fast Refresh
-- [@vitejs/plugin-react-swc](https://github.com/vitejs/vite-plugin-react/blob/main/packages/plugin-react-swc) uses [SWC](https://swc.rs/) for Fast Refresh
+GSI-IntelliSys is a web-based school administration system designed to streamline academic and administrative operations for Senior High School institutions. The platform integrates role-based access, scheduling management, student information tracking, and AI-assisted lesson planning.
 
-## React Compiler
+Tech Stack
 
-The React Compiler is not enabled on this template because of its impact on dev & build performances. To add it, see [this documentation](https://react.dev/learn/react-compiler/installation).
+Frontend:
 
-## Expanding the ESLint configuration
+        React (Vite)
+        
+        Tailwind CSS
+        
+        Backend & Database:
+        
+        Supabase (PostgreSQL)
+        
+        Supabase Authentication
+        
+        Role-Based Access Control (RBAC)
 
-If you are developing a production application, we recommend using TypeScript with type-aware lint rules enabled. Check out the [TS template](https://github.com/vitejs/vite/tree/main/packages/create-vite/template-react-ts) for information on how to integrate TypeScript and [`typescript-eslint`](https://typescript-eslint.io) in your project.
+Core Features
+
+      Secure authentication and user role management
+      
+      Unified dashboard for Admin, Teacher, Student, and Parent
+      
+      AI-assisted lesson planner for structured content creation
+      
+      Student enrollment and academic record management
+      
+      Scheduling and classroom assignment system
+      
+      Digital pre-enrollment workflow
+
+System Architecture
+
+      The application follows a client-server architecture:
+      
+      React frontend communicates with Supabase backend services
+      
+      Supabase handles authentication, database management, and access control
+      
+      Role-based policies ensure secure data access
+       Development Status
+      
+      Pilot implementation completed. Deployment for production environment is planned.
+
+Developer
+
+Junior Pal Eirol P. Calaguan
+Computer Science Student
